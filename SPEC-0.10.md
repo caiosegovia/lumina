@@ -11,3 +11,12 @@ Regras de segurança mantidas:
 - biblioteca, réplica e configuração real do usuário não são usadas nos testes automatizados.
 
 O contrato completo e suas evidências estão em `ARCHITECTURE-STABILIZATION.md` e `TEST-REPORT-0.10.md`.
+
+## Pendências observadas no teste produtivo
+
+A 0.10.0 estabiliza a concorrência e evita que trabalhos de mídia sejam executados diretamente pela interface, mas o teste manual identificou dois pontos que permanecem no próximo ciclo:
+
+- a abertura da Visão geral ainda apresenta latência perceptível; o próximo pacote deve medir separadamente consulta, montagem dos agregados, disponibilidade dos volumes e renderização, mantendo rollups pré-calculados e cache com invalidação por evento;
+- os insights atuais são corretos, porém pouco orientados à decisão; devem evoluir para tendências, crescimento por período, maiores consumidores de espaço, cobertura de proteção por origem/ano, qualidade de metadados e recomendações priorizadas com impacto estimado.
+
+Esses itens não anulam os testes arquiteturais da 0.10.0, mas ficam explicitamente registrados como critérios de produto e desempenho para a próxima versão.
