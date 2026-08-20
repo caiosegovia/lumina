@@ -345,7 +345,8 @@ mod tests {
     fn dll_loader_failure_is_a_dependency_error() {
         let error = run(
             ProcessSpec::new("Teste", "cmd.exe").args([
-                "/d", "/c",
+                "/d",
+                "/c",
                 "echo Failed to load Perl DLL perl532.dll code 126 1>&2 & exit /b 1",
             ]),
             &CancellationToken::default(),

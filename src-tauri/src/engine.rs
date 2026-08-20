@@ -3,8 +3,7 @@ use chrono::{DateTime, Utc};
 use rusqlite::{params, OptionalExtension};
 use std::{
     collections::{HashMap, HashSet},
-    fs::{self, OpenOptions},
-    io::Write,
+    fs,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -30,6 +29,9 @@ type BatchedMetadata = (
     HashMap<String, CapturedMetadata>,
     HashMap<String, crate::media::ValidationResult>,
 );
+fn progress_due(done: i64, total: i64) -> bool {
+    done % 8 == 0 || done == total
+}
 fn storage_profile(path: &Path, total_bytes: u64, average: u64) -> (&'static str, usize) {
     if let Some(value) = std::env::var("LUMINA_HASH_WORKERS")
         .ok()
@@ -93,7 +95,25 @@ fn hash_files_adaptive(
             let completed = &completed;
             let bytes = &bytes;
             let results = &results;
-            scope.spawn(move||loop{if cancel.is_cancelled(){break}let i=next.fetch_add(1,Ordering::Relaxed);if i>=paths.len(){break}let path=&paths[i];let value=crate::storage::sha256_cancel(path,Some(cancel));let length=fs::metadata(path).map(|m|m.len()).unwrap_or(0);let complete_bytes=bytes.fetch_add(length,Ordering::Relaxed)+length;let complete_items=completed.fetch_add(1,Ordering::Relaxed)+1;let speed=complete_bytes as f64/started.elapsed().as_secs_f64().max(0.001);let eta=if speed>0.0{Some(((total_bytes.saturating_sub(complete_bytes))as f64/speed).ceil()as i64)}else{None};if let Ok(progress)=catalog::open(catalog_path){let _=progress.execute("UPDATE jobs SET stage='hashing',current_file=?2,stage_processed_items=?3,stage_total_items=?4,stage_processed_bytes=?5,stage_total_bytes=?6,bytes_per_second=?7,estimated_seconds_remaining=?8,updated_at=?9 WHERE id=?1",params![job,path.to_string_lossy(),complete_items as i64,paths.len()as i64,complete_bytes.min(i64::MAX as u64)as i64,total_bytes.min(i64::MAX as u64)as i64,speed,eta,Utc::now().to_rfc3339()]);}results.lock().unwrap().insert(cache_key(path),value);});
+            scope.spawn(move || loop {
+                if cancel.is_cancelled() { break; }
+                let index = next.fetch_add(1, Ordering::Relaxed);
+                if index >= paths.len() { break; }
+                let path = &paths[index];
+                let _io = crate::resource::io(crate::resource::Priority::Background);
+                let value = crate::storage::sha256_cancel(path, Some(cancel));
+                let length = fs::metadata(path).map(|metadata| metadata.len()).unwrap_or(0);
+                let complete_bytes = bytes.fetch_add(length, Ordering::Relaxed) + length;
+                let complete_items = completed.fetch_add(1, Ordering::Relaxed) + 1;
+                if progress_due(complete_items as i64, paths.len() as i64) {
+                    let speed = complete_bytes as f64 / started.elapsed().as_secs_f64().max(0.001);
+                    let eta = (speed > 0.0).then(|| ((total_bytes.saturating_sub(complete_bytes)) as f64 / speed).ceil() as i64);
+                    if let Ok(progress) = catalog::open(catalog_path) {
+                        let _=progress.execute("UPDATE jobs SET stage='hashing',current_file=?2,stage_processed_items=?3,stage_total_items=?4,stage_processed_bytes=?5,stage_total_bytes=?6,bytes_per_second=?7,estimated_seconds_remaining=?8,updated_at=?9 WHERE id=?1",params![job,path.to_string_lossy(),complete_items as i64,paths.len()as i64,complete_bytes.min(i64::MAX as u64)as i64,total_bytes.min(i64::MAX as u64)as i64,speed,eta,Utc::now().to_rfc3339()]);
+                    }
+                }
+                results.lock().unwrap().insert(cache_key(path), value);
+            });
         }
     });
     (results.into_inner().unwrap(), workers, profile.into())
@@ -390,7 +410,7 @@ fn control_point(conn: &rusqlite::Connection, job: &str) -> Result<(), String> {
 }
 
 pub fn set_job_state(cfg: &LibraryConfig, job: &str, state: &str) -> Result<JobProgress, String> {
-    let conn = catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite"))
+    let mut conn = catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite"))
         .map_err(|e| e.to_string())?;
     let (stage, current_state): (String, String) = conn
         .query_row("SELECT stage,state FROM jobs WHERE id=?1", [job], |r| {
@@ -419,17 +439,20 @@ pub fn set_job_state(cfg: &LibraryConfig, job: &str, state: &str) -> Result<JobP
             "Transição de estado inválida: {current_state} → {normalized}"
         ));
     }
-    conn.execute(
-        "UPDATE jobs SET state=?2,updated_at=?3 WHERE id=?1",
-        params![job, normalized, Utc::now().to_rfc3339()],
-    )
-    .map_err(|e| e.to_string())?;
+    let transaction = conn.transaction().map_err(|e| e.to_string())?;
+    transaction
+        .execute(
+            "UPDATE jobs SET state=?2,updated_at=?3 WHERE id=?1",
+            params![job, normalized, Utc::now().to_rfc3339()],
+        )
+        .map_err(|e| e.to_string())?;
     let details = match normalized {
         "pausing" => "Pausa solicitada",
         "canceling" => "Cancelamento solicitado",
         _ => "Processamento retomado",
     };
-    event(&conn, job, "", normalized, details);
+    event(&transaction, job, "", normalized, details);
+    transaction.commit().map_err(|e| e.to_string())?;
     job_progress(cfg, job)
 }
 
@@ -444,19 +467,16 @@ pub fn queue_analysis(
     }
     let conn = catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite"))
         .map_err(|e| e.to_string())?;
+    let identity = crate::volume::identify(root)?;
+    let source_key = crate::volume::source_key(&identity, root);
     let source_id = conn
-        .query_row("SELECT id FROM sources WHERE path=?1", [source_path], |r| {
+        .query_row("SELECT id FROM sources WHERE path=?1 OR (mount_path=?2 AND volume_id=volume_label) ORDER BY path=?1 DESC LIMIT 1", params![&source_key,source_path], |r| {
             r.get::<_, String>(0)
         })
         .optional()
         .map_err(|e| e.to_string())?
         .unwrap_or_else(|| Uuid::new_v4().to_string());
-    let volume = root
-        .components()
-        .next()
-        .map(|x| x.as_os_str().to_string_lossy().to_string())
-        .unwrap_or_default();
-    conn.execute("INSERT INTO sources(id,name,path,volume_label,available)VALUES(?1,?2,?3,?4,1)ON CONFLICT(path)DO UPDATE SET name=excluded.name,available=1",params![source_id,source_name,source_path,volume]).map_err(|e|e.to_string())?;
+    conn.execute("INSERT INTO sources(id,name,path,volume_label,volume_id,mount_path,available)VALUES(?1,?2,?3,?4,?5,?6,1)ON CONFLICT(id)DO UPDATE SET name=excluded.name,path=excluded.path,volume_label=excluded.volume_label,volume_id=excluded.volume_id,mount_path=excluded.mount_path,available=1",params![source_id,source_name,source_key,identity.label,identity.id,source_path]).map_err(|e|e.to_string())?;
     let job = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
     conn.execute("INSERT INTO jobs(id,source_id,source_path,state,stage,created_at,updated_at)VALUES(?1,?2,?3,'queued','discovery',?4,?4)",params![job,source_id,source_path,now]).map_err(|e|e.to_string())?;
@@ -519,19 +539,16 @@ pub fn analyze_with_job_cancel(
     }
     let catalog_path = Path::new(&cfg.master_path).join(".lumina/catalog.sqlite");
     let mut conn = catalog::open(&catalog_path).map_err(|e| e.to_string())?;
+    let identity = crate::volume::identify(root)?;
+    let source_key = crate::volume::source_key(&identity, root);
     let source_id = conn
-        .query_row("SELECT id FROM sources WHERE path=?1", [source_path], |r| {
+        .query_row("SELECT id FROM sources WHERE path=?1 OR (mount_path=?2 AND volume_id=volume_label) ORDER BY path=?1 DESC LIMIT 1", params![&source_key,source_path], |r| {
             r.get::<_, String>(0)
         })
         .optional()
         .map_err(|e| e.to_string())?
         .unwrap_or_else(|| Uuid::new_v4().to_string());
-    let volume = root
-        .components()
-        .next()
-        .map(|x| x.as_os_str().to_string_lossy().to_string())
-        .unwrap_or_default();
-    conn.execute("INSERT INTO sources(id,name,path,volume_label,available,last_scan)VALUES(?1,?2,?3,?4,1,?5) ON CONFLICT(path) DO UPDATE SET name=excluded.name,available=1,last_scan=excluded.last_scan",params![source_id,source_name,source_path,volume,Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
+    conn.execute("INSERT INTO sources(id,name,path,volume_label,volume_id,mount_path,available,last_scan)VALUES(?1,?2,?3,?4,?5,?6,1,?7) ON CONFLICT(id) DO UPDATE SET name=excluded.name,path=excluded.path,volume_label=excluded.volume_label,volume_id=excluded.volume_id,mount_path=excluded.mount_path,available=1,last_scan=excluded.last_scan",params![source_id,source_name,source_key,identity.label,identity.id,source_path,Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
     let job = requested_job
         .map(str::to_string)
         .unwrap_or_else(|| Uuid::new_v4().to_string());
@@ -571,6 +588,8 @@ pub fn analyze_with_job_cancel(
                     *size_counts.entry(metadata.len()).or_default() += 1;
                 }
                 media_paths.push(entry.path().to_path_buf());
+            } else {
+                excluded += 1;
             }
         }
     }
@@ -589,6 +608,7 @@ pub fn analyze_with_job_cancel(
         tx.commit().map_err(|e| e.to_string())?;
     }
     conn.execute("INSERT INTO job_metrics(job_id,stage,duration_ms,items,bytes,recorded_at)VALUES(?1,'inventory',?2,?3,?4,?5)ON CONFLICT(job_id,stage)DO UPDATE SET duration_ms=excluded.duration_ms,items=excluded.items,bytes=excluded.bytes,recorded_at=excluded.recorded_at",params![job,inventory_started.elapsed().as_millis()as i64,scan_total,scan_bytes,Utc::now().to_rfc3339()]).ok();
+    conn.execute("INSERT INTO job_metrics(job_id,stage,duration_ms,items,bytes,recorded_at)VALUES(?1,'inventory_walks',0,1,?2,?3)ON CONFLICT(job_id,stage)DO UPDATE SET items=1,bytes=excluded.bytes,recorded_at=excluded.recorded_at",params![job,scan_bytes,Utc::now().to_rfc3339()]).ok();
     event(
         &conn,
         &job,
@@ -696,200 +716,208 @@ pub fn analyze_with_job_cancel(
     }
     let mut scan_processed = 0i64;
     let mut scan_processed_bytes = 0i64;
-    for entry in WalkDir::new(root)
-        .follow_links(false)
-        .into_iter()
-        .filter_entry(|e| !ignored(e))
-    {
-        match entry {
-            Ok(e) if e.file_type().is_file() => {
-                let path = e.path();
-                let ext = path
-                    .extension()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("")
-                    .to_ascii_lowercase();
-                if !MEDIA.contains(&ext.as_str()) {
-                    excluded += 1;
-                    event(
-                        &conn,
-                        &job,
-                        &path.to_string_lossy(),
-                        "excluded",
-                        "Formato ignorado pela política de importação",
-                    );
-                    continue;
-                }
-                discovered += 1;
-                control_point(&conn, &job)?;
-                conn.execute("UPDATE jobs SET current_file=?2,stage='validation',stage_processed_items=?3,stage_processed_bytes=?4,updated_at=?5 WHERE id=?1",params![job,path.to_string_lossy(),scan_processed,scan_processed_bytes,Utc::now().to_rfc3339()]).ok();
-                match fs::metadata(path) {
-                    Ok(meta) => {
-                        let size = meta.len() as i64;
-                        let modified = system_time(&meta);
-                        let prior:Option<(Option<String>,String,i64)>=conn.query_row("SELECT ji.sha256,CASE WHEN EXISTS(SELECT 1 FROM assets a WHERE a.hash=ji.sha256) THEN 'duplicate' ELSE ji.state END,ji.id FROM job_items ji WHERE ji.source_path=?1 AND ji.bytes=?2 AND ji.modified_at=?3 AND ji.sha256 IS NOT NULL AND ji.state IN('new','duplicate','consolidated') ORDER BY (ji.job_id=?4) DESC,ji.id DESC LIMIT 1",params![path.to_string_lossy(),size,modified,job],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(|e|e.to_string())?;
-                        if let Some((Some(hash), status, cached_item_id)) = prior {
-                            if matches!(status.as_str(), "new" | "duplicate") {
-                                if status == "duplicate" {
-                                    duplicates += 1;
-                                    event(
-                                        &conn,
-                                        &job,
-                                        &path.to_string_lossy(),
-                                        "duplicate",
-                                        "Conteúdo SHA-256 já inventariado",
-                                    );
-                                } else {
-                                    new_files += 1;
-                                    required += size
-                                }
-                                session_hashes.insert(hash.clone());
-                                conn.execute("INSERT INTO job_items(job_id,source_path,filename,extension,media_type,bytes,modified_at,sha256,current_stage,state,validation_state,created_at,updated_at,captured_at,date_source,width,height,duration,camera,latitude,longitude)SELECT ?1,?2,filename,extension,media_type,bytes,modified_at,sha256,'deduplication',?3,validation_state,?4,?4,captured_at,date_source,width,height,duration,camera,latitude,longitude FROM job_items WHERE id=?5 ON CONFLICT(job_id,source_path)DO UPDATE SET sha256=excluded.sha256,state=excluded.state,current_stage='deduplication',updated_at=excluded.updated_at",params![job,path.to_string_lossy(),status,Utc::now().to_rfc3339(),cached_item_id]).map_err(|e|e.to_string())?;
-                                conn.execute("INSERT OR IGNORE INTO pending_files(job_id,path,filename,extension,media_type,bytes,modified_at,hash,status)VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",params![job,path.to_string_lossy(),path.file_name().unwrap_or_default().to_string_lossy(),ext,media_type(&ext),size,system_time(&meta),hash,status]).map_err(|e|e.to_string())?;
-                                event(&conn,&job,&path.to_string_lossy(),"cache_hit","Validação, metadados e hash reutilizados de uma análise anterior");
-                                scan_processed += 1;
-                                scan_processed_bytes += size;
-                                conn.execute("UPDATE jobs SET processed_items=?2,processed_bytes=?3,stage_processed_items=?2,stage_processed_bytes=?3 WHERE id=?1",params![job,scan_processed,scan_processed_bytes]).ok();
-                                continue;
-                            }
-                        }
-                        drop(conn);
-                        let validation_started = Instant::now();
-                        let checked = validation_cache
-                            .remove(&cache_key(path))
-                            .unwrap_or_else(|| crate::media::validate(path, &ext, cancel));
-                        let validation_duration = validation_started.elapsed().as_millis() as i64;
-                        validation_ms += validation_duration;
-                        conn = catalog::open(&catalog_path).map_err(|e| e.to_string())?;
-                        if cancel.is_cancelled() {
-                            conn.execute(
-                                "UPDATE jobs SET state='canceled',finished_at=?2,updated_at=?2 WHERE id=?1",
-                                params![job,Utc::now().to_rfc3339()],
-                            ).ok();
-                            return Err("JOB_CANCELED".into());
-                        }
-                        let item_id=conn.query_row("INSERT INTO job_items(job_id,source_path,filename,extension,media_type,bytes,modified_at,current_stage,state,validation_state,created_at,updated_at)VALUES(?1,?2,?3,?4,?5,?6,?7,'validation',?8,?9,?10,?10)ON CONFLICT(job_id,source_path)DO UPDATE SET state=excluded.state,validation_state=excluded.validation_state,updated_at=excluded.updated_at RETURNING id",params![job,path.to_string_lossy(),path.file_name().unwrap_or_default().to_string_lossy(),ext,media_type(&ext),size,system_time(&meta),if checked.state.accepted(){"processing"}else{"review"},checked.state.as_str(),Utc::now().to_rfc3339()],|r|r.get::<_,i64>(0)).map_err(|e|e.to_string())?;
-                        conn.execute("INSERT INTO media_validation(job_item_id,state,tool,details,checked_at)VALUES(?1,?2,?3,?4,?5)ON CONFLICT(job_item_id)DO UPDATE SET state=excluded.state,tool=excluded.tool,details=excluded.details,checked_at=excluded.checked_at",params![item_id,checked.state.as_str(),checked.tool,checked.details,Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
-                        conn.execute("INSERT INTO process_events(job_id,job_item_id,at,tool,logical_command,duration_ms,exit_code,state,error_kind,details)VALUES(?1,?2,?3,?4,'media validation',?5,?6,?7,?8,?9)",params![job,item_id,Utc::now().to_rfc3339(),checked.tool,validation_duration,if checked.state.accepted(){Some(0)}else{None},if checked.state.accepted(){"completed"}else{"failed"},if checked.state.accepted(){None::<String>}else{Some(checked.state.as_str().to_string())},crate::process::sanitize(&checked.details)]).ok();
-                        if !checked.state.accepted() {
-                            invalid += 1;
+    for inventoried_path in &media_paths {
+        let path = inventoried_path.as_path();
+        let ext = path
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if !MEDIA.contains(&ext.as_str()) {
+            excluded += 1;
+            event(
+                &conn,
+                &job,
+                &path.to_string_lossy(),
+                "excluded",
+                "Formato ignorado pela política de importação",
+            );
+            continue;
+        }
+        discovered += 1;
+        control_point(&conn, &job)?;
+        if progress_due(scan_processed, scan_total) {
+            conn.execute("UPDATE jobs SET current_file=?2,stage='validation',stage_processed_items=?3,stage_processed_bytes=?4,updated_at=?5 WHERE id=?1",params![job,path.to_string_lossy(),scan_processed,scan_processed_bytes,Utc::now().to_rfc3339()]).ok();
+        }
+        match fs::metadata(path) {
+            Ok(meta) => {
+                let size = meta.len() as i64;
+                let modified = system_time(&meta);
+                let prior:Option<(Option<String>,String,i64)>=conn.query_row("SELECT ji.sha256,CASE WHEN EXISTS(SELECT 1 FROM assets a WHERE a.hash=ji.sha256) THEN 'duplicate' ELSE ji.state END,ji.id FROM job_items ji WHERE ji.source_path=?1 AND ji.bytes=?2 AND ji.modified_at=?3 AND ji.sha256 IS NOT NULL AND ji.state IN('new','duplicate','consolidated') ORDER BY (ji.job_id=?4) DESC,ji.id DESC LIMIT 1",params![path.to_string_lossy(),size,modified,job],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(|e|e.to_string())?;
+                if let Some((Some(hash), status, cached_item_id)) = prior {
+                    if matches!(status.as_str(), "new" | "duplicate") {
+                        if status == "duplicate" {
+                            duplicates += 1;
                             event(
                                 &conn,
                                 &job,
                                 &path.to_string_lossy(),
-                                "validation_failed",
-                                checked.state.as_str(),
+                                "duplicate",
+                                "Conteúdo SHA-256 já inventariado",
                             );
-                            scan_processed += 1;
-                            scan_processed_bytes += size;
-                            conn.execute("UPDATE jobs SET processed_items=?2,processed_bytes=?3,stage_processed_items=?2,stage_processed_bytes=?3 WHERE id=?1",params![job,scan_processed,scan_processed_bytes]).ok();
-                            continue;
+                        } else {
+                            new_files += 1;
+                            required += size
                         }
-                        conn.execute("UPDATE jobs SET stage='metadata',current_file=?2,updated_at=?3 WHERE id=?1",params![job,path.to_string_lossy(),Utc::now().to_rfc3339()]).ok();
-                        drop(conn);
-                        let fallback_time = system_time(&meta);
-                        let (
-                            captured,
-                            date_source,
-                            width,
-                            height,
-                            duration,
-                            camera,
-                            latitude,
-                            longitude,
-                        ) = metadata_cache
-                            .remove(&cache_key(path))
-                            .map(|mut value| {
-                                if value.0.is_empty() {
-                                    value.0 = fallback_time.clone()
-                                }
-                                value
-                            })
-                            .unwrap_or_else(|| capture_metadata(path, &fallback_time, cancel));
-                        conn = catalog::open(&catalog_path).map_err(|e| e.to_string())?;
-                        if cancel.is_cancelled() {
-                            return Err("JOB_CANCELED".into());
-                        }
-                        conn.execute("UPDATE job_items SET captured_at=?2,date_source=?3,width=?4,height=?5,duration=?6,camera=?7,latitude=?8,longitude=?9,current_stage='metadata',updated_at=?10 WHERE id=?1",params![item_id,captured,date_source,width,height,duration,camera,latitude,longitude,Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
+                        session_hashes.insert(hash.clone());
+                        conn.execute("INSERT INTO job_items(job_id,source_path,filename,extension,media_type,bytes,modified_at,sha256,current_stage,state,validation_state,created_at,updated_at,captured_at,date_source,width,height,duration,camera,latitude,longitude)SELECT ?1,?2,filename,extension,media_type,bytes,modified_at,sha256,'deduplication',?3,validation_state,?4,?4,captured_at,date_source,width,height,duration,camera,latitude,longitude FROM job_items WHERE id=?5 ON CONFLICT(job_id,source_path)DO UPDATE SET sha256=excluded.sha256,state=excluded.state,current_stage='deduplication',updated_at=excluded.updated_at",params![job,path.to_string_lossy(),status,Utc::now().to_rfc3339(),cached_item_id]).map_err(|e|e.to_string())?;
+                        conn.execute("INSERT OR IGNORE INTO pending_files(job_id,path,filename,extension,media_type,bytes,modified_at,hash,status)VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",params![job,path.to_string_lossy(),path.file_name().unwrap_or_default().to_string_lossy(),ext,media_type(&ext),size,system_time(&meta),hash,status]).map_err(|e|e.to_string())?;
+                        event(
+                            &conn,
+                            &job,
+                            &path.to_string_lossy(),
+                            "cache_hit",
+                            "Validação, metadados e hash reutilizados de uma análise anterior",
+                        );
                         scan_processed += 1;
                         scan_processed_bytes += size;
+                        if progress_due(scan_processed, scan_total) {
+                            conn.execute("UPDATE jobs SET processed_items=?2,processed_bytes=?3,stage_processed_items=?2,stage_processed_bytes=?3 WHERE id=?1",params![job,scan_processed,scan_processed_bytes]).ok();
+                        }
+                        continue;
+                    }
+                }
+                drop(conn);
+                let validation_started = Instant::now();
+                let checked = validation_cache
+                    .remove(&cache_key(path))
+                    .unwrap_or_else(|| crate::media::validate(path, &ext, cancel));
+                let validation_duration = validation_started.elapsed().as_millis() as i64;
+                validation_ms += validation_duration;
+                conn = catalog::open(&catalog_path).map_err(|e| e.to_string())?;
+                if cancel.is_cancelled() {
+                    conn.execute(
+                        "UPDATE jobs SET state='canceled',finished_at=?2,updated_at=?2 WHERE id=?1",
+                        params![job, Utc::now().to_rfc3339()],
+                    )
+                    .ok();
+                    return Err("JOB_CANCELED".into());
+                }
+                let item_id=conn.query_row("INSERT INTO job_items(job_id,source_path,filename,extension,media_type,bytes,modified_at,current_stage,state,validation_state,created_at,updated_at)VALUES(?1,?2,?3,?4,?5,?6,?7,'validation',?8,?9,?10,?10)ON CONFLICT(job_id,source_path)DO UPDATE SET state=excluded.state,validation_state=excluded.validation_state,updated_at=excluded.updated_at RETURNING id",params![job,path.to_string_lossy(),path.file_name().unwrap_or_default().to_string_lossy(),ext,media_type(&ext),size,system_time(&meta),if checked.state.accepted(){"processing"}else{"review"},checked.state.as_str(),Utc::now().to_rfc3339()],|r|r.get::<_,i64>(0)).map_err(|e|e.to_string())?;
+                conn.execute("INSERT INTO media_validation(job_item_id,state,tool,details,checked_at)VALUES(?1,?2,?3,?4,?5)ON CONFLICT(job_item_id)DO UPDATE SET state=excluded.state,tool=excluded.tool,details=excluded.details,checked_at=excluded.checked_at",params![item_id,checked.state.as_str(),checked.tool,checked.details,Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
+                conn.execute("INSERT INTO process_events(job_id,job_item_id,at,tool,logical_command,duration_ms,exit_code,state,error_kind,details)VALUES(?1,?2,?3,?4,'media validation',?5,?6,?7,?8,?9)",params![job,item_id,Utc::now().to_rfc3339(),checked.tool,validation_duration,if checked.state.accepted(){Some(0)}else{None},if checked.state.accepted(){"completed"}else{"failed"},if checked.state.accepted(){None::<String>}else{Some(checked.state.as_str().to_string())},crate::process::sanitize(&checked.details)]).ok();
+                if !checked.state.accepted() {
+                    invalid += 1;
+                    event(
+                        &conn,
+                        &job,
+                        &path.to_string_lossy(),
+                        "validation_failed",
+                        checked.state.as_str(),
+                    );
+                    scan_processed += 1;
+                    scan_processed_bytes += size;
+                    if progress_due(scan_processed, scan_total) {
                         conn.execute("UPDATE jobs SET processed_items=?2,processed_bytes=?3,stage_processed_items=?2,stage_processed_bytes=?3 WHERE id=?1",params![job,scan_processed,scan_processed_bytes]).ok();
-                        let key = cache_key(path);
-                        if !hash_candidates.contains(&key) && !hash_cache.contains_key(&key) {
+                    }
+                    continue;
+                }
+                conn.execute(
+                    "UPDATE jobs SET stage='metadata',current_file=?2,updated_at=?3 WHERE id=?1",
+                    params![job, path.to_string_lossy(), Utc::now().to_rfc3339()],
+                )
+                .ok();
+                drop(conn);
+                let fallback_time = system_time(&meta);
+                let (captured, date_source, width, height, duration, camera, latitude, longitude) =
+                    metadata_cache
+                        .remove(&cache_key(path))
+                        .map(|mut value| {
+                            if value.0.is_empty() {
+                                value.0 = fallback_time.clone()
+                            }
+                            value
+                        })
+                        .unwrap_or_else(|| capture_metadata(path, &fallback_time, cancel));
+                conn = catalog::open(&catalog_path).map_err(|e| e.to_string())?;
+                if cancel.is_cancelled() {
+                    return Err("JOB_CANCELED".into());
+                }
+                conn.execute("UPDATE job_items SET captured_at=?2,date_source=?3,width=?4,height=?5,duration=?6,camera=?7,latitude=?8,longitude=?9,current_stage='metadata',updated_at=?10 WHERE id=?1",params![item_id,captured,date_source,width,height,duration,camera,latitude,longitude,Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
+                scan_processed += 1;
+                scan_processed_bytes += size;
+                if progress_due(scan_processed, scan_total) {
+                    conn.execute("UPDATE jobs SET processed_items=?2,processed_bytes=?3,stage_processed_items=?2,stage_processed_bytes=?3 WHERE id=?1",params![job,scan_processed,scan_processed_bytes]).ok();
+                }
+                let key = cache_key(path);
+                if !hash_candidates.contains(&key) && !hash_cache.contains_key(&key) {
+                    new_files += 1;
+                    required += size;
+                    conn.execute("UPDATE job_items SET sha256=NULL,current_stage='deduplication',state='new',updated_at=?2 WHERE id=?1",params![item_id,Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
+                    conn.execute("INSERT INTO pending_files(job_id,path,filename,extension,media_type,bytes,modified_at,hash,status)VALUES(?1,?2,?3,?4,?5,?6,?7,NULL,'new')ON CONFLICT(job_id,path)DO UPDATE SET filename=excluded.filename,extension=excluded.extension,media_type=excluded.media_type,bytes=excluded.bytes,modified_at=excluded.modified_at,status='new',error=NULL",params![job,path.to_string_lossy(),path.file_name().unwrap_or_default().to_string_lossy(),ext,media_type(&ext),size,system_time(&meta)]).map_err(|e|e.to_string())?;
+                    event(
+                        &conn,
+                        &job,
+                        &path.to_string_lossy(),
+                        "hash_deferred",
+                        "Sem candidato do mesmo tamanho; SHA-256 será calculado durante a cópia",
+                    );
+                    continue;
+                }
+                conn.execute(
+                    "UPDATE jobs SET stage='hashing',current_file=?2,updated_at=?3 WHERE id=?1",
+                    params![job, path.to_string_lossy(), Utc::now().to_rfc3339()],
+                )
+                .ok();
+                drop(conn);
+                let hash_result = hash_cache
+                    .remove(&key)
+                    .unwrap_or_else(|| crate::storage::sha256_cancel(path, Some(cancel)));
+                conn = catalog::open(&catalog_path).map_err(|e| e.to_string())?;
+                match hash_result {
+                    Ok(hash) => {
+                        let in_catalog: bool = conn
+                            .query_row(
+                                "SELECT EXISTS(SELECT 1 FROM assets WHERE hash=?1)",
+                                [&hash],
+                                |r| r.get(0),
+                            )
+                            .unwrap_or(false);
+                        let duplicate = in_catalog || !session_hashes.insert(hash.clone());
+                        conn.execute("UPDATE jobs SET stage='deduplication',current_file=?2,updated_at=?3 WHERE id=?1",params![job,path.to_string_lossy(),Utc::now().to_rfc3339()]).ok();
+                        let status = if duplicate {
+                            duplicates += 1;
+                            event(
+                                &conn,
+                                &job,
+                                &path.to_string_lossy(),
+                                "duplicate",
+                                "Conteúdo SHA-256 já inventariado",
+                            );
+                            "duplicate"
+                        } else {
                             new_files += 1;
                             required += size;
-                            conn.execute("UPDATE job_items SET sha256=NULL,current_stage='deduplication',state='new',updated_at=?2 WHERE id=?1",params![item_id,Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
-                            conn.execute("INSERT INTO pending_files(job_id,path,filename,extension,media_type,bytes,modified_at,hash,status)VALUES(?1,?2,?3,?4,?5,?6,?7,NULL,'new')ON CONFLICT(job_id,path)DO UPDATE SET filename=excluded.filename,extension=excluded.extension,media_type=excluded.media_type,bytes=excluded.bytes,modified_at=excluded.modified_at,status='new',error=NULL",params![job,path.to_string_lossy(),path.file_name().unwrap_or_default().to_string_lossy(),ext,media_type(&ext),size,system_time(&meta)]).map_err(|e|e.to_string())?;
-                            event(&conn,&job,&path.to_string_lossy(),"hash_deferred","Sem candidato do mesmo tamanho; SHA-256 será calculado durante a cópia");
-                            continue;
-                        }
-                        conn.execute("UPDATE jobs SET stage='hashing',current_file=?2,updated_at=?3 WHERE id=?1",params![job,path.to_string_lossy(),Utc::now().to_rfc3339()]).ok();
-                        drop(conn);
-                        let hash_result = hash_cache
-                            .remove(&key)
-                            .unwrap_or_else(|| crate::storage::sha256_cancel(path, Some(cancel)));
-                        conn = catalog::open(&catalog_path).map_err(|e| e.to_string())?;
-                        match hash_result {
-                            Ok(hash) => {
-                                let in_catalog: bool = conn
-                                    .query_row(
-                                        "SELECT EXISTS(SELECT 1 FROM assets WHERE hash=?1)",
-                                        [&hash],
-                                        |r| r.get(0),
-                                    )
-                                    .unwrap_or(false);
-                                let duplicate = in_catalog || !session_hashes.insert(hash.clone());
-                                conn.execute("UPDATE jobs SET stage='deduplication',current_file=?2,updated_at=?3 WHERE id=?1",params![job,path.to_string_lossy(),Utc::now().to_rfc3339()]).ok();
-                                let status = if duplicate {
-                                    duplicates += 1;
-                                    event(
-                                        &conn,
-                                        &job,
-                                        &path.to_string_lossy(),
-                                        "duplicate",
-                                        "Conteúdo SHA-256 já inventariado",
-                                    );
-                                    "duplicate"
-                                } else {
-                                    new_files += 1;
-                                    required += size;
-                                    "new"
-                                };
-                                conn.execute("UPDATE job_items SET sha256=?2,current_stage='deduplication',state=?3,updated_at=?4 WHERE id=?1",params![item_id,hash,status,Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
-                                conn.execute("INSERT INTO pending_files(job_id,path,filename,extension,media_type,bytes,modified_at,hash,status)VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",params![job,path.to_string_lossy(),path.file_name().unwrap_or_default().to_string_lossy(),ext,media_type(&ext),size,system_time(&meta),hash,status]).map_err(|e|e.to_string())?;
-                            }
-                            Err(err) => {
-                                if err == "JOB_CANCELED" {
-                                    return Err(err);
-                                }
-                                invalid += 1;
-                                conn.execute("UPDATE job_items SET state='review',last_error_kind='unreadable',last_error=?2 WHERE id=?1",params![item_id,err]).ok();
-                                event(
-                                    &conn,
-                                    &job,
-                                    &path.to_string_lossy(),
-                                    "failed",
-                                    "Falha no SHA-256",
-                                )
-                            }
-                        }
+                            "new"
+                        };
+                        conn.execute("UPDATE job_items SET sha256=?2,current_stage='deduplication',state=?3,updated_at=?4 WHERE id=?1",params![item_id,hash,status,Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
+                        conn.execute("INSERT INTO pending_files(job_id,path,filename,extension,media_type,bytes,modified_at,hash,status)VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",params![job,path.to_string_lossy(),path.file_name().unwrap_or_default().to_string_lossy(),ext,media_type(&ext),size,system_time(&meta),hash,status]).map_err(|e|e.to_string())?;
                     }
                     Err(err) => {
+                        if err == "JOB_CANCELED" {
+                            return Err(err);
+                        }
                         invalid += 1;
+                        conn.execute("UPDATE job_items SET state='review',last_error_kind='unreadable',last_error=?2 WHERE id=?1",params![item_id,err]).ok();
                         event(
                             &conn,
                             &job,
                             &path.to_string_lossy(),
                             "failed",
-                            &err.to_string(),
+                            "Falha no SHA-256",
                         )
                     }
                 }
             }
-            Ok(_) => {}
             Err(err) => {
                 invalid += 1;
-                event(&conn, &job, source_path, "failed", &err.to_string())
+                event(
+                    &conn,
+                    &job,
+                    &path.to_string_lossy(),
+                    "failed",
+                    &err.to_string(),
+                )
             }
         }
     }
@@ -1141,11 +1169,13 @@ pub fn consolidate_cancel(
                 conn.execute("UPDATE jobs SET stage='copying_and_identifying',current_file=?2,updated_at=?3 WHERE id=?1",params![job,path,Utc::now().to_rfc3339()]).ok();
                 drop(conn);
                 let deferred_copy_started = Instant::now();
+                let _io = crate::resource::io(crate::resource::Priority::Background);
                 let value = crate::storage::copy_hash_to_temp_verified(
                     &source,
                     &deferred_temp,
                     Some(cancel),
                 )?;
+                drop(_io);
                 item_copy_ms += deferred_copy_started.elapsed().as_millis() as i64;
                 conn = catalog::open(&db_path).map_err(|e| e.to_string())?;
                 conn.execute(
@@ -1229,6 +1259,7 @@ pub fn consolidate_cancel(
             ).map_err(|e|e.to_string())?;
             drop(conn);
             let copy_started = Instant::now();
+            let _io = crate::resource::io(crate::resource::Priority::Background);
             let copy_result = if pre_copied {
                 crate::storage::promote_preverified_temp(&temp, &dest, &hash)
             } else {
@@ -1242,6 +1273,7 @@ pub fn consolidate_cancel(
                     }
                 })
             };
+            drop(_io);
             copy_ms += copy_started.elapsed().as_millis() as i64;
             conn = catalog::open(&db_path).map_err(|e| e.to_string())?;
             if let Err(err) = copy_result {
@@ -1308,12 +1340,14 @@ pub fn consolidate_cancel(
         } else {
             None
         };
-        conn.execute("UPDATE jobs SET processed_items=?2,processed_bytes=?3,stage_processed_items=?2,stage_total_items=?8,stage_processed_bytes=?3,stage_total_bytes=?9,imported_count=?4,duplicate_count=?5,failed_count=?6,stage='copying',backup_state='pending',bytes_per_second=?10,estimated_seconds_remaining=?11,updated_at=?7 WHERE id=?1",params![job,processed_items,processed_bytes,imported,duplicate_count,failed,Utc::now().to_rfc3339(),total_items,total_bytes,moving_speed,eta]).ok();
-        conn.execute(
-            "UPDATE job_counters SET imported=?2,duplicates=?3,failed=?4 WHERE job_id=?1",
-            params![job, imported, duplicate_count, failed],
-        )
-        .ok();
+        if progress_due(processed_items, total_items) {
+            conn.execute("UPDATE jobs SET processed_items=?2,processed_bytes=?3,stage_processed_items=?2,stage_total_items=?8,stage_processed_bytes=?3,stage_total_bytes=?9,imported_count=?4,duplicate_count=?5,failed_count=?6,stage='copying',backup_state='pending',bytes_per_second=?10,estimated_seconds_remaining=?11,updated_at=?7 WHERE id=?1",params![job,processed_items,processed_bytes,imported,duplicate_count,failed,Utc::now().to_rfc3339(),total_items,total_bytes,moving_speed,eta]).ok();
+            conn.execute(
+                "UPDATE job_counters SET imported=?2,duplicates=?3,failed=?4 WHERE job_id=?1",
+                params![job, imported, duplicate_count, failed],
+            )
+            .ok();
+        }
     }
     conn.execute("UPDATE sources SET asset_count=(SELECT COUNT(*) FROM occurrences WHERE source_id=?1),last_scan=?2 WHERE id=?1",params![source_id,Utc::now().to_rfc3339()]).ok();
     let remaining: i64 = conn
@@ -1369,12 +1403,13 @@ pub fn process_thumbnail_queue(
             break;
         }
         let conn = catalog::open(&db_path).map_err(|e| e.to_string())?;
-        let next=conn.query_row("SELECT q.id,a.id,a.master_path,a.extension,a.hash FROM work_queue q JOIN assets a ON a.id=q.asset_id WHERE q.job_id=?1 AND q.kind='thumbnail' AND q.state='pending' ORDER BY q.id LIMIT 1",[job],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?))).optional().map_err(|e|e.to_string())?;
+        let next=conn.query_row("SELECT q.id,a.id,a.master_path,a.extension,a.hash FROM work_queue q JOIN assets a ON a.id=q.asset_id WHERE q.job_id=?1 AND q.kind='thumbnail' AND q.state='pending' ORDER BY q.priority DESC,q.id LIMIT 1",[job],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?))).optional().map_err(|e|e.to_string())?;
         let Some((qid, asset, path, ext, hash)) = next else {
             break;
         };
         conn.execute("UPDATE work_queue SET state='processing',attempts=attempts+1,updated_at=?2 WHERE id=?1",params![qid,Utc::now().to_rfc3339()]).ok();
         drop(conn);
+        let _io = crate::resource::io(crate::resource::Priority::Interactive);
         let result = crate::media::generate_thumbnail(
             Path::new(&path),
             &ext,
@@ -1382,12 +1417,13 @@ pub fn process_thumbnail_queue(
             &Path::new(&cfg.master_path).join(".lumina/cache"),
             cancel,
         );
+        drop(_io);
         let conn = catalog::open(&db_path).map_err(|e| e.to_string())?;
         match result {
             Ok(thumb) => {
                 generated += 1;
-                conn.execute("UPDATE work_queue SET state='completed',last_error=NULL,updated_at=?2 WHERE id=?1",params![qid,Utc::now().to_rfc3339()]).ok();
                 conn.execute("UPDATE thumbnails SET generator_version=?2,path=?3,state='ready',last_error=NULL,updated_at=?4 WHERE asset_id=?1",params![asset,crate::media::THUMBNAIL_VERSION,thumb.to_string_lossy(),Utc::now().to_rfc3339()]).ok();
+                conn.execute("UPDATE work_queue SET state='completed',last_error=NULL,updated_at=?2 WHERE id=?1",params![qid,Utc::now().to_rfc3339()]).ok();
             }
             Err(error) => {
                 failed += 1;
@@ -1411,53 +1447,96 @@ pub fn process_thumbnail_queue(
     Ok(())
 }
 
-pub fn verify(cfg: &LibraryConfig) -> Result<VerifyResult, String> {
+pub fn queue_verification(cfg: &LibraryConfig) -> Result<String, String> {
     let conn = catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite"))
         .map_err(|e| e.to_string())?;
-    let mut stmt = conn
-        .prepare("SELECT asset_id,path,hash FROM backup_entries")
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-            ))
-        })
-        .map_err(|e| e.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
-    drop(stmt);
-    drop(conn);
-    let mut checked = 0;
-    let mut errors = 0;
-    for (id, path, hash) in rows {
-        checked += 1;
-        let verified = crate::backup::verify(Path::new(&path), &hash);
-        let conn = catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite"))
+    let job = Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
+    conn.execute("INSERT OR IGNORE INTO sources(id,name,path,volume_label,available)VALUES('_lumina_maintenance','Manutenção da biblioteca','lumina://maintenance','internal',1)",[]).map_err(|e|e.to_string())?;
+    conn.execute("INSERT INTO jobs(id,source_id,source_path,state,stage,created_at,updated_at,total_items,total_bytes)VALUES(?1,'_lumina_maintenance','lumina://verification','queued','verification',?2,?2,(SELECT COUNT(*) FROM backup_entries),(SELECT COALESCE(SUM(a.bytes),0) FROM backup_entries b JOIN assets a ON a.id=b.asset_id))",params![job,now]).map_err(|e|e.to_string())?;
+    conn.execute("INSERT INTO work_queue(job_id,asset_id,kind,state,created_at,updated_at)SELECT ?1,asset_id,'verification','pending',?2,?2 FROM backup_entries",params![job,now]).map_err(|e|e.to_string())?;
+    Ok(job)
+}
+pub fn verify_job(
+    cfg: &LibraryConfig,
+    job: &str,
+    cancel: &crate::process::CancellationToken,
+) -> Result<VerifyResult, String> {
+    let db_path = Path::new(&cfg.master_path).join(".lumina/catalog.sqlite");
+    let conn = catalog::open(&db_path).map_err(|e| e.to_string())?;
+    let now = Utc::now().to_rfc3339();
+    conn.execute("UPDATE work_queue SET state='pending',updated_at=?2 WHERE job_id=?1 AND kind='verification' AND state='processing'",params![job,now]).map_err(|e|e.to_string())?;
+    conn.execute("UPDATE jobs SET state='protecting',stage='verification',processed_items=0,processed_bytes=0,updated_at=?2 WHERE id=?1",params![job,now]).map_err(|e|e.to_string())?;
+    let rows = {
+        let mut statement=conn.prepare("SELECT q.id,b.asset_id,b.path,b.hash,a.bytes FROM work_queue q JOIN backup_entries b ON b.asset_id=q.asset_id JOIN assets a ON a.id=b.asset_id WHERE q.job_id=?1 AND q.kind='verification' AND q.state IN('pending','failed') ORDER BY q.id").map_err(|e|e.to_string())?;
+        let values = statement
+            .query_map([job], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
+        values
+    };
+    let total = rows.len() as i64;
+    let total_bytes = rows.iter().map(|row| row.4).sum::<i64>();
+    let mut checked = 0;
+    let mut checked_bytes = 0;
+    let mut errors = 0;
+    for (qid, asset, path, hash, bytes) in rows {
+        control_point(&conn, job)?;
+        if cancel.is_cancelled() {
+            return Err("JOB_CANCELED".into());
+        }
+        conn.execute("UPDATE work_queue SET state='processing',attempts=attempts+1,updated_at=?2 WHERE id=?1",params![qid,Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
+        let _io = crate::resource::io(crate::resource::Priority::Background);
+        let verified = crate::backup::verify(Path::new(&path), &hash);
+        drop(_io);
+        checked += 1;
+        checked_bytes += bytes;
         if verified {
             conn.execute(
                 "UPDATE backup_entries SET state='verified',verified_at=?2 WHERE asset_id=?1",
-                params![id, Utc::now().to_rfc3339()],
+                params![asset, Utc::now().to_rfc3339()],
             )
-            .ok();
+            .map_err(|e| e.to_string())?;
+            conn.execute(
+                "UPDATE work_queue SET state='completed',last_error=NULL,updated_at=?2 WHERE id=?1",
+                params![qid, Utc::now().to_rfc3339()],
+            )
+            .map_err(|e| e.to_string())?;
         } else {
             errors += 1;
             conn.execute(
                 "UPDATE backup_entries SET state='error' WHERE asset_id=?1",
-                [&id],
+                [&asset],
             )
-            .ok();
+            .map_err(|e| e.to_string())?;
             conn.execute(
                 "UPDATE assets SET protection_state='error' WHERE id=?1",
-                [id],
+                [&asset],
             )
-            .ok();
+            .map_err(|e| e.to_string())?;
+            conn.execute("UPDATE work_queue SET state='failed',last_error='Hash da réplica não confere',updated_at=?2 WHERE id=?1",params![qid,Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
+        }
+        if progress_due(checked, total) {
+            conn.execute("UPDATE jobs SET processed_items=?2,total_items=?3,processed_bytes=?4,total_bytes=?5,current_file=?6,updated_at=?7 WHERE id=?1",params![job,checked,total,checked_bytes,total_bytes,path,Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
         }
     }
+    let state = if errors == 0 { "completed" } else { "failed" };
+    conn.execute("UPDATE jobs SET state=?2,stage=?3,current_file=NULL,finished_at=?4,updated_at=?4,failed_count=?5 WHERE id=?1",params![job,state,if errors==0{"completed"}else{"verification_error"},Utc::now().to_rfc3339(),errors]).map_err(|e|e.to_string())?;
     Ok(VerifyResult { checked, errors })
+}
+#[cfg(test)]
+pub fn verify(cfg: &LibraryConfig) -> Result<VerifyResult, String> {
+    let job = queue_verification(cfg)?;
+    verify_job(cfg, &job, &crate::process::CancellationToken::default())
 }
 
 pub fn protection_stats(
@@ -1483,6 +1562,28 @@ pub fn protection_stats(
         })
     })
     .map_err(|e| e.to_string())
+}
+
+fn write_backup_manifest(conn: &rusqlite::Connection, cfg: &LibraryConfig) -> Result<(), String> {
+    use sha2::{Digest, Sha256};
+    let mut statement = conn.prepare("SELECT asset_id,hash,path,verified_at FROM backup_entries WHERE state='verified' ORDER BY asset_id").map_err(|e|e.to_string())?;
+    let entries = statement.query_map([],|row|Ok(serde_json::json!({"assetId":row.get::<_,String>(0)?,"sha256":row.get::<_,String>(1)?,"backupPath":row.get::<_,String>(2)?,"verifiedAt":row.get::<_,Option<String>>(3)?}))).map_err(|e|e.to_string())?.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())?;
+    let payload = entries
+        .iter()
+        .map(|entry| serde_json::to_string(entry).unwrap())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let checksum = format!("{:x}", Sha256::digest(payload.as_bytes()));
+    let header = serde_json::json!({"type":"lumina-manifest","schemaVersion":1,"generatedAt":Utc::now().to_rfc3339(),"entries":entries.len(),"payloadSha256":checksum});
+    let contents = if payload.is_empty() {
+        format!("{}\n", header)
+    } else {
+        format!("{}\n{}\n", header, payload)
+    };
+    crate::storage::atomic_write(
+        &Path::new(&cfg.backup_path).join("manifest.jsonl"),
+        contents.as_bytes(),
+    )
 }
 
 pub fn protect_job(
@@ -1525,6 +1626,7 @@ pub fn protect_job(
     let mut done = 0i64;
     let mut done_bytes = 0i64;
     let mut failures = 0i64;
+    let mut first_failure: Option<String> = None;
     for (qid, asset, master, hash, bytes) in rows {
         control_point(&conn, job)?;
         if cancel.is_cancelled() {
@@ -1541,43 +1643,49 @@ pub fn protect_job(
         let destination = Path::new(&cfg.backup_path).join("originais").join(rel);
         conn.execute("UPDATE work_queue SET state='processing',attempts=attempts+1,updated_at=?2 WHERE id=?1",params![qid,Utc::now().to_rfc3339()]).ok();
         drop(conn);
+        let _io = crate::resource::io(crate::resource::Priority::Background);
         let result = crate::backup::replicate(Path::new(&master), &destination, &hash);
+        drop(_io);
         conn = catalog::open(&db_path).map_err(|e| e.to_string())?;
         match result {
             Ok(_) => {
-                conn.execute("UPDATE work_queue SET state='completed',last_error=NULL,updated_at=?2 WHERE id=?1",params![qid,Utc::now().to_rfc3339()]).ok();
-                conn.execute("INSERT INTO backup_entries(asset_id,path,hash,verified_at,state)VALUES(?1,?2,?3,?4,'verified')ON CONFLICT(asset_id)DO UPDATE SET path=excluded.path,hash=excluded.hash,verified_at=excluded.verified_at,state='verified'",params![asset,destination.to_string_lossy(),hash,Utc::now().to_rfc3339()]).ok();
+                conn.execute("INSERT INTO backup_entries(asset_id,path,hash,verified_at,state)VALUES(?1,?2,?3,?4,'verified')ON CONFLICT(asset_id)DO UPDATE SET path=excluded.path,hash=excluded.hash,verified_at=excluded.verified_at,state='verified'",params![asset,destination.to_string_lossy(),hash,Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
                 conn.execute(
                     "UPDATE assets SET protection_state='replica_verified' WHERE id=?1",
                     [&asset],
                 )
-                .ok();
-                if let Ok(mut manifest) = OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(Path::new(&cfg.backup_path).join("manifest.jsonl"))
-                {
-                    let line = serde_json::json!({"assetId":asset,"sha256":hash,"masterPath":master,"backupPath":destination,"verifiedAt":Utc::now().to_rfc3339()});
-                    let _ = writeln!(manifest, "{}", line);
-                }
+                .map_err(|e| e.to_string())?;
+                conn.execute("UPDATE work_queue SET state='completed',last_error=NULL,updated_at=?2 WHERE id=?1",params![qid,Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
             }
             Err(error) => {
                 failures += 1;
+                if first_failure.is_none() {
+                    first_failure = Some(error.clone());
+                }
                 conn.execute(
                     "UPDATE work_queue SET state='failed',last_error=?2,updated_at=?3 WHERE id=?1",
                     params![qid, error, Utc::now().to_rfc3339()],
                 )
-                .ok();
+                .map_err(|e| e.to_string())?;
                 conn.execute(
                     "UPDATE assets SET protection_state='error' WHERE id=?1",
                     [&asset],
                 )
-                .ok();
+                .map_err(|e| e.to_string())?;
             }
         }
         done += 1;
         done_bytes += bytes;
-        conn.execute("UPDATE jobs SET processed_items=?2,processed_bytes=?3,stage_processed_items=?2,stage_total_items=?4,stage_processed_bytes=?3,stage_total_bytes=?5,current_file=?6,updated_at=?7 WHERE id=?1",params![job,done,done_bytes,total,pending_bytes,master,Utc::now().to_rfc3339()]).ok();
+        if progress_due(done, total) {
+            conn.execute("UPDATE jobs SET processed_items=?2,processed_bytes=?3,stage_processed_items=?2,stage_total_items=?4,stage_processed_bytes=?3,stage_total_bytes=?5,current_file=?6,updated_at=?7 WHERE id=?1",params![job,done,done_bytes,total,pending_bytes,master,Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
+        }
+    }
+    let mut final_error = first_failure.map(|error| format!("Falha ao replicar mídia: {error}"));
+    if failures == 0 {
+        if let Err(error) = write_backup_manifest(&conn, cfg) {
+            failures += 1;
+            final_error = Some(format!("Falha ao gravar manifesto verificado: {error}"));
+        }
     }
     let state = if failures == 0 {
         "completed"
@@ -1585,11 +1693,24 @@ pub fn protect_job(
         "backup_error"
     };
     let backup = if failures == 0 { "verified" } else { "error" };
-    conn.execute("UPDATE jobs SET state=?2,stage=?2,backup_state=?3,current_file=NULL,finished_at=?4,updated_at=?4 WHERE id=?1",params![job,state,backup,Utc::now().to_rfc3339()]).ok();
+    conn.execute("UPDATE jobs SET state=?2,stage=?2,backup_state=?3,current_file=NULL,finished_at=?4,updated_at=?4,interruption_reason=?5 WHERE id=?1",params![job,state,backup,Utc::now().to_rfc3339(),final_error]).map_err(|e|e.to_string())?;
+    if final_error.is_some() {
+        conn.execute("UPDATE assets SET protection_state='error' WHERE id IN(SELECT asset_id FROM work_queue WHERE job_id=?1 AND kind='backup')",[job]).map_err(|e|e.to_string())?;
+    }
     conn.execute("INSERT INTO job_metrics(job_id,stage,duration_ms,items,bytes,recorded_at)VALUES(?1,'backup_and_verify',?2,?3,?4,?5)ON CONFLICT(job_id,stage)DO UPDATE SET duration_ms=excluded.duration_ms,items=excluded.items,bytes=excluded.bytes,recorded_at=excluded.recorded_at",params![job,protection_started.elapsed().as_millis()as i64,total,pending_bytes,Utc::now().to_rfc3339()]).ok();
-    let catalog_backup = Path::new(&cfg.backup_path).join(".lumina");
-    fs::create_dir_all(&catalog_backup).ok();
-    fs::copy(&db_path, catalog_backup.join("catalog.sqlite")).ok();
+    if failures == 0 {
+        conn.execute_batch("PRAGMA wal_checkpoint(FULL)")
+            .map_err(|e| e.to_string())?;
+        if let Err(error) = catalog::snapshot(
+            &db_path,
+            &Path::new(&cfg.backup_path).join(".lumina/catalog.sqlite"),
+        ) {
+            let reason = format!("Falha ao criar snapshot consistente do catálogo: {error}");
+            conn.execute("UPDATE jobs SET state='backup_error',stage='backup_error',backup_state='error',interruption_reason=?2,updated_at=?3 WHERE id=?1",params![job,reason,Utc::now().to_rfc3339()]).ok();
+            conn.execute("UPDATE assets SET protection_state='error' WHERE id IN(SELECT asset_id FROM work_queue WHERE job_id=?1 AND kind='backup')",[job]).ok();
+            return Err(reason);
+        }
+    }
     event(
         &conn,
         job,
@@ -1601,7 +1722,11 @@ pub fn protect_job(
             "Proteção concluída com falhas"
         },
     );
-    Ok(())
+    if let Some(error) = final_error {
+        Err(error)
+    } else {
+        Ok(())
+    }
 }
 
 pub fn grouped_sources(conn: &rusqlite::Connection, asset: &str) -> Vec<String> {
@@ -1642,6 +1767,15 @@ pub fn duplicate_occurrences(conn: &rusqlite::Connection, asset: &str) -> Vec<Oc
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn progress_persistence_is_batched_for_large_jobs() {
+        let writes = (1..=1_500)
+            .filter(|done| progress_due(*done, 1_500))
+            .count();
+        assert_eq!(writes, 188);
+        assert!(writes < 200);
+    }
+
     fn test_image(path: &Path, color: [u8; 3]) {
         image::ImageBuffer::<image::Rgb<u8>, _>::from_pixel(8, 8, image::Rgb(color))
             .save_with_format(path, image::ImageFormat::Jpeg)
@@ -1779,6 +1913,103 @@ mod tests {
                 .get::<_, i64>(0))
                 .unwrap(),
             2
+        );
+        drop(conn);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn backup_failure_never_reports_the_asset_as_protected() {
+        let (root, cfg) = fixture();
+        let source = root.join("camera-failure");
+        fs::create_dir_all(&source).unwrap();
+        test_image(&source.join("IMG_0001.jpg"), [4, 5, 6]);
+        let summary = analyze(&cfg, source.to_str().unwrap(), "Camera").unwrap();
+        consolidate(&cfg, &summary.job_id).unwrap();
+        fs::remove_dir_all(&cfg.backup_path).unwrap();
+        fs::write(&cfg.backup_path, b"not a directory").unwrap();
+        assert!(protect_job(
+            &cfg,
+            &summary.job_id,
+            &crate::process::CancellationToken::default()
+        )
+        .is_err());
+        let conn =
+            catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite")).unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM assets WHERE protection_state='replica_verified'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+        assert_ne!(
+            conn.query_row(
+                "SELECT state FROM jobs WHERE id=?1",
+                [&summary.job_id],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "completed"
+        );
+        drop(conn);
+        fs::remove_file(&cfg.backup_path).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn verification_job_resumes_from_its_persistent_queue_after_cancel() {
+        let (root, cfg) = fixture();
+        let replica = root.join("backup/asset.jpg");
+        fs::write(&replica, b"verified bytes").unwrap();
+        let hash = hash_file(&replica).unwrap();
+        let conn =
+            catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite")).unwrap();
+        let now = Utc::now().to_rfc3339();
+        conn.execute("INSERT INTO assets(id,hash,filename,media_type,extension,captured_at,date_source,bytes,master_path,protection_state,created_at)VALUES('asset',?1,'asset.jpg','photo','jpg',?2,'file',14,'master.jpg','replica_verified',?2)",params![hash,now]).unwrap();
+        conn.execute("INSERT INTO backup_entries(asset_id,path,hash,verified_at,state)VALUES('asset',?1,?2,?3,'verified')",params![replica.to_string_lossy(),hash,now]).unwrap();
+        drop(conn);
+        let job = queue_verification(&cfg).unwrap();
+        let canceled = crate::process::CancellationToken::default();
+        canceled.cancel();
+        assert!(matches!(verify_job(&cfg, &job, &canceled), Err(error) if error == "JOB_CANCELED"));
+        let result = verify_job(&cfg, &job, &crate::process::CancellationToken::default()).unwrap();
+        assert_eq!((result.checked, result.errors), (1, 0));
+        let conn =
+            catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite")).unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT state FROM work_queue WHERE job_id=?1",
+                [job],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "completed"
+        );
+        drop(conn);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn analysis_enumerates_the_physical_source_once() {
+        let (root, cfg) = fixture();
+        let source = root.join("single-walk");
+        fs::create_dir_all(&source).unwrap();
+        test_image(&source.join("one.jpg"), [1, 2, 3]);
+        test_image(&source.join("two.jpg"), [3, 2, 1]);
+        let summary = analyze(&cfg, source.to_str().unwrap(), "single walk").unwrap();
+        let conn =
+            catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite")).unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT items FROM job_metrics WHERE job_id=?1 AND stage='inventory_walks'",
+                [summary.job_id],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
         );
         drop(conn);
         fs::remove_dir_all(root).unwrap();
@@ -2182,5 +2413,94 @@ mod tests {
         let result = validations.get(&cache_key(&raw)).unwrap();
         assert!(result.state.accepted(), "{}", result.details);
         assert_eq!(result.tool, "exiftool-batch");
+    }
+    #[test]
+    fn manifest_is_versioned_complete_and_checksummed() {
+        use sha2::{Digest, Sha256};
+        let root = std::env::temp_dir().join(Uuid::new_v4().to_string());
+        let master = root.join("master");
+        let backup = root.join("backup");
+        fs::create_dir_all(&master).unwrap();
+        fs::create_dir_all(&backup).unwrap();
+        let cfg = LibraryConfig {
+            id: "l".into(),
+            name: "t".into(),
+            master_path: master.to_string_lossy().into(),
+            backup_path: backup.to_string_lossy().into(),
+            created_at: Utc::now().to_rfc3339(),
+        };
+        let conn = catalog::open(&master.join(".lumina/catalog.sqlite")).unwrap();
+        let now = Utc::now().to_rfc3339();
+        conn.execute("INSERT INTO assets(id,hash,filename,media_type,extension,captured_at,date_source,bytes,master_path,created_at)VALUES('a',?1,'a.jpg','photo','jpg',?2,'file',1,?3,?2)",params!["a".repeat(64),now,master.join("a.jpg").to_string_lossy()]).unwrap();
+        conn.execute("INSERT INTO backup_entries(asset_id,path,hash,verified_at,state)VALUES('a',?1,?2,?3,'verified')",params![backup.join("a.jpg").to_string_lossy(),"a".repeat(64),now]).unwrap();
+        write_backup_manifest(&conn, &cfg).unwrap();
+        let contents = fs::read_to_string(backup.join("manifest.jsonl")).unwrap();
+        let mut lines = contents.lines();
+        let header: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+        let payload = lines.collect::<Vec<_>>().join("\n");
+        assert_eq!(header["schemaVersion"], 1);
+        assert_eq!(header["entries"], 1);
+        assert_eq!(
+            header["payloadSha256"],
+            format!("{:x}", Sha256::digest(payload.as_bytes()))
+        );
+        drop(conn);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn gallery_queries_remain_fast_while_thumbnails_are_generated() {
+        let root = std::env::temp_dir().join(Uuid::new_v4().to_string());
+        let master = root.join("master");
+        let backup = root.join("backup");
+        fs::create_dir_all(&master).unwrap();
+        fs::create_dir_all(&backup).unwrap();
+        let cfg = LibraryConfig {
+            id: "l".into(),
+            name: "t".into(),
+            master_path: master.to_string_lossy().into(),
+            backup_path: backup.to_string_lossy().into(),
+            created_at: Utc::now().to_rfc3339(),
+        };
+        let conn = catalog::open(&master.join(".lumina/catalog.sqlite")).unwrap();
+        for index in 0..40 {
+            let path = master.join(format!("{index}.png"));
+            image::RgbImage::from_pixel(320, 240, image::Rgb([index as u8, 2, 3]))
+                .save(&path)
+                .unwrap();
+            let hash = crate::storage::sha256(&path).unwrap();
+            conn.execute("INSERT INTO assets(id,hash,filename,media_type,extension,captured_at,date_source,bytes,master_path,created_at)VALUES(?1,?2,?3,'photo','png',?4,'file',1,?5,?4)",params![format!("a-{index}"),hash,format!("{index}.png"),Utc::now().to_rfc3339(),path.to_string_lossy()]).unwrap();
+            crate::media::enqueue_thumbnail(&cfg, &format!("a-{index}"), 1).unwrap();
+        }
+        drop(conn);
+        let worker_cfg = cfg.clone();
+        let worker = std::thread::spawn(move || {
+            process_thumbnail_queue(
+                &worker_cfg,
+                "_thumbnail_background",
+                &crate::process::CancellationToken::default(),
+            )
+            .unwrap()
+        });
+        let mut latencies = Vec::new();
+        for _ in 0..20 {
+            let conn = catalog::open(&master.join(".lumina/catalog.sqlite")).unwrap();
+            let started = Instant::now();
+            let result = crate::gallery::search(
+                &conn,
+                &GalleryRequest {
+                    filters: GalleryFilters::default(),
+                    cursor: None,
+                    limit: Some(40),
+                },
+            )
+            .unwrap();
+            assert_eq!(result.assets.len(), 40);
+            latencies.push(started.elapsed().as_millis());
+        }
+        worker.join().unwrap();
+        latencies.sort_unstable();
+        let p95 = latencies[latencies.len() * 95 / 100];
+        assert!(p95 < 300, "p95 da galeria sob carga: {p95} ms");
+        fs::remove_dir_all(root).unwrap();
     }
 }

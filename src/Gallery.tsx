@@ -80,7 +80,11 @@ export default function Gallery() {
       try {
         const page = await api.gallery(filters, cursor, 100);
         if (id !== seq.current) return;
-        setResult(page);
+        setResult((previous) =>
+          cursor && previous
+            ? { ...page, summary: previous.summary, options: previous.options }
+            : page,
+        );
         setAssets((old) => (cursor ? [...old, ...page.assets] : page.assets));
       } catch (e) {
         if (id === seq.current) setError(String(e));
@@ -682,6 +686,10 @@ export function MediaThumb({
     thumbs.get(asset.id),
   );
   useEffect(() => {
+    if (src === null) {
+      const retry = window.setTimeout(() => setSrc(undefined), 750);
+      return () => window.clearTimeout(retry);
+    }
     if (src !== undefined) return;
     let live = true;
     api

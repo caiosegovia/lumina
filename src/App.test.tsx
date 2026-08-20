@@ -72,7 +72,7 @@ describe("fluxo principal do aplicativo", () => {
     await user.click(screen.getByRole("button", { name: "Proteção" }));
     expect(await screen.findByText("Proteção e armazenamento")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /Verificar agora/ }));
-    expect(await screen.findByText("12 arquivos verificados · 0 erros")).toBeInTheDocument();
+    expect(await screen.findByText("Verificação iniciada em segundo plano. Acompanhe, pause ou cancele em Atividade.")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Limpar cache" }));
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("18 miniaturas removidas"));
     await user.click(screen.getByRole("button", { name: "Reconstruir miniaturas" }));

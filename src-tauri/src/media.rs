@@ -3,6 +3,7 @@ use crate::{
     models::{CacheResult, LibraryConfig, ThumbnailAudit},
     process::{self, CancellationToken, ProcessErrorKind, ProcessSpec},
 };
+#[cfg(test)]
 use base64::Engine;
 use image::ImageReader;
 use rusqlite::{params, OptionalExtension};
@@ -225,6 +226,26 @@ pub fn thumbnail_path(cache_root: &Path, hash: &str) -> PathBuf {
 }
 
 fn read_orientation(source: &Path, cancel: &CancellationToken) -> u8 {
+    if let Ok(file) = fs::File::open(source) {
+        let mut reader = std::io::BufReader::new(file);
+        if let Ok(metadata) = exif::Reader::new().read_from_container(&mut reader) {
+            if let Some(value) = metadata
+                .get_field(exif::Tag::Orientation, exif::In::PRIMARY)
+                .and_then(|field| field.value.get_uint(0))
+                .filter(|value| (1..=8).contains(value))
+            {
+                return value as u8;
+            }
+        }
+    }
+    let extension = source
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if !RAW.contains(&extension.as_str()) {
+        return 1;
+    }
     process::run(
         ProcessSpec::new("ExifTool", "exiftool")
             .args(["-Orientation#", "-s3", source.to_string_lossy().as_ref()])
@@ -338,7 +359,7 @@ pub fn generate_thumbnail(
     Ok(destination)
 }
 
-pub fn thumbnail_data(cfg: &LibraryConfig, asset: &str) -> Result<Option<String>, String> {
+pub fn thumbnail_file(cfg: &LibraryConfig, asset: &str) -> Result<Option<PathBuf>, String> {
     let conn = catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite"))
         .map_err(|e| e.to_string())?;
     let row = conn
@@ -350,7 +371,7 @@ pub fn thumbnail_data(cfg: &LibraryConfig, asset: &str) -> Result<Option<String>
         .optional()
         .map_err(|e| e.to_string())?;
     match row {
-        Some((master, extension, hash, stored, version, state)) => {
+        Some((_master, _extension, _hash, stored, version, state)) => {
             let allowed_root = Path::new(&cfg.master_path).join(".lumina/cache/thumbnails");
             if let Some(stored_path) = stored
                 .as_ref()
@@ -370,19 +391,8 @@ pub fn thumbnail_data(cfg: &LibraryConfig, asset: &str) -> Result<Option<String>
                 .map(Path::new)
                 .filter(|p| p.exists() && image::image_dimensions(p).is_ok())
                 .map(Path::to_path_buf);
-            let value = match valid {
-                Some(p) => p,
-                None => {
-                    let generated = generate_thumbnail(
-                        Path::new(&master),
-                        &extension,
-                        &hash,
-                        &Path::new(&cfg.master_path).join(".lumina/cache"),
-                        &CancellationToken::default(),
-                    )?;
-                    conn.execute("INSERT INTO thumbnails(asset_id,generator_version,path,state,last_error,updated_at)VALUES(?1,?2,?3,'ready',NULL,datetime('now'))ON CONFLICT(asset_id)DO UPDATE SET generator_version=excluded.generator_version,path=excluded.path,state='ready',last_error=NULL,updated_at=excluded.updated_at",params![asset,THUMBNAIL_VERSION,generated.to_string_lossy()]).map_err(|e|e.to_string())?;
-                    generated
-                }
+            let Some(value) = valid else {
+                return Ok(None);
             };
             let allowed = Path::new(&cfg.master_path).join(".lumina/cache/thumbnails");
             let resolved = fs::canonicalize(&value).map_err(|e| e.to_string())?;
@@ -390,14 +400,38 @@ pub fn thumbnail_data(cfg: &LibraryConfig, asset: &str) -> Result<Option<String>
             if !resolved.starts_with(allowed) {
                 return Err("Caminho de miniatura fora do cache permitido".into());
             }
-            let bytes = fs::read(resolved).map_err(|e| e.to_string())?;
-            Ok(Some(format!(
-                "data:image/jpeg;base64,{}",
-                base64::engine::general_purpose::STANDARD.encode(bytes)
-            )))
+            Ok(Some(resolved))
         }
         None => Ok(None),
     }
+}
+
+#[cfg(test)]
+pub fn thumbnail_data(cfg: &LibraryConfig, asset: &str) -> Result<Option<String>, String> {
+    thumbnail_file(cfg, asset)?
+        .map(|path| {
+            fs::read(path)
+                .map(|bytes| {
+                    format!(
+                        "data:image/jpeg;base64,{}",
+                        base64::engine::general_purpose::STANDARD.encode(bytes)
+                    )
+                })
+                .map_err(|e| e.to_string())
+        })
+        .transpose()
+}
+
+pub fn enqueue_thumbnail(cfg: &LibraryConfig, asset: &str, priority: i64) -> Result<(), String> {
+    let conn = catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite"))
+        .map_err(|e| e.to_string())?;
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute("INSERT OR IGNORE INTO sources(id,name,path,volume_label,available)VALUES('_lumina_maintenance','Manutenção da biblioteca','lumina://maintenance','internal',1)",[]).map_err(|e|e.to_string())?;
+    conn.execute("INSERT OR IGNORE INTO jobs(id,source_id,source_path,state,stage,created_at,updated_at,library_state,backup_state)VALUES('_thumbnail_background','_lumina_maintenance','lumina://thumbnails','queued','thumbnail',?1,?1,'verified','pending')",[&now]).map_err(|e|e.to_string())?;
+    let pending = crate::pipeline::WorkState::Pending.as_str();
+    conn.execute("INSERT INTO work_queue(job_id,asset_id,kind,state,priority,created_at,updated_at)VALUES('_thumbnail_background',?1,'thumbnail',?2,?3,?4,?4)ON CONFLICT(job_id,asset_id,kind)DO UPDATE SET state=CASE WHEN work_queue.state IN('completed','processing') THEN work_queue.state ELSE excluded.state END,priority=MAX(work_queue.priority,excluded.priority),updated_at=excluded.updated_at",params![asset,pending,priority,now]).map_err(|e|e.to_string())?;
+    conn.execute("INSERT INTO thumbnails(asset_id,generator_version,path,state,updated_at)VALUES(?1,?2,'','pending',?3)ON CONFLICT(asset_id)DO UPDATE SET generator_version=excluded.generator_version,state=CASE WHEN thumbnails.state='ready' AND thumbnails.generator_version=?2 THEN 'ready' ELSE 'pending' END,updated_at=excluded.updated_at",params![asset,THUMBNAIL_VERSION,now]).map_err(|e|e.to_string())?;
+    Ok(())
 }
 pub fn clear_cache(cfg: &LibraryConfig) -> Result<i64, String> {
     let cache = Path::new(&cfg.master_path).join(".lumina/cache/thumbnails");
@@ -791,6 +825,36 @@ mod tests {
         assert!(thumbnail_data(&cfg, "a")
             .unwrap_err()
             .contains("fora do cache"));
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn thumbnail_read_never_generates_work_inside_the_ui_request() {
+        let root = std::env::temp_dir().join(Uuid::new_v4().to_string());
+        let master = root.join("master");
+        let backup = root.join("backup");
+        fs::create_dir_all(master.join(".lumina")).unwrap();
+        fs::create_dir_all(&backup).unwrap();
+        let original = master.join("photo.png");
+        image::RgbImage::from_pixel(20, 10, image::Rgb([1, 2, 3]))
+            .save(&original)
+            .unwrap();
+        let cfg = LibraryConfig {
+            id: "l".into(),
+            name: "t".into(),
+            master_path: master.to_string_lossy().into(),
+            backup_path: backup.to_string_lossy().into(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+        let conn = catalog::open(&master.join(".lumina/catalog.sqlite")).unwrap();
+        let hash = crate::storage::sha256(&original).unwrap();
+        conn.execute("INSERT INTO assets(id,hash,filename,media_type,extension,captured_at,date_source,bytes,master_path,created_at)VALUES('pending',?1,'photo.png','photo','png',?2,'file',1,?3,?2)",params![hash,chrono::Utc::now().to_rfc3339(),original.to_string_lossy()]).unwrap();
+        drop(conn);
+        assert!(thumbnail_data(&cfg, "pending").unwrap().is_none());
+        assert!(!master.join(".lumina/cache/thumbnails/v2").exists());
+        enqueue_thumbnail(&cfg, "pending", 100).unwrap();
+        let conn = catalog::open(&master.join(".lumina/catalog.sqlite")).unwrap();
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM work_queue WHERE asset_id='pending' AND kind='thumbnail' AND state='pending'",[],|row|row.get::<_,i64>(0)).unwrap(),1);
+        drop(conn);
         fs::remove_dir_all(root).unwrap();
     }
     #[test]

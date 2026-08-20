@@ -2,8 +2,64 @@ use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File},
     io::{Read, Write},
-    path::Path,
+    path::{Path, PathBuf},
 };
+
+fn replacement_path(destination: &Path) -> PathBuf {
+    destination.with_extension(format!(
+        "{}.lumina-replacement",
+        destination
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("tmp")
+    ))
+}
+
+#[cfg(windows)]
+pub fn replace_file(source: &Path, destination: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let destination = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let result = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if result == 0 {
+        Err(std::io::Error::last_os_error().to_string())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+pub fn replace_file(source: &Path, destination: &Path) -> Result<(), String> {
+    fs::rename(source, destination).map_err(|error| error.to_string())
+}
+
+pub fn atomic_write(destination: &Path, bytes: &[u8]) -> Result<(), String> {
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let temporary = replacement_path(destination);
+    let mut file = File::create(&temporary).map_err(|e| e.to_string())?;
+    file.write_all(bytes).map_err(|e| e.to_string())?;
+    file.sync_all().map_err(|e| e.to_string())?;
+    replace_file(&temporary, destination)
+}
 pub fn sha256(path: &Path) -> Result<String, String> {
     sha256_cancel(path, None)
 }
@@ -231,6 +287,22 @@ mod tests {
         promote_preverified_temp(&temp, &destination, &hash).unwrap();
         assert_eq!(fs::read(destination).unwrap(), b"verified-content");
         assert!(!temp.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn atomic_metadata_write_replaces_the_complete_previous_version() {
+        let root = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        fs::create_dir_all(&root).unwrap();
+        let destination = root.join("manifest.json");
+        atomic_write(&destination, br#"{"version":1,"entries":["old"]}"#).unwrap();
+        atomic_write(
+            &destination,
+            br#"{"version":1,"entries":["new","complete"]}"#,
+        )
+        .unwrap();
+        let bytes = fs::read(&destination).unwrap();
+        assert_eq!(bytes, br#"{"version":1,"entries":["new","complete"]}"#);
+        assert!(!replacement_path(&destination).exists());
         fs::remove_dir_all(root).unwrap();
     }
 }

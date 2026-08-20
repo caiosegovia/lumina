@@ -33,7 +33,7 @@ pub struct DashboardStats {
     pub insights: Vec<DashboardInsight>,
     pub latest_benchmark: Option<DashboardBenchmark>,
 }
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DashboardBreakdown {
     pub key: String,
@@ -147,7 +147,7 @@ pub struct GalleryYearCount {
     pub bytes: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GallerySummary {
     pub total: i64,
@@ -161,7 +161,7 @@ pub struct GallerySummary {
     pub years: Vec<GalleryYearCount>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FilterOption {
     pub value: String,
@@ -169,7 +169,7 @@ pub struct FilterOption {
     pub count: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GalleryFilterOptions {
     pub cameras: Vec<FilterOption>,
