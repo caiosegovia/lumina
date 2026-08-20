@@ -1,0 +1,8 @@
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Runtime and test binaries are versioned through Git LFS.
+src-tauri/tools/*.exe filter=lfs diff=lfs merge=lfs -text
+src-tauri/tests/fixtures/*.dng filter=lfs diff=lfs merge=lfs -text

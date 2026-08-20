@@ -1,0 +1,28 @@
+export type View = "dashboard" | "library" | "sources" | "duplicates" | "albums" | "activity" | "protection";
+export type ProtectionState = "source_only" | "consolidated" | "replica_verified" | "stale" | "error";
+
+export interface LibraryConfig { id: string; name: string; masterPath: string; backupPath: string; createdAt: string }
+export interface DashboardBreakdown{key:string;items:number;bytes:number}
+export interface DashboardStats { totalAssets:number;photos:number;videos:number;bytes:number;protected:number;pending:number;duplicateGroups:number;errors:number;offlineSources:number;oldest?:string;newest?:string;masterAvailableBytes:number;backupAvailableBytes:number;types:DashboardBreakdown[];years:DashboardBreakdown[];protection:DashboardBreakdown[];sources:{id:string;name:string;available:boolean;items:number;bytes:number}[];insights:{kind:string;severity:string;title:string;detail:string;value:number;bytes:number;action:View}[];latestBenchmark?:{jobId:string;items:number;bytes:number;analysisMs:number;hashingMs:number;copyMs:number;thumbnailsMs:number;hashWorkers:number;hashedBytes:number;deferredHashItems:number;cacheHits:number} }
+export interface Source { id: string; name: string; path: string; volumeLabel: string; available: boolean; lastScan?: string; assetCount: number }
+export interface MediaAsset { id: string; filename: string; mediaType: "photo" | "video" | "raw"; extension: string; capturedAt: string; dateSource: string; dateSuspicious?: boolean; bytes: number; width?: number; height?: number; duration?: number; camera?: string; latitude?: number; longitude?: number; thumbnail?: string; masterPath: string; hash: string; protectionState: ProtectionState; occurrenceCount: number; sourceNames: string[]; tags: string[] }
+export interface GalleryFilters { query:string; year?:number; dateFrom?:string; dateTo?:string; mediaType?:string; camera?:string; sourceId?:string; originalFolder?:string; extension?:string; hasLocation?:boolean; tagId?:string; albumId?:string; protectionState?:string; dateSuspicious?:boolean }
+export interface FilterOption { value:string; label:string; count:number }
+export interface GallerySummary { total:number; bytes:number; photos:number; videos:number; raw:number; protected:number; withLocation:number; duplicateAssets:number; years:{year:string;count:number;bytes:number}[] }
+export interface GalleryResult { assets:MediaAsset[]; matched:number; nextCursor?:string; summary:GallerySummary; options:{cameras:FilterOption[];sources:FilterOption[];extensions:FilterOption[];tags:FilterOption[];albums:FilterOption[]} }
+export interface ThumbnailAudit { total:number;valid:number;missing:number;stale:number;corrupt:number;regenerated:number;failed:number }
+export interface ImportIssue { kind: string; extension: string; items: number; bytes: number; message: string }
+export interface ImportSummary { jobId: string; sourceId: string; sourcePath: string; discovered: number; newFiles: number; duplicates: number; invalid: number; requiredBytes: number; availableBytes: number; excluded: number; issues: ImportIssue[] }
+export interface StoragePlan { masterRequiredBytes:number;backupRequiredBytes:number;reserveBytes:number;masterAvailableBytes:number;backupAvailableBytes:number;sameVolume:boolean;canConsolidate:boolean;canProtect:boolean;missingBytes:number;backupMissingBytes:number;selectedItems:number;selectedBytes:number;maximumSafeBytes:number;maximumSafeItems:number }
+export interface SelectionResult {selectedItems:number;selectedBytes:number;pendingItems:number;pendingBytes:number}
+export interface ProtectionQueueStats {pending:number;processing:number;completed:number;failed:number;pendingBytes:number}
+export interface MigrationProgress {id:string;oldMaster:string;newMaster:string;state:string;processedItems:number;totalItems:number;processedBytes:number;totalBytes:number;lastError?:string}
+export interface JobProgress { jobId: string; state: string; stage: string; currentFile?: string; processedItems: number; totalItems: number; processedBytes: number; totalBytes: number; imported: number; duplicates: number; excluded: number; failed: number; stagePercent:number; overallPercent:number; bytesPerSecond?:number; estimatedSecondsRemaining?:number; libraryState:string; backupState:string }
+export interface RecoverableJob { jobId:string; sourcePath:string; state:string; stage:string; interruptionReason?:string; updatedAt:string }
+export interface JobEventPage { events:ImportEvent[]; nextCursor:number }
+export interface ReportExport { path:string; rows:number }
+export interface ImportEvent { id: number; jobId: string; at: string; path: string; state: string; details: string }
+export interface DuplicateGroup { hash: string; filename: string; bytes: number; occurrences: { source: string; path: string }[] }
+export interface Album { id: string; name: string; assetCount: number; cover?: string }
+export interface JobOverview { jobId:string; sourceName:string; sourcePath:string; state:string; stage:string; processedItems:number; totalItems:number; processedBytes:number; totalBytes:number; overallPercent:number; bytesPerSecond?:number; estimatedSecondsRemaining?:number; imported:number; duplicates:number; excluded:number; failed:number; createdAt:string; updatedAt:string; interruptionReason?:string }
+export interface BatchResult { affected:number }

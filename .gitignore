@@ -1,0 +1,40 @@
+# Dependencies and generated frontend
+node_modules/
+dist/
+
+# Rust / Tauri build outputs (including custom target dirs)
+**/target/
+**/target-*/
+
+# Local releases and packaging work
+artifacts/
+portable/
+*.zip
+*.msi
+*.msix
+*.appx
+*-setup.exe
+
+# Runtime data: never publish a user's library or catalog
+.lumina/
+**/.lumina/
+catalog.sqlite*
+*.lumina-part
+
+# Local process output
+*.log
+*.pid
+
+# Secrets and machine-local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini

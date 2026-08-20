@@ -1,0 +1,30 @@
+$ErrorActionPreference = "Stop"
+$workspace = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$artifacts = Join-Path $workspace "artifacts"
+$portable = Join-Path $artifacts "Lumina-0.6.0-portable-windows-x64"
+$zip = "$portable.zip"
+$release = Join-Path $workspace "src-tauri\target\release"
+
+New-Item -ItemType Directory -Path $artifacts -Force | Out-Null
+if (Test-Path -LiteralPath $portable) {
+    $resolved = (Resolve-Path $portable).Path
+    if (-not $resolved.StartsWith($artifacts, [StringComparison]::OrdinalIgnoreCase)) { throw "Destino fora de artifacts" }
+    Remove-Item -LiteralPath $resolved -Recurse -Force
+}
+New-Item -ItemType Directory -Path $portable | Out-Null
+Copy-Item (Join-Path $release "lumina.exe") (Join-Path $portable "Lumina.exe")
+Copy-Item (Join-Path $workspace "src-tauri\tools") $portable -Recurse
+foreach ($name in @("README.md", "SPEC-0.6.md", "TESTING.md", "TEST-REPORT-0.6.md", "TRACEABILITY-0.6.md", "THIRD-PARTY-NOTICES.md")) {
+    Copy-Item (Join-Path $workspace $name) $portable
+}
+$manifest = foreach ($file in Get-ChildItem $portable -Recurse -File | Sort-Object FullName) {
+    [pscustomobject]@{
+        path = $file.FullName.Substring($portable.Length + 1).Replace("\", "/")
+        bytes = $file.Length
+        sha256 = (Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+}
+$manifest | ConvertTo-Json -Depth 3 | Set-Content (Join-Path $portable "MANIFEST.json") -Encoding utf8
+if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
+Compress-Archive (Join-Path $portable "*") $zip -CompressionLevel Optimal
+Get-Item $zip

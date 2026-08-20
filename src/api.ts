@@ -1,0 +1,68 @@
+import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
+import type { Album, BatchResult, DashboardStats, DuplicateGroup, GalleryFilters, GalleryResult, ImportEvent, ImportSummary, JobEventPage, JobOverview, JobProgress, LibraryConfig, MediaAsset, MigrationProgress, ProtectionQueueStats, RecoverableJob, ReportExport, SelectionResult, Source, StoragePlan, ThumbnailAudit } from "./types";
+
+const isTauri = () => "__TAURI_INTERNALS__" in window;
+const now = new Date();
+const demoAssets: MediaAsset[] = Array.from({ length: 18 }, (_, i) => ({
+  id: `demo-${i}`, filename: `${i % 5 === 0 ? "DJI" : "IMG"}_${2400 + i}.${i % 6 === 0 ? "MOV" : "JPG"}`,
+  mediaType: i % 6 === 0 ? "video" : "photo", extension: i % 6 === 0 ? "mov" : "jpg",
+  capturedAt: new Date(now.getFullYear(), now.getMonth() - Math.floor(i / 6), 18 - (i % 8), 14, i * 2).toISOString(),
+  dateSource: "exif_original", bytes: 3_400_000 + i * 950_000, width: 4000, height: 3000,
+  camera: i % 5 === 0 ? "DJI Mini 4 Pro" : i % 3 === 0 ? "iPhone 15 Pro" : "Canon EOS R6",
+  masterPath: `D:\\Lumina\\${now.getFullYear()}\\${String(now.getMonth() + 1).padStart(2, "0")}\\IMG_${2400 + i}.JPG`,
+  hash: `${i.toString(16).padStart(2, "0")}a7e4c9d8f2b1`, protectionState: i < 12 ? "replica_verified" : i < 16 ? "consolidated" : "source_only",
+  occurrenceCount: i === 2 || i === 7 ? 3 : 1, sourceNames: i % 2 ? ["Cartão Canon"] : ["HD Fotos Antigas"], tags: i % 4 === 0 ? ["viagem"] : []
+}));
+
+let config: LibraryConfig | null = null;
+let demoAlbums: Album[] = [{ id: "a1", name: "Viagens", assetCount: 5 }, { id: "a2", name: "Família", assetCount: 12 }];
+const demoJobs = new Map<string, { started: number; state: string }>();
+const demoSources: Source[] = [
+  { id: "s1", name: "Cartão Canon", path: "E:\\DCIM", volumeLabel: "EOS_DIGITAL", available: true, lastScan: now.toISOString(), assetCount: 428 },
+  { id: "s2", name: "HD Fotos Antigas", path: "F:\\Fotos", volumeLabel: "ARQUIVO_2TB", available: false, lastScan: new Date(now.getTime() - 86400000 * 8).toISOString(), assetCount: 12840 }
+];
+
+async function call<T>(command: string, args?: Record<string, unknown>, fallback?: () => T | Promise<T>): Promise<T> {
+  if (isTauri()) return invoke<T>(command, args);
+  if (!fallback) throw new Error(`O comando ${command} requer o aplicativo desktop.`);
+  await new Promise(r => setTimeout(r, 120));
+  return fallback();
+}
+
+export const api = {
+  signalReady: async () => { if (isTauri()) await invoke("frontend_ready"); },
+  chooseFolder: async () => isTauri() ? await open({ directory: true, multiple: false }) as string | null : null,
+  getLibrary: () => call<LibraryConfig | null>("get_library", undefined, () => config),
+  createLibrary: (name: string, masterPath: string, backupPath: string) => call<LibraryConfig>("create_library", { name, masterPath, backupPath }, () => config = { id: crypto.randomUUID(), name, masterPath, backupPath, createdAt: new Date().toISOString() }),
+  dashboard: () => call<DashboardStats>("get_dashboard", undefined, () => {const bytes=demoAssets.reduce((n,a)=>n+a.bytes,0);return{totalAssets:demoAssets.length,photos:15,videos:3,bytes,protected:12,pending:4,duplicateGroups:2,errors:1,offlineSources:1,oldest:demoAssets.at(-1)?.capturedAt,newest:demoAssets[0]?.capturedAt,masterAvailableBytes:420e9,backupAvailableBytes:300e9,types:[{key:"photo",items:15,bytes:bytes*.55},{key:"video",items:3,bytes:bytes*.45}],years:[{key:String(now.getFullYear()),items:18,bytes}],protection:[{key:"replica_verified",items:12,bytes:bytes*.7},{key:"consolidated",items:6,bytes:bytes*.3}],sources:demoSources.map(x=>({id:x.id,name:x.name,available:x.available,items:x.assetCount,bytes:bytes/2})),insights:[{kind:"protection",severity:"high",title:"Proteção pendente",detail:"Algumas mídias ainda não possuem réplica verificada.",value:6,bytes:bytes*.3,action:"protection"}],latestBenchmark:{jobId:"demo",items:18,bytes,analysisMs:12000,hashingMs:3000,copyMs:8000,thumbnailsMs:1000,hashWorkers:1,hashedBytes:bytes*.1,deferredHashItems:16,cacheHits:0}}}),
+  sources: () => call<Source[]>("list_sources", undefined, () => demoSources),
+  assets: (query = "") => call<MediaAsset[]>("list_assets", { query }, () => demoAssets.filter(a => `${a.filename} ${a.camera} ${a.tags.join(" ")}`.toLowerCase().includes(query.toLowerCase()))),
+  gallery: (filters:GalleryFilters,cursor?:string,limit=100) => call<GalleryResult>("search_gallery",{request:{filters,cursor,limit}},()=>{let rows=demoAssets.filter(a=>(!filters.query||`${a.filename} ${a.camera} ${a.tags.join(" ")}`.toLowerCase().includes(filters.query.toLowerCase()))&&(!filters.year||new Date(a.capturedAt).getFullYear()===filters.year)&&(!filters.mediaType||a.mediaType===filters.mediaType)&&(!filters.camera||a.camera===filters.camera)&&(!filters.extension||a.extension===filters.extension)&&(!filters.hasLocation||(a.latitude!=null&&a.longitude!=null))&&(!filters.protectionState||a.protectionState===filters.protectionState));let start=cursor?Number(cursor):0;let page=rows.slice(start,start+limit);let years=Object.entries(rows.reduce<Record<string,{count:number;bytes:number}>>((o,a)=>{let y=String(new Date(a.capturedAt).getFullYear());o[y]??={count:0,bytes:0};o[y].count++;o[y].bytes+=a.bytes;return o},{})).map(([year,x])=>({year,...x})).sort((a,b)=>b.year.localeCompare(a.year));return{assets:page,matched:rows.length,nextCursor:start+limit<rows.length?String(start+limit):undefined,summary:{total:rows.length,bytes:rows.reduce((n,a)=>n+a.bytes,0),photos:rows.filter(a=>a.mediaType==="photo").length,videos:rows.filter(a=>a.mediaType==="video").length,raw:rows.filter(a=>a.mediaType==="raw").length,protected:rows.filter(a=>a.protectionState==="replica_verified").length,withLocation:rows.filter(a=>a.latitude!=null).length,duplicateAssets:rows.filter(a=>a.occurrenceCount>1).length,years},options:{cameras:[...new Set(demoAssets.map(a=>a.camera).filter(Boolean))].map(x=>({value:x!,label:x!,count:demoAssets.filter(a=>a.camera===x).length})),sources:demoSources.map(s=>({value:s.id,label:s.name,count:s.assetCount})),extensions:[...new Set(demoAssets.map(a=>a.extension))].map(x=>({value:x,label:x.toUpperCase(),count:demoAssets.filter(a=>a.extension===x).length})),tags:[],albums:[]}}}),
+  duplicates: () => call<DuplicateGroup[]>("list_duplicates", undefined, () => demoAssets.filter(a => a.occurrenceCount > 1).map(a => ({ hash: a.hash, filename: a.filename, bytes: a.bytes, occurrences: Array.from({ length: a.occurrenceCount }, (_, i) => ({ source: i ? "Backup antigo" : a.sourceNames[0], path: `${i ? "G" : "F"}:\\Fotos\\${a.filename}` })) }))),
+  albums: () => call<Album[]>("list_albums", undefined, () => demoAlbums),
+  jobs:()=>call<JobOverview[]>("list_jobs",undefined,()=>[...demoJobs].map(([jobId,j])=>({jobId,sourceName:"Fonte de demonstração",sourcePath:"E:\\DCIM",state:j.state,stage:j.state==="analyzing"?"validation":"copying",processedItems:120,totalItems:428,processedBytes:3_132_500_000,totalBytes:8_950_000_000,overallPercent:j.state==="ready"?100:35,bytesPerSecond:5_000_000,estimatedSecondsRemaining:1163,imported:0,duplicates:31,excluded:4,failed:0,createdAt:now.toISOString(),updatedAt:new Date().toISOString()}))),
+  createAlbum:(name:string)=>call<Album>("create_album",{name},()=>{const album={id:crypto.randomUUID(),name,assetCount:0};demoAlbums=[...demoAlbums,album];return album}),
+  addToAlbum:(albumId:string,assetIds:string[])=>call<BatchResult>("add_assets_to_album",{albumId,assetIds},()=>({affected:assetIds.length})),
+  applyTag:(tagName:string,assetIds:string[])=>call<BatchResult>("apply_tag",{tagName,assetIds},()=>{demoAssets.filter(a=>assetIds.includes(a.id)).forEach(a=>{if(!a.tags.includes(tagName))a.tags.push(tagName)});return{affected:assetIds.length}}),
+  updateCaptureDate:(assetIds:string[],capturedAt:string)=>call<BatchResult>("update_capture_date",{assetIds,capturedAt},()=>{demoAssets.filter(a=>assetIds.includes(a.id)).forEach(a=>{a.capturedAt=capturedAt;a.dateSource="user_corrected";a.dateSuspicious=false});return{affected:assetIds.length}}),
+  events: () => call<ImportEvent[]>("list_events", undefined, () => [{ id: 1, jobId: "demo", at: now.toISOString(), path: "E:\\DCIM", state: "completed", details: "Análise concluída: 428 arquivos encontrados" }]),
+  jobEvents:(jobId:string,cursor=0,filter="")=>call<JobEventPage>("get_job_events",{jobId,cursor,filter},()=>({events:[],nextCursor:cursor})),
+  analyze: (sourcePath: string, sourceName: string) => call<ImportSummary>("analyze_source", { sourcePath, sourceName }, () => { const jobId=crypto.randomUUID(); demoJobs.set(jobId,{started:0,state:"analyzed"}); return { jobId, sourceId: crypto.randomUUID(), sourcePath, discovered: 428, newFiles: 391, duplicates: 31, invalid: 2, requiredBytes: 8_950_000_000, availableBytes: 420_000_000_000, excluded: 4, issues: [] } }),
+  startAnalysis: (sourcePath:string,sourceName:string)=>call<string>("start_analysis",{sourcePath,sourceName},()=>{const id=crypto.randomUUID();demoJobs.set(id,{started:Date.now(),state:"analyzing"});setTimeout(()=>{const j=demoJobs.get(id);if(j)j.state="ready"},250);return id}),
+  importSummary:(jobId:string)=>call<ImportSummary>("get_import_summary",{jobId},()=>({jobId,sourceId:"demo",sourcePath:"E:\\DCIM",discovered:428,newFiles:391,duplicates:31,invalid:2,requiredBytes:8_950_000_000,availableBytes:420_000_000_000,excluded:4,issues:[]})),
+  storagePlan:(jobId:string)=>call<StoragePlan>("get_storage_plan",{jobId},()=>({masterRequiredBytes:8_950_000_000,backupRequiredBytes:8_950_000_000,reserveBytes:1_073_741_824,masterAvailableBytes:420_000_000_000,backupAvailableBytes:420_000_000_000,sameVolume:false,canConsolidate:true,canProtect:true,missingBytes:0,backupMissingBytes:0,selectedItems:391,selectedBytes:8_950_000_000,maximumSafeBytes:200_000_000_000,maximumSafeItems:391})),
+  selectImport:(jobId:string,mode:string,value?:string,maximumBytes?:number)=>call<SelectionResult>("update_job_selection",{request:{jobId,mode,value,maximumBytes}},()=>({selectedItems:391,selectedBytes:8_950_000_000,pendingItems:0,pendingBytes:0})),
+  protectionQueue:(jobId?:string)=>call<ProtectionQueueStats>("get_protection_queue",{jobId},()=>({pending:12,processing:0,completed:0,failed:0,pendingBytes:2_000_000_000})),
+  startConsolidation:(jobId:string)=>call<void>("start_consolidation",{jobId},()=>{const job=demoJobs.get(jobId);if(job){job.started=Date.now();job.state="consolidating"}}),
+  startProtection:(jobId:string)=>call<void>("start_protection",{jobId},()=>{const job=demoJobs.get(jobId);if(job){job.started=Date.now();job.state="protecting"}}),
+  updateBackupPath:(backupPath:string)=>call<LibraryConfig>("update_backup_path",{backupPath},()=>{if(!config)throw Error("Biblioteca ausente");return config={...config,backupPath}}),
+  migrateMaster:(newMasterPath:string)=>call<MigrationProgress>("migrate_master_path",{newMasterPath},()=>({id:crypto.randomUUID(),oldMaster:config?.masterPath||"",newMaster:newMasterPath,state:"completed",processedItems:18,totalItems:18,processedBytes:1,totalBytes:1})),
+  consolidate: (jobId: string) => call<void>("consolidate_import", { jobId }, async () => { const job=demoJobs.get(jobId); if(job){job.started=Date.now();job.state="consolidating"} await new Promise(r=>setTimeout(r,1800)); if(job?.state==="canceling") throw new Error("JOB_CANCELED"); if(job)job.state="completed" }),
+  jobProgress: (jobId: string) => call<JobProgress>("get_job_progress", { jobId }, () => { const job=demoJobs.get(jobId); const elapsed=job?.started ? Date.now()-job.started : 0; const ratio=job?.state==="paused" ? .45 : Math.min(1,elapsed/1700);if(job?.state==="consolidating"&&ratio>=1)job.state="completed";return {jobId,state:job?.state||"analyzed",stage:job?.state==="analyzing"?"validation":ratio>.8?"backup":"copying",currentFile:`IMG_${Math.max(1,Math.floor(ratio*391))}.JPG`,processedItems:Math.floor(ratio*391),totalItems:391,processedBytes:Math.floor(ratio*8_950_000_000),totalBytes:8_950_000_000,imported:Math.floor(ratio*391),duplicates:31,excluded:4,failed:0,stagePercent:ratio*100,overallPercent:ratio*100,bytesPerSecond:5_000_000,estimatedSecondsRemaining:Math.ceil((1-ratio)*340),libraryState:"verified",backupState:ratio>.8?"copying":"pending"} }),
+  controlImport: (jobId: string, action: "paused"|"running"|"canceled") => call<JobProgress>("control_import", { jobId, action }, async()=>{const job=demoJobs.get(jobId);if(job)job.state=action==="running"?"consolidating":action;return api.jobProgress(jobId)}),
+  recoverableJobs:()=>call<RecoverableJob[]>("list_recoverable_jobs",undefined,()=>[]),resumeJob:(jobId:string)=>call<void>("resume_job",{jobId},()=>undefined),discardJob:(jobId:string)=>call<void>("discard_job",{jobId},()=>undefined),retryFailed:(jobId:string)=>call<number>("retry_failed_items",{jobId},()=>0),exportReport:(jobId:string,format:"csv"|"jsonl")=>call<ReportExport>("export_job_report",{jobId,format},()=>({path:`report.${format}`,rows:10})),thumbnail:(assetId:string)=>call<string|null>("get_thumbnail",{assetId},()=>null),rebuildCache:()=>call<{generated:number;failed:number}>("rebuild_thumbnail_cache",undefined,()=>({generated:18,failed:0})),
+  verifyBackup: () => call<{ checked: number; errors: number }>("verify_backup", undefined, () => ({ checked: 12, errors: 0 })),
+  clearCache: () => call<number>("clear_thumbnail_cache", undefined, () => 18)
+  ,auditThumbnails:(repair=true)=>call<ThumbnailAudit>("audit_thumbnail_cache",{repair},()=>({total:18,valid:16,missing:2,stale:0,corrupt:0,regenerated:repair?2:0,failed:0}))
+};
