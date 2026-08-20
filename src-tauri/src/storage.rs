@@ -116,6 +116,7 @@ pub fn copy_hash_to_temp_verified(
     }
     Ok(source_hash)
 }
+#[cfg(test)]
 pub fn promote_verified_temp(
     temp: &Path,
     destination: &Path,
@@ -124,6 +125,24 @@ pub fn promote_verified_temp(
     if sha256(temp)? != expected {
         return Err("O temporário verificado foi alterado".into());
     }
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?
+    }
+    if destination.exists() {
+        if sha256(destination)? == expected {
+            let _ = fs::remove_file(temp);
+            return Ok(());
+        }
+        return Err("O destino já contém outro arquivo".into());
+    }
+    fs::rename(temp, destination).map_err(|e| e.to_string())
+}
+
+pub fn promote_preverified_temp(
+    temp: &Path,
+    destination: &Path,
+    expected: &str,
+) -> Result<(), String> {
     if let Some(parent) = destination.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?
     }
@@ -198,6 +217,20 @@ mod tests {
         assert_eq!(hash, sha256(&source).unwrap());
         promote_verified_temp(&temp, &destination, &hash).unwrap();
         assert_eq!(fs::read(destination).unwrap(), fs::read(source).unwrap());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn promotes_a_preverified_temporary_without_changing_its_bytes() {
+        let root = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("source.raw");
+        let temp = root.join("copy.part");
+        let destination = root.join("final.raw");
+        fs::write(&source, b"verified-content").unwrap();
+        let hash = copy_hash_to_temp_verified(&source, &temp, None).unwrap();
+        promote_preverified_temp(&temp, &destination, &hash).unwrap();
+        assert_eq!(fs::read(destination).unwrap(), b"verified-content");
+        assert!(!temp.exists());
         fs::remove_dir_all(root).unwrap();
     }
 }

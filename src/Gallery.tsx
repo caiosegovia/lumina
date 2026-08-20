@@ -122,14 +122,15 @@ export default function Gallery() {
             : group === "month"
               ? a.capturedAt.slice(0, 7)
               : a.capturedAt.slice(0, 10),
-        label = new Intl.DateTimeFormat(
+        formattedLabel = new Intl.DateTimeFormat(
           "pt-BR",
           group === "year"
             ? { year: "numeric" }
             : group === "month"
               ? { month: "long", year: "numeric" }
               : { dateStyle: "long" },
-        ).format(d);
+        ).format(d),
+        label = formattedLabel.charAt(0).toLocaleUpperCase("pt-BR") + formattedLabel.slice(1);
       if (!m.has(key)) m.set(key, { label, items: [] });
       m.get(key)!.items.push(a);
     });
@@ -427,7 +428,11 @@ function Item({
       >
         {checked && <Check />}
       </button>
-      <button className="media-main" onClick={open}>
+      <button
+        className="media-main"
+        aria-label={`Abrir detalhes de ${asset.filename}`}
+        onClick={open}
+      >
         <MediaThumb asset={asset} />
         <div>
           <strong>{asset.filename}</strong>
@@ -438,7 +443,7 @@ function Item({
             <AlertTriangle /> Data a revisar
           </span>
         )}
-        {mode === "grid" && asset.protectionState !== "replica_verified" && <span className={`asset-state ${asset.protectionState}`}>{asset.protectionState === "consolidated" ? "Proteção pendente" : asset.protectionState === "error" ? "Revisar proteção" : "Somente na origem"}</span>}
+        {mode === "grid" && asset.protectionState === "error" && <span className="asset-state error">Revisar proteção</span>}
         {mode === "list" && (
           <>
             <time>{new Date(asset.capturedAt).toLocaleString("pt-BR")}</time>
@@ -682,8 +687,10 @@ export function MediaThumb({
     api
       .thumbnail(asset.id)
       .then((x) => {
-        thumbs.set(asset.id, x);
-        if (live) setSrc(x);
+        if (live) {
+          thumbs.set(asset.id, x);
+          setSrc(x);
+        }
       })
       .catch(() => live && setSrc(null));
     return () => {

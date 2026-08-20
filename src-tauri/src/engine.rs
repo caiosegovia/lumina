@@ -330,19 +330,35 @@ pub fn import_summary(cfg: &LibraryConfig, job: &str) -> Result<ImportSummary, S
     })
 }
 
-fn import_issues(conn: &rusqlite::Connection, job: &str) -> Result<Vec<crate::models::ImportIssue>, String> {
+fn import_issues(
+    conn: &rusqlite::Connection,
+    job: &str,
+) -> Result<Vec<crate::models::ImportIssue>, String> {
     let mut statement = conn.prepare("SELECT COALESCE(validation_state,'unreadable'),extension,COUNT(*),COALESCE(SUM(bytes),0) FROM job_items WHERE job_id=?1 AND state='review' GROUP BY validation_state,extension ORDER BY COUNT(*) DESC").map_err(|e| e.to_string())?;
-    let issues = statement.query_map([job], |row| {
-        let kind: String = row.get(0)?;
-        let message = match kind.as_str() {
-            "missing_dependency" => "O componente necessário para verificar estes arquivos não iniciou.",
-            "timeout" => "A verificação excedeu o tempo limite.",
-            "unsupported_format" => "Este formato ainda não pode ser validado.",
-            "corrupted" => "O conteúdo não pôde ser decodificado e precisa de revisão.",
-            _ => "O arquivo não pôde ser lido e precisa de revisão.",
-        }.to_string();
-        Ok(crate::models::ImportIssue { kind, extension: row.get(1)?, items: row.get(2)?, bytes: row.get(3)?, message })
-    }).map_err(|e| e.to_string())?.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+    let issues = statement
+        .query_map([job], |row| {
+            let kind: String = row.get(0)?;
+            let message = match kind.as_str() {
+                "missing_dependency" => {
+                    "O componente necessário para verificar estes arquivos não iniciou."
+                }
+                "timeout" => "A verificação excedeu o tempo limite.",
+                "unsupported_format" => "Este formato ainda não pode ser validado.",
+                "corrupted" => "O conteúdo não pôde ser decodificado e precisa de revisão.",
+                _ => "O arquivo não pôde ser lido e precisa de revisão.",
+            }
+            .to_string();
+            Ok(crate::models::ImportIssue {
+                kind,
+                extension: row.get(1)?,
+                items: row.get(2)?,
+                bytes: row.get(3)?,
+                message,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
     Ok(issues)
 }
 
@@ -1118,16 +1134,19 @@ pub fn consolidate_cancel(
             .join(".lumina/temp")
             .join(job)
             .join(format!("{pid}.part"));
+        let mut item_copy_ms = 0i64;
         let (hash, pre_copied) = match known_hash {
             Some(value) => (value, false),
             None => {
                 conn.execute("UPDATE jobs SET stage='copying_and_identifying',current_file=?2,updated_at=?3 WHERE id=?1",params![job,path,Utc::now().to_rfc3339()]).ok();
                 drop(conn);
+                let deferred_copy_started = Instant::now();
                 let value = crate::storage::copy_hash_to_temp_verified(
                     &source,
                     &deferred_temp,
                     Some(cancel),
                 )?;
+                item_copy_ms += deferred_copy_started.elapsed().as_millis() as i64;
                 conn = catalog::open(&db_path).map_err(|e| e.to_string())?;
                 conn.execute(
                     "UPDATE pending_files SET hash=?2 WHERE id=?1",
@@ -1138,6 +1157,7 @@ pub fn consolidate_cancel(
                 (value, true)
             }
         };
+        copy_ms += item_copy_ms;
         if status == "duplicate" {
             duplicate_count += 1
         }
@@ -1210,7 +1230,7 @@ pub fn consolidate_cancel(
             drop(conn);
             let copy_started = Instant::now();
             let copy_result = if pre_copied {
-                crate::storage::promote_verified_temp(&temp, &dest, &hash)
+                crate::storage::promote_preverified_temp(&temp, &dest, &hash)
             } else {
                 crate::storage::copy_verified_via_staged(&source, &dest, &temp, &hash, |stage| {
                     if let Ok(stage_conn) = catalog::open(&db_path) {

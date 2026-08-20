@@ -13,7 +13,7 @@ use std::{
     time::Duration,
 };
 
-pub const THUMBNAIL_VERSION: i64 = 1;
+pub const THUMBNAIL_VERSION: i64 = 2;
 const VIDEO: &[&str] = &["mp4", "mov", "avi", "mkv", "mts", "m2ts", "3gp", "wmv"];
 const RAW: &[&str] = &["dng", "cr2", "cr3", "nef", "arw", "raf", "orf", "rw2"];
 const INTERNAL_IMAGE: &[&str] = &["jpg", "jpeg", "png", "gif", "webp", "tif", "tiff", "bmp"];
@@ -223,6 +223,35 @@ pub fn thumbnail_path(cache_root: &Path, hash: &str) -> PathBuf {
         .join(&hash[..2])
         .join(format!("{hash}.jpg"))
 }
+
+fn read_orientation(source: &Path, cancel: &CancellationToken) -> u8 {
+    process::run(
+        ProcessSpec::new("ExifTool", "exiftool")
+            .args(["-Orientation#", "-s3", source.to_string_lossy().as_ref()])
+            .timeout(Duration::from_secs(10))
+            .logical("ExifTool orientation"),
+        cancel,
+    )
+    .ok()
+    .and_then(|value| String::from_utf8(value.stdout).ok())
+    .and_then(|value| value.trim().parse::<u8>().ok())
+    .filter(|value| (1..=8).contains(value))
+    .unwrap_or(1)
+}
+
+fn apply_orientation(image: image::DynamicImage, orientation: u8) -> image::DynamicImage {
+    match orientation {
+        2 => image.fliph(),
+        3 => image.rotate180(),
+        4 => image.flipv(),
+        5 => image.rotate90().fliph(),
+        6 => image.rotate90(),
+        7 => image.rotate270().fliph(),
+        8 => image.rotate270(),
+        _ => image,
+    }
+}
+
 pub fn generate_thumbnail(
     source: &Path,
     extension: &str,
@@ -246,27 +275,7 @@ pub fn generate_thumbnail(
             .map_err(|e| e.to_string())?
             .decode()
             .map_err(|e| e.to_string())?;
-        let orientation = process::run(
-            ProcessSpec::new("ExifTool", "exiftool")
-                .args(["-Orientation#", "-s3", source.to_string_lossy().as_ref()])
-                .timeout(Duration::from_secs(10))
-                .logical("ExifTool orientation"),
-            cancel,
-        )
-        .ok()
-        .and_then(|v| String::from_utf8(v.stdout).ok())
-        .and_then(|v| v.trim().parse::<u8>().ok())
-        .unwrap_or(1);
-        image = match orientation {
-            2 => image.fliph(),
-            3 => image.rotate180(),
-            4 => image.flipv(),
-            5 => image.rotate90().fliph(),
-            6 => image.rotate90(),
-            7 => image.rotate270().fliph(),
-            8 => image.rotate270(),
-            _ => image,
-        };
+        image = apply_orientation(image, read_orientation(source, cancel));
         image
             .thumbnail(640, 640)
             .save_with_format(&temporary, image::ImageFormat::Jpeg)
@@ -285,12 +294,14 @@ pub fn generate_thumbnail(
         }
         let preview_path = temporary.with_extension("preview.jpg");
         fs::write(&preview_path, &preview.stdout).map_err(|e| e.to_string())?;
+        let orientation = read_orientation(source, cancel);
         let result = ImageReader::open(&preview_path)
             .map_err(|e| e.to_string())?
             .with_guessed_format()
             .map_err(|e| e.to_string())?
             .decode()
-            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
+        let result = apply_orientation(result, orientation)
             .thumbnail(640, 640)
             .save_with_format(&temporary, image::ImageFormat::Jpeg)
             .map_err(|e| e.to_string());
@@ -563,7 +574,7 @@ mod tests {
         let second =
             generate_thumbnail(&real, "png", hash, &root, &CancellationToken::default()).unwrap();
         assert_eq!(first, second);
-        assert!(first.to_string_lossy().contains("v1"));
+        assert!(first.to_string_lossy().contains("v2"));
         fs::remove_dir_all(root).unwrap()
     }
     #[test]
@@ -646,6 +657,78 @@ mod tests {
             "a orientação EXIF 6 deve produzir uma miniatura vertical"
         );
         assert_eq!(height / width, 2);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn every_exif_orientation_has_the_expected_geometry() {
+        for orientation in 1..=8 {
+            let image = image::DynamicImage::ImageRgb8(image::RgbImage::new(100, 50));
+            let transformed = apply_orientation(image, orientation);
+            if orientation >= 5 {
+                assert_eq!((transformed.width(), transformed.height()), (50, 100));
+            } else {
+                assert_eq!((transformed.width(), transformed.height()), (100, 50));
+            }
+        }
+    }
+    #[test]
+    #[cfg(windows)]
+    fn raw_thumbnail_respects_orientation_from_the_raw_container() {
+        let root = std::env::temp_dir().join(Uuid::new_v4().to_string());
+        fs::create_dir_all(&root).unwrap();
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample.dng");
+        let raw = root.join("oriented.dng");
+        fs::copy(source, &raw).unwrap();
+        process::run(
+            ProcessSpec::new("ExifTool", "exiftool")
+                .args([
+                    "-overwrite_original",
+                    "-Orientation#=8",
+                    raw.to_string_lossy().as_ref(),
+                ])
+                .logical("ExifTool RAW orientation fixture"),
+            &CancellationToken::default(),
+        )
+        .unwrap();
+        assert_eq!(read_orientation(&raw, &CancellationToken::default()), 8);
+        let hash = crate::storage::sha256(&raw).unwrap();
+        let thumbnail = generate_thumbnail(
+            &raw,
+            "dng",
+            &hash,
+            &root.join("cache"),
+            &CancellationToken::default(),
+        )
+        .unwrap();
+        let (width, height) = image::image_dimensions(thumbnail).unwrap();
+        assert!(
+            height > width,
+            "RAW EXIF 8 deve produzir miniatura vertical"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    #[cfg(windows)]
+    #[ignore = "usa LUMINA_REAL_RAW_FIXTURE para a regressão no acervo local"]
+    fn real_raw_fixture_keeps_portrait_geometry() {
+        let source = PathBuf::from(std::env::var("LUMINA_REAL_RAW_FIXTURE").unwrap());
+        let orientation = read_orientation(&source, &CancellationToken::default());
+        assert!(
+            (5..=8).contains(&orientation),
+            "fixture deve ser um RAW vertical"
+        );
+        let root = std::env::temp_dir().join(Uuid::new_v4().to_string());
+        let hash = crate::storage::sha256(&source).unwrap();
+        let thumbnail = generate_thumbnail(
+            &source,
+            source.extension().unwrap().to_string_lossy().as_ref(),
+            &hash,
+            &root,
+            &CancellationToken::default(),
+        )
+        .unwrap();
+        let (width, height) = image::image_dimensions(thumbnail).unwrap();
+        assert!(height > width, "RAW vertical produziu {width}x{height}");
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
