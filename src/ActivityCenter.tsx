@@ -16,6 +16,7 @@ const stageLabel: Record<string, string> = {
   validation: "Verificando os arquivos", hashing: "Comparando com sua biblioteca",
   deduplication: "Organizando os resultados", copying: "Copiando com segurança",
   thumbnail: "Preparando a galeria", backup: "Criando a cópia de proteção",
+  verification: "Conferindo a integridade da réplica", verification_error: "Revisando falhas da réplica",
   backing_up: "Finalizando a cópia de proteção", ready: "Análise pronta",
   space_check: "Espaço insuficiente para continuar",
   protection_pending:"Acervo pronto; proteção pendente", backup_space_check:"Aguardando espaço na réplica",

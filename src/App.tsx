@@ -997,10 +997,8 @@ function Protection() {
           <button
             className="primary"
             onClick={async () => {
-              const r = await api.verifyBackup();
-              setResult(
-                `${r.checked} arquivos verificados · ${r.errors} erros`,
-              );
+              await api.verifyBackup();
+              setResult("Verificação iniciada em segundo plano. Acompanhe, pause ou cancele em Atividade.");
             }}
           >
             <ShieldCheck />
@@ -1216,7 +1214,7 @@ function ImportWizard({
     if (!initialJobId) return;
     setActiveJob(initialJobId);
     hydrate(initialJobId);
-    const timer = setInterval(() => hydrate(initialJobId), 750);
+    const timer = setInterval(() => hydrate(initialJobId), 1000);
     return () => clearInterval(timer);
   }, [initialJobId]);
   const wait = async (id: string, states: string[]) => {

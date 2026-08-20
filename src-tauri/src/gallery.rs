@@ -1,7 +1,10 @@
 use crate::models::*;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use rusqlite::{params_from_iter, types::Value, Connection};
+#[cfg(test)]
+static RELATION_QUERIES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Serialize, Deserialize)]
 struct Cursor {
@@ -24,24 +27,36 @@ fn conditions(f: &GalleryFilters) -> (Vec<String>, Vec<Value>) {
         add(
             &mut c,
             &mut v,
-            "substr(a.captured_at,1,4)=?",
-            Value::Text(x.to_string()),
-        )
+            "a.captured_at>=?",
+            Value::Text(format!("{x:04}-01-01T00:00:00")),
+        );
+        add(
+            &mut c,
+            &mut v,
+            "a.captured_at<?",
+            Value::Text(format!("{:04}-01-01T00:00:00", x + 1)),
+        );
     }
     if let Some(x) = f.date_from.as_ref().filter(|x| !x.is_empty()) {
         add(
             &mut c,
             &mut v,
-            "date(a.captured_at)>=date(?)",
-            Value::Text(x.clone()),
+            "a.captured_at>=?",
+            Value::Text(format!("{x}T00:00:00")),
         )
     }
     if let Some(x) = f.date_to.as_ref().filter(|x| !x.is_empty()) {
         add(
             &mut c,
             &mut v,
-            "date(a.captured_at)<=date(?)",
-            Value::Text(x.clone()),
+            "a.captured_at<?",
+            Value::Text(
+                chrono::NaiveDate::parse_from_str(x, "%Y-%m-%d")
+                    .ok()
+                    .and_then(|date| date.succ_opt())
+                    .map(|date| format!("{date}T00:00:00"))
+                    .unwrap_or_else(|| format!("{x}T23:59:59.999")),
+            ),
         )
     }
     if let Some(x) = f.media_type.as_ref().filter(|x| !x.is_empty()) {
@@ -70,8 +85,8 @@ fn conditions(f: &GalleryFilters) -> (Vec<String>, Vec<Value>) {
         add(
             &mut c,
             &mut v,
-            "LOWER(a.extension)=LOWER(?)",
-            Value::Text(x.clone()),
+            "a.extension=?",
+            Value::Text(x.to_ascii_lowercase()),
         )
     }
     if let Some(x) = f.has_location {
@@ -139,38 +154,80 @@ fn options(c: &Connection) -> Result<GalleryFilterOptions, String> {
     Ok(GalleryFilterOptions{cameras:opts(c,"SELECT camera,camera,COUNT(*) FROM assets WHERE camera IS NOT NULL AND camera!='' GROUP BY camera ORDER BY COUNT(*) DESC,camera")?,sources:opts(c,"SELECT s.id,s.name,COUNT(DISTINCT o.asset_id) FROM sources s JOIN occurrences o ON o.source_id=s.id GROUP BY s.id ORDER BY COUNT(DISTINCT o.asset_id) DESC,s.name")?,extensions:opts(c,"SELECT LOWER(extension),UPPER(extension),COUNT(*) FROM assets GROUP BY LOWER(extension) ORDER BY COUNT(*) DESC,extension")?,tags:opts(c,"SELECT t.id,t.name,COUNT(at.asset_id) FROM tags t JOIN asset_tags at ON at.tag_id=t.id GROUP BY t.id ORDER BY COUNT(at.asset_id) DESC,t.name")?,albums:opts(c,"SELECT al.id,al.name,COUNT(aa.asset_id) FROM albums al JOIN album_assets aa ON aa.album_id=al.id GROUP BY al.id ORDER BY COUNT(aa.asset_id) DESC,al.name")?})
 }
 
+fn page_relations(
+    conn: &Connection,
+    asset_ids: &[String],
+    relation: &str,
+) -> Result<HashMap<String, Vec<String>>, String> {
+    if asset_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    #[cfg(test)]
+    RELATION_QUERIES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let placeholders = (1..=asset_ids.len())
+        .map(|index| format!("?{index}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = match relation {
+        "sources" => format!("SELECT o.asset_id,s.name FROM occurrences o JOIN sources s ON s.id=o.source_id WHERE o.asset_id IN({placeholders}) GROUP BY o.asset_id,s.name ORDER BY o.asset_id,s.name"),
+        "tags" => format!("SELECT at.asset_id,t.name FROM asset_tags at JOIN tags t ON t.id=at.tag_id WHERE at.asset_id IN({placeholders}) ORDER BY at.asset_id,t.name"),
+        _ => return Err("Relação de galeria inválida".into()),
+    };
+    let mut statement = conn.prepare(&sql).map_err(|error| error.to_string())?;
+    let pairs = statement
+        .query_map(params_from_iter(asset_ids.iter()), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    let mut grouped = HashMap::<String, Vec<String>>::new();
+    for (asset, value) in pairs {
+        grouped.entry(asset).or_default().push(value);
+    }
+    Ok(grouped)
+}
+
 pub fn search(conn: &Connection, r: &GalleryRequest) -> Result<GalleryResult, String> {
     let (mut clauses, mut values) = conditions(&r.filters);
     let base = where_sql(&clauses);
-    let q=format!("SELECT COUNT(*),COALESCE(SUM(a.bytes),0),COALESCE(SUM(a.media_type='photo'),0),COALESCE(SUM(a.media_type='video'),0),COALESCE(SUM(a.media_type='raw'),0),COALESCE(SUM(a.protection_state='replica_verified'),0),COALESCE(SUM(a.latitude IS NOT NULL AND a.longitude IS NOT NULL),0),COALESCE(SUM((SELECT COUNT(*) FROM occurrences od WHERE od.asset_id=a.id)>1),0) FROM assets a WHERE {base}");
-    let t = conn
-        .query_row(&q, params_from_iter(values.iter()), |x| {
-            Ok((
-                x.get::<_, i64>(0)?,
-                x.get::<_, i64>(1)?,
-                x.get::<_, i64>(2)?,
-                x.get::<_, i64>(3)?,
-                x.get::<_, i64>(4)?,
-                x.get::<_, i64>(5)?,
-                x.get::<_, i64>(6)?,
-                x.get::<_, i64>(7)?,
-            ))
-        })
-        .map_err(|e| e.to_string())?;
-    let q=format!("SELECT CASE WHEN substr(a.captured_at,1,4) GLOB '[0-9][0-9][0-9][0-9]' THEN substr(a.captured_at,1,4) ELSE 'Sem data' END,COUNT(*),COALESCE(SUM(a.bytes),0) FROM assets a WHERE {base} GROUP BY 1 ORDER BY 1 DESC");
-    let mut s = conn.prepare(&q).map_err(|e| e.to_string())?;
-    let years = s
-        .query_map(params_from_iter(values.iter()), |x| {
-            Ok(GalleryYearCount {
-                year: x.get(0)?,
-                count: x.get(1)?,
-                bytes: x.get(2)?,
+    let (t, years, filter_options) = if r.cursor.is_none() {
+        let q=format!("SELECT COUNT(*),COALESCE(SUM(a.bytes),0),COALESCE(SUM(a.media_type='photo'),0),COALESCE(SUM(a.media_type='video'),0),COALESCE(SUM(a.media_type='raw'),0),COALESCE(SUM(a.protection_state='replica_verified'),0),COALESCE(SUM(a.latitude IS NOT NULL AND a.longitude IS NOT NULL),0),COALESCE(SUM((SELECT COUNT(*) FROM occurrences od WHERE od.asset_id=a.id)>1),0) FROM assets a WHERE {base}");
+        let totals = conn
+            .query_row(&q, params_from_iter(values.iter()), |x| {
+                Ok((
+                    x.get(0)?,
+                    x.get(1)?,
+                    x.get(2)?,
+                    x.get(3)?,
+                    x.get(4)?,
+                    x.get(5)?,
+                    x.get(6)?,
+                    x.get(7)?,
+                ))
             })
-        })
-        .map_err(|e| e.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
-    drop(s);
+            .map_err(|e| e.to_string())?;
+        let q=format!("SELECT CASE WHEN substr(a.captured_at,1,4) GLOB '[0-9][0-9][0-9][0-9]' THEN substr(a.captured_at,1,4) ELSE 'Sem data' END,COUNT(*),COALESCE(SUM(a.bytes),0) FROM assets a WHERE {base} GROUP BY 1 ORDER BY 1 DESC");
+        let mut statement = conn.prepare(&q).map_err(|e| e.to_string())?;
+        let years = statement
+            .query_map(params_from_iter(values.iter()), |x| {
+                Ok(GalleryYearCount {
+                    year: x.get(0)?,
+                    count: x.get(1)?,
+                    bytes: x.get(2)?,
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        (totals, years, options(conn)?)
+    } else {
+        (
+            (0, 0, 0, 0, 0, 0, 0, 0),
+            Vec::new(),
+            GalleryFilterOptions::default(),
+        )
+    };
     if let Some(x) = &r.cursor {
         let raw = URL_SAFE_NO_PAD
             .decode(x)
@@ -231,6 +288,9 @@ pub fn search(conn: &Connection, r: &GalleryRequest) -> Result<GalleryResult, St
     } else {
         None
     };
+    let asset_ids = rows.iter().map(|row| row.0.clone()).collect::<Vec<_>>();
+    let mut sources = page_relations(conn, &asset_ids, "sources")?;
+    let mut tags = page_relations(conn, &asset_ids, "tags")?;
     let assets = rows
         .into_iter()
         .map(|x| {
@@ -267,8 +327,8 @@ pub fn search(conn: &Connection, r: &GalleryRequest) -> Result<GalleryResult, St
                 hash: x.14,
                 protection_state: x.15,
                 occurrence_count: x.16,
-                source_names: crate::engine::grouped_sources(conn, &x.0),
-                tags: crate::engine::grouped_tags(conn, &x.0),
+                source_names: sources.remove(&x.0).unwrap_or_default(),
+                tags: tags.remove(&x.0).unwrap_or_default(),
             }
         })
         .collect();
@@ -287,7 +347,7 @@ pub fn search(conn: &Connection, r: &GalleryRequest) -> Result<GalleryResult, St
             duplicate_assets: t.7,
             years,
         },
-        options: options(conn)?,
+        options: filter_options,
     })
 }
 
@@ -340,6 +400,31 @@ mod tests {
         fs::remove_dir_all(r).unwrap()
     }
     #[test]
+    fn page_relations_use_two_batched_queries_instead_of_n_plus_one() {
+        let (root, db) = seed();
+        RELATION_QUERIES.store(0, std::sync::atomic::Ordering::SeqCst);
+        let result = search(
+            &db,
+            &GalleryRequest {
+                filters: Default::default(),
+                cursor: None,
+                limit: Some(100),
+            },
+        )
+        .unwrap();
+        assert_eq!(result.assets.len(), 3);
+        assert_eq!(
+            RELATION_QUERIES.load(std::sync::atomic::Ordering::SeqCst),
+            2
+        );
+        assert!(result
+            .assets
+            .iter()
+            .all(|asset| asset.source_names == vec!["Drone"]));
+        drop(db);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
     fn cursor_no_overlap() {
         let (r, d) = seed();
         let a = search(
@@ -364,6 +449,17 @@ mod tests {
         assert!(!a.assets.iter().any(|x| x.id == b.assets[0].id));
         drop(d);
         fs::remove_dir_all(r).unwrap()
+    }
+    #[test]
+    fn timeline_filter_uses_composite_index() {
+        let (root, db) = seed();
+        let detail:String=db.query_row("EXPLAIN QUERY PLAN SELECT id FROM assets WHERE media_type='photo' AND captured_at>='2024-01-01T00:00:00' AND captured_at<'2025-01-01T00:00:00' ORDER BY captured_at DESC,id DESC LIMIT 100",[],|row|row.get(3)).unwrap();
+        assert!(
+            detail.contains("idx_assets_type_timeline"),
+            "plano inesperado: {detail}"
+        );
+        drop(db);
+        fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn input_is_bound() {

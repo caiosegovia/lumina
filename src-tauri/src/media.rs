@@ -3,6 +3,7 @@ use crate::{
     models::{CacheResult, LibraryConfig, ThumbnailAudit},
     process::{self, CancellationToken, ProcessErrorKind, ProcessSpec},
 };
+#[cfg(test)]
 use base64::Engine;
 use image::ImageReader;
 use rusqlite::{params, OptionalExtension};
@@ -13,7 +14,7 @@ use std::{
     time::Duration,
 };
 
-pub const THUMBNAIL_VERSION: i64 = 1;
+pub const THUMBNAIL_VERSION: i64 = 2;
 const VIDEO: &[&str] = &["mp4", "mov", "avi", "mkv", "mts", "m2ts", "3gp", "wmv"];
 const RAW: &[&str] = &["dng", "cr2", "cr3", "nef", "arw", "raf", "orf", "rw2"];
 const INTERNAL_IMAGE: &[&str] = &["jpg", "jpeg", "png", "gif", "webp", "tif", "tiff", "bmp"];
@@ -223,6 +224,55 @@ pub fn thumbnail_path(cache_root: &Path, hash: &str) -> PathBuf {
         .join(&hash[..2])
         .join(format!("{hash}.jpg"))
 }
+
+fn read_orientation(source: &Path, cancel: &CancellationToken) -> u8 {
+    if let Ok(file) = fs::File::open(source) {
+        let mut reader = std::io::BufReader::new(file);
+        if let Ok(metadata) = exif::Reader::new().read_from_container(&mut reader) {
+            if let Some(value) = metadata
+                .get_field(exif::Tag::Orientation, exif::In::PRIMARY)
+                .and_then(|field| field.value.get_uint(0))
+                .filter(|value| (1..=8).contains(value))
+            {
+                return value as u8;
+            }
+        }
+    }
+    let extension = source
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if !RAW.contains(&extension.as_str()) {
+        return 1;
+    }
+    process::run(
+        ProcessSpec::new("ExifTool", "exiftool")
+            .args(["-Orientation#", "-s3", source.to_string_lossy().as_ref()])
+            .timeout(Duration::from_secs(10))
+            .logical("ExifTool orientation"),
+        cancel,
+    )
+    .ok()
+    .and_then(|value| String::from_utf8(value.stdout).ok())
+    .and_then(|value| value.trim().parse::<u8>().ok())
+    .filter(|value| (1..=8).contains(value))
+    .unwrap_or(1)
+}
+
+fn apply_orientation(image: image::DynamicImage, orientation: u8) -> image::DynamicImage {
+    match orientation {
+        2 => image.fliph(),
+        3 => image.rotate180(),
+        4 => image.flipv(),
+        5 => image.rotate90().fliph(),
+        6 => image.rotate90(),
+        7 => image.rotate270().fliph(),
+        8 => image.rotate270(),
+        _ => image,
+    }
+}
+
 pub fn generate_thumbnail(
     source: &Path,
     extension: &str,
@@ -246,27 +296,7 @@ pub fn generate_thumbnail(
             .map_err(|e| e.to_string())?
             .decode()
             .map_err(|e| e.to_string())?;
-        let orientation = process::run(
-            ProcessSpec::new("ExifTool", "exiftool")
-                .args(["-Orientation#", "-s3", source.to_string_lossy().as_ref()])
-                .timeout(Duration::from_secs(10))
-                .logical("ExifTool orientation"),
-            cancel,
-        )
-        .ok()
-        .and_then(|v| String::from_utf8(v.stdout).ok())
-        .and_then(|v| v.trim().parse::<u8>().ok())
-        .unwrap_or(1);
-        image = match orientation {
-            2 => image.fliph(),
-            3 => image.rotate180(),
-            4 => image.flipv(),
-            5 => image.rotate90().fliph(),
-            6 => image.rotate90(),
-            7 => image.rotate270().fliph(),
-            8 => image.rotate270(),
-            _ => image,
-        };
+        image = apply_orientation(image, read_orientation(source, cancel));
         image
             .thumbnail(640, 640)
             .save_with_format(&temporary, image::ImageFormat::Jpeg)
@@ -285,12 +315,14 @@ pub fn generate_thumbnail(
         }
         let preview_path = temporary.with_extension("preview.jpg");
         fs::write(&preview_path, &preview.stdout).map_err(|e| e.to_string())?;
+        let orientation = read_orientation(source, cancel);
         let result = ImageReader::open(&preview_path)
             .map_err(|e| e.to_string())?
             .with_guessed_format()
             .map_err(|e| e.to_string())?
             .decode()
-            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
+        let result = apply_orientation(result, orientation)
             .thumbnail(640, 640)
             .save_with_format(&temporary, image::ImageFormat::Jpeg)
             .map_err(|e| e.to_string());
@@ -327,7 +359,7 @@ pub fn generate_thumbnail(
     Ok(destination)
 }
 
-pub fn thumbnail_data(cfg: &LibraryConfig, asset: &str) -> Result<Option<String>, String> {
+pub fn thumbnail_file(cfg: &LibraryConfig, asset: &str) -> Result<Option<PathBuf>, String> {
     let conn = catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite"))
         .map_err(|e| e.to_string())?;
     let row = conn
@@ -339,7 +371,7 @@ pub fn thumbnail_data(cfg: &LibraryConfig, asset: &str) -> Result<Option<String>
         .optional()
         .map_err(|e| e.to_string())?;
     match row {
-        Some((master, extension, hash, stored, version, state)) => {
+        Some((_master, _extension, _hash, stored, version, state)) => {
             let allowed_root = Path::new(&cfg.master_path).join(".lumina/cache/thumbnails");
             if let Some(stored_path) = stored
                 .as_ref()
@@ -359,19 +391,8 @@ pub fn thumbnail_data(cfg: &LibraryConfig, asset: &str) -> Result<Option<String>
                 .map(Path::new)
                 .filter(|p| p.exists() && image::image_dimensions(p).is_ok())
                 .map(Path::to_path_buf);
-            let value = match valid {
-                Some(p) => p,
-                None => {
-                    let generated = generate_thumbnail(
-                        Path::new(&master),
-                        &extension,
-                        &hash,
-                        &Path::new(&cfg.master_path).join(".lumina/cache"),
-                        &CancellationToken::default(),
-                    )?;
-                    conn.execute("INSERT INTO thumbnails(asset_id,generator_version,path,state,last_error,updated_at)VALUES(?1,?2,?3,'ready',NULL,datetime('now'))ON CONFLICT(asset_id)DO UPDATE SET generator_version=excluded.generator_version,path=excluded.path,state='ready',last_error=NULL,updated_at=excluded.updated_at",params![asset,THUMBNAIL_VERSION,generated.to_string_lossy()]).map_err(|e|e.to_string())?;
-                    generated
-                }
+            let Some(value) = valid else {
+                return Ok(None);
             };
             let allowed = Path::new(&cfg.master_path).join(".lumina/cache/thumbnails");
             let resolved = fs::canonicalize(&value).map_err(|e| e.to_string())?;
@@ -379,14 +400,38 @@ pub fn thumbnail_data(cfg: &LibraryConfig, asset: &str) -> Result<Option<String>
             if !resolved.starts_with(allowed) {
                 return Err("Caminho de miniatura fora do cache permitido".into());
             }
-            let bytes = fs::read(resolved).map_err(|e| e.to_string())?;
-            Ok(Some(format!(
-                "data:image/jpeg;base64,{}",
-                base64::engine::general_purpose::STANDARD.encode(bytes)
-            )))
+            Ok(Some(resolved))
         }
         None => Ok(None),
     }
+}
+
+#[cfg(test)]
+pub fn thumbnail_data(cfg: &LibraryConfig, asset: &str) -> Result<Option<String>, String> {
+    thumbnail_file(cfg, asset)?
+        .map(|path| {
+            fs::read(path)
+                .map(|bytes| {
+                    format!(
+                        "data:image/jpeg;base64,{}",
+                        base64::engine::general_purpose::STANDARD.encode(bytes)
+                    )
+                })
+                .map_err(|e| e.to_string())
+        })
+        .transpose()
+}
+
+pub fn enqueue_thumbnail(cfg: &LibraryConfig, asset: &str, priority: i64) -> Result<(), String> {
+    let conn = catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite"))
+        .map_err(|e| e.to_string())?;
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute("INSERT OR IGNORE INTO sources(id,name,path,volume_label,available)VALUES('_lumina_maintenance','Manutenção da biblioteca','lumina://maintenance','internal',1)",[]).map_err(|e|e.to_string())?;
+    conn.execute("INSERT OR IGNORE INTO jobs(id,source_id,source_path,state,stage,created_at,updated_at,library_state,backup_state)VALUES('_thumbnail_background','_lumina_maintenance','lumina://thumbnails','queued','thumbnail',?1,?1,'verified','pending')",[&now]).map_err(|e|e.to_string())?;
+    let pending = crate::pipeline::WorkState::Pending.as_str();
+    conn.execute("INSERT INTO work_queue(job_id,asset_id,kind,state,priority,created_at,updated_at)VALUES('_thumbnail_background',?1,'thumbnail',?2,?3,?4,?4)ON CONFLICT(job_id,asset_id,kind)DO UPDATE SET state=CASE WHEN work_queue.state IN('completed','processing') THEN work_queue.state ELSE excluded.state END,priority=MAX(work_queue.priority,excluded.priority),updated_at=excluded.updated_at",params![asset,pending,priority,now]).map_err(|e|e.to_string())?;
+    conn.execute("INSERT INTO thumbnails(asset_id,generator_version,path,state,updated_at)VALUES(?1,?2,'','pending',?3)ON CONFLICT(asset_id)DO UPDATE SET generator_version=excluded.generator_version,state=CASE WHEN thumbnails.state='ready' AND thumbnails.generator_version=?2 THEN 'ready' ELSE 'pending' END,updated_at=excluded.updated_at",params![asset,THUMBNAIL_VERSION,now]).map_err(|e|e.to_string())?;
+    Ok(())
 }
 pub fn clear_cache(cfg: &LibraryConfig) -> Result<i64, String> {
     let cache = Path::new(&cfg.master_path).join(".lumina/cache/thumbnails");
@@ -563,7 +608,7 @@ mod tests {
         let second =
             generate_thumbnail(&real, "png", hash, &root, &CancellationToken::default()).unwrap();
         assert_eq!(first, second);
-        assert!(first.to_string_lossy().contains("v1"));
+        assert!(first.to_string_lossy().contains("v2"));
         fs::remove_dir_all(root).unwrap()
     }
     #[test]
@@ -649,6 +694,78 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
+    fn every_exif_orientation_has_the_expected_geometry() {
+        for orientation in 1..=8 {
+            let image = image::DynamicImage::ImageRgb8(image::RgbImage::new(100, 50));
+            let transformed = apply_orientation(image, orientation);
+            if orientation >= 5 {
+                assert_eq!((transformed.width(), transformed.height()), (50, 100));
+            } else {
+                assert_eq!((transformed.width(), transformed.height()), (100, 50));
+            }
+        }
+    }
+    #[test]
+    #[cfg(windows)]
+    fn raw_thumbnail_respects_orientation_from_the_raw_container() {
+        let root = std::env::temp_dir().join(Uuid::new_v4().to_string());
+        fs::create_dir_all(&root).unwrap();
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample.dng");
+        let raw = root.join("oriented.dng");
+        fs::copy(source, &raw).unwrap();
+        process::run(
+            ProcessSpec::new("ExifTool", "exiftool")
+                .args([
+                    "-overwrite_original",
+                    "-Orientation#=8",
+                    raw.to_string_lossy().as_ref(),
+                ])
+                .logical("ExifTool RAW orientation fixture"),
+            &CancellationToken::default(),
+        )
+        .unwrap();
+        assert_eq!(read_orientation(&raw, &CancellationToken::default()), 8);
+        let hash = crate::storage::sha256(&raw).unwrap();
+        let thumbnail = generate_thumbnail(
+            &raw,
+            "dng",
+            &hash,
+            &root.join("cache"),
+            &CancellationToken::default(),
+        )
+        .unwrap();
+        let (width, height) = image::image_dimensions(thumbnail).unwrap();
+        assert!(
+            height > width,
+            "RAW EXIF 8 deve produzir miniatura vertical"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    #[cfg(windows)]
+    #[ignore = "usa LUMINA_REAL_RAW_FIXTURE para a regressão no acervo local"]
+    fn real_raw_fixture_keeps_portrait_geometry() {
+        let source = PathBuf::from(std::env::var("LUMINA_REAL_RAW_FIXTURE").unwrap());
+        let orientation = read_orientation(&source, &CancellationToken::default());
+        assert!(
+            (5..=8).contains(&orientation),
+            "fixture deve ser um RAW vertical"
+        );
+        let root = std::env::temp_dir().join(Uuid::new_v4().to_string());
+        let hash = crate::storage::sha256(&source).unwrap();
+        let thumbnail = generate_thumbnail(
+            &source,
+            source.extension().unwrap().to_string_lossy().as_ref(),
+            &hash,
+            &root,
+            &CancellationToken::default(),
+        )
+        .unwrap();
+        let (width, height) = image::image_dimensions(thumbnail).unwrap();
+        assert!(height > width, "RAW vertical produziu {width}x{height}");
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
     #[cfg(windows)]
     fn validates_real_heic_and_raw_fixtures() {
         let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
@@ -708,6 +825,36 @@ mod tests {
         assert!(thumbnail_data(&cfg, "a")
             .unwrap_err()
             .contains("fora do cache"));
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn thumbnail_read_never_generates_work_inside_the_ui_request() {
+        let root = std::env::temp_dir().join(Uuid::new_v4().to_string());
+        let master = root.join("master");
+        let backup = root.join("backup");
+        fs::create_dir_all(master.join(".lumina")).unwrap();
+        fs::create_dir_all(&backup).unwrap();
+        let original = master.join("photo.png");
+        image::RgbImage::from_pixel(20, 10, image::Rgb([1, 2, 3]))
+            .save(&original)
+            .unwrap();
+        let cfg = LibraryConfig {
+            id: "l".into(),
+            name: "t".into(),
+            master_path: master.to_string_lossy().into(),
+            backup_path: backup.to_string_lossy().into(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+        let conn = catalog::open(&master.join(".lumina/catalog.sqlite")).unwrap();
+        let hash = crate::storage::sha256(&original).unwrap();
+        conn.execute("INSERT INTO assets(id,hash,filename,media_type,extension,captured_at,date_source,bytes,master_path,created_at)VALUES('pending',?1,'photo.png','photo','png',?2,'file',1,?3,?2)",params![hash,chrono::Utc::now().to_rfc3339(),original.to_string_lossy()]).unwrap();
+        drop(conn);
+        assert!(thumbnail_data(&cfg, "pending").unwrap().is_none());
+        assert!(!master.join(".lumina/cache/thumbnails/v2").exists());
+        enqueue_thumbnail(&cfg, "pending", 100).unwrap();
+        let conn = catalog::open(&master.join(".lumina/catalog.sqlite")).unwrap();
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM work_queue WHERE asset_id='pending' AND kind='thumbnail' AND state='pending'",[],|row|row.get::<_,i64>(0)).unwrap(),1);
+        drop(conn);
         fs::remove_dir_all(root).unwrap();
     }
     #[test]

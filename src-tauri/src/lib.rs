@@ -9,7 +9,9 @@ mod media;
 mod models;
 mod pipeline;
 mod process;
+mod resource;
 mod storage;
+mod volume;
 
 use chrono::Utc;
 use models::*;
@@ -19,7 +21,7 @@ use std::{
     path::{Path, PathBuf},
     sync::Mutex,
 };
-use tauri::State;
+use tauri::{Manager, State};
 use uuid::Uuid;
 
 struct AppState {
@@ -184,8 +186,14 @@ fn create_library(
     Ok(cfg)
 }
 #[tauri::command]
-fn get_dashboard(state: State<AppState>) -> Result<DashboardStats, String> {
+async fn get_dashboard(state: State<'_, AppState>) -> Result<DashboardStats, String> {
     let cfg = current(&state)?;
+    tauri::async_runtime::spawn_blocking(move || get_dashboard_sync(&cfg))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+fn get_dashboard_sync(cfg: &LibraryConfig) -> Result<DashboardStats, String> {
     let conn = db(&cfg)?;
     let row=conn.query_row("SELECT COUNT(*),COALESCE(SUM(media_type!='video'),0),COALESCE(SUM(media_type='video'),0),COALESCE(SUM(bytes),0),COALESCE(SUM(protection_state='replica_verified'),0),COALESCE(SUM(protection_state IN('source_only','consolidated','stale')),0),COALESCE(SUM(protection_state='error'),0) FROM assets",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).map_err(|e|e.to_string())?;
     let duplicate_groups=conn.query_row("SELECT COUNT(*) FROM(SELECT asset_id FROM occurrences GROUP BY asset_id HAVING COUNT(*)>1)",[],|r|r.get(0)).unwrap_or(0);
@@ -326,7 +334,7 @@ fn get_dashboard(state: State<AppState>) -> Result<DashboardStats, String> {
 fn list_sources(state: State<AppState>) -> Result<Vec<Source>, String> {
     let cfg = current(&state)?;
     let conn = db(&cfg)?;
-    let mut stmt=conn.prepare("SELECT id,name,path,volume_label,last_scan,asset_count FROM sources ORDER BY last_scan DESC").map_err(|e|e.to_string())?;
+    let mut stmt=conn.prepare("SELECT id,name,COALESCE(mount_path,path),volume_label,last_scan,asset_count FROM sources ORDER BY last_scan DESC").map_err(|e|e.to_string())?;
     let raw = stmt
         .query_map([], |r| {
             Ok((
@@ -423,12 +431,14 @@ fn list_assets(query: String, state: State<AppState>) -> Result<Vec<MediaAsset>,
         .collect())
 }
 #[tauri::command]
-fn search_gallery(
+async fn search_gallery(
     request: GalleryRequest,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<GalleryResult, String> {
     let cfg = current(&state)?;
-    gallery::search(&db(&cfg)?, &request)
+    tauri::async_runtime::spawn_blocking(move || gallery::search(&db(&cfg)?, &request))
+        .await
+        .map_err(|error| error.to_string())?
 }
 #[tauri::command]
 fn list_duplicates(state: State<AppState>) -> Result<Vec<DuplicateGroup>, String> {
@@ -729,11 +739,15 @@ fn get_job_snapshot(job_id: String, state: State<AppState>) -> Result<JobProgres
     engine::job_progress(&current(&state)?, &job_id)
 }
 #[tauri::command]
-async fn verify_backup(state: State<'_, AppState>) -> Result<VerifyResult, String> {
+fn verify_backup(
+    state: State<AppState>,
+    manager: State<jobs::JobManager>,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
     let cfg = current(&state)?;
-    tauri::async_runtime::spawn_blocking(move || engine::verify(&cfg))
-        .await
-        .map_err(|e| e.to_string())?
+    let job = manager.start_verification(cfg.clone())?;
+    jobs::emit_progress(app, cfg, job.clone());
+    Ok(job)
 }
 #[tauri::command]
 fn start_analysis(
@@ -819,8 +833,33 @@ fn export_job_report(
     events::export(&current(&state)?, &job_id, &format)
 }
 #[tauri::command]
-fn get_thumbnail(asset_id: String, state: State<AppState>) -> Result<Option<String>, String> {
-    media::thumbnail_data(&current(&state)?, &asset_id)
+fn get_thumbnail(
+    asset_id: String,
+    state: State<AppState>,
+    manager: State<jobs::JobManager>,
+) -> Result<Option<String>, String> {
+    let cfg = current(&state)?;
+    let thumbnail = media::thumbnail_file(&cfg, &asset_id)?;
+    if thumbnail.is_none() {
+        manager.request_thumbnail(cfg, asset_id.clone())?;
+    }
+    Ok(thumbnail.map(|_| {
+        #[cfg(windows)]
+        {
+            format!("http://lumina-thumb.localhost/{asset_id}")
+        }
+        #[cfg(not(windows))]
+        {
+            format!("lumina-thumb://localhost/{asset_id}")
+        }
+    }))
+}
+
+fn valid_thumbnail_asset_id(asset: &str) -> bool {
+    !asset.is_empty()
+        && asset
+            .chars()
+            .all(|value| value.is_ascii_alphanumeric() || value == '-')
 }
 #[tauri::command]
 async fn rebuild_thumbnail_cache(state: State<'_, AppState>) -> Result<CacheResult, String> {
@@ -857,8 +896,40 @@ pub fn run() {
     });
     if let Some(cfg) = config.as_ref() {
         let _ = jobs::JobManager::interrupt_running(cfg);
+        let _ = manager.resume_background(cfg.clone());
     }
     tauri::Builder::default()
+        .register_uri_scheme_protocol("lumina-thumb", |context, request| {
+            let asset = request.uri().path().trim_start_matches('/');
+            let response = || -> Result<Vec<u8>, String> {
+                if !valid_thumbnail_asset_id(asset) {
+                    return Err("Identificador inválido".into());
+                }
+                let state = context.app_handle().state::<AppState>();
+                let cfg = state
+                    .library
+                    .lock()
+                    .map_err(|_| "Estado indisponível".to_string())?
+                    .clone()
+                    .ok_or_else(|| "Biblioteca não configurada".to_string())?;
+                let path = media::thumbnail_file(&cfg, asset)?
+                    .ok_or_else(|| "Miniatura indisponível".to_string())?;
+                fs::read(path).map_err(|error| error.to_string())
+            };
+            match response() {
+                Ok(bytes) => tauri::http::Response::builder()
+                    .status(200)
+                    .header("Content-Type", "image/jpeg")
+                    .header("Cache-Control", "public, max-age=31536000, immutable")
+                    .body(bytes)
+                    .unwrap(),
+                Err(error) => tauri::http::Response::builder()
+                    .status(404)
+                    .header("Content-Type", "text/plain; charset=utf-8")
+                    .body(error.into_bytes())
+                    .unwrap(),
+            }
+        })
         .plugin(tauri_plugin_dialog::init())
         .manage(manager)
         .manage(AppState {
@@ -912,4 +983,17 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("erro ao iniciar Lumina")
+}
+
+#[cfg(test)]
+mod protocol_tests {
+    use super::valid_thumbnail_asset_id;
+
+    #[test]
+    fn thumbnail_protocol_rejects_paths_and_accepts_catalog_ids() {
+        assert!(valid_thumbnail_asset_id("7c01d129-281e-4da2-a219-f6e704da"));
+        assert!(!valid_thumbnail_asset_id("../catalog.sqlite"));
+        assert!(!valid_thumbnail_asset_id("folder/asset"));
+        assert!(!valid_thumbnail_asset_id(""));
+    }
 }

@@ -9,7 +9,10 @@ use std::{
     collections::{HashMap, VecDeque},
     fs,
     path::Path,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
 };
 use tauri::Emitter;
 use uuid::Uuid;
@@ -22,7 +25,10 @@ struct Inner {
     instance_id: String,
     active: Mutex<Option<String>>,
     tokens: Mutex<HashMap<String, CancellationToken>>,
-    pending_analysis: Mutex<VecDeque<PendingAnalysis>>,
+    library: Mutex<Option<LibraryConfig>>,
+    thumbnail_worker_active: AtomicBool,
+    thumbnail_dispatcher_active: AtomicBool,
+    thumbnail_requests: Mutex<VecDeque<(LibraryConfig, String)>>,
 }
 #[derive(Clone)]
 struct PendingAnalysis {
@@ -38,9 +44,110 @@ impl JobManager {
                 instance_id: Uuid::new_v4().to_string(),
                 active: Mutex::new(None),
                 tokens: Mutex::new(HashMap::new()),
-                pending_analysis: Mutex::new(VecDeque::new()),
+                library: Mutex::new(None),
+                thumbnail_worker_active: AtomicBool::new(false),
+                thumbnail_dispatcher_active: AtomicBool::new(false),
+                thumbnail_requests: Mutex::new(VecDeque::new()),
             }),
         }
+    }
+    pub fn request_thumbnail(&self, cfg: LibraryConfig, asset: String) -> Result<(), String> {
+        self.inner
+            .thumbnail_requests
+            .lock()
+            .map_err(|_| "Fila de miniaturas indisponível".to_string())?
+            .push_back((cfg, asset));
+        if self
+            .inner
+            .thumbnail_dispatcher_active
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Ok(());
+        }
+        let manager = self.clone();
+        std::thread::Builder::new()
+            .name("lumina-thumbnail-dispatcher".into())
+            .spawn(move || loop {
+                let request = manager
+                    .inner
+                    .thumbnail_requests
+                    .lock()
+                    .ok()
+                    .and_then(|mut queue| queue.pop_front());
+                let Some((cfg, asset)) = request else {
+                    manager
+                        .inner
+                        .thumbnail_dispatcher_active
+                        .store(false, Ordering::Release);
+                    let pending = manager
+                        .inner
+                        .thumbnail_requests
+                        .lock()
+                        .map(|queue| !queue.is_empty())
+                        .unwrap_or(false);
+                    if pending
+                        && manager
+                            .inner
+                            .thumbnail_dispatcher_active
+                            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                            .is_ok()
+                    {
+                        continue;
+                    }
+                    break;
+                };
+                if crate::media::enqueue_thumbnail(&cfg, &asset, 100).is_ok() {
+                    let _ = manager.start_thumbnail_worker(cfg);
+                }
+            })
+            .map_err(|error| {
+                self.inner
+                    .thumbnail_dispatcher_active
+                    .store(false, Ordering::Release);
+                error.to_string()
+            })?;
+        Ok(())
+    }
+    fn start_thumbnail_worker(&self, cfg: LibraryConfig) -> Result<(), String> {
+        if self
+            .inner
+            .thumbnail_worker_active
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Ok(());
+        }
+        let manager = self.clone();
+        std::thread::Builder::new()
+            .name("lumina-thumbnail-worker".into())
+            .spawn(move || {
+                let token = CancellationToken::default();
+                loop {
+                    let _ = engine::process_thumbnail_queue(&cfg, "_thumbnail_background", &token);
+                    manager.inner.thumbnail_worker_active.store(false, Ordering::Release);
+                    let pending=catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite")).ok().and_then(|conn|conn.query_row("SELECT EXISTS(SELECT 1 FROM work_queue WHERE job_id='_thumbnail_background' AND kind='thumbnail' AND state='pending')",[],|row|row.get::<_,bool>(0)).ok()).unwrap_or(false);
+                    if pending&&manager.inner.thumbnail_worker_active.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_ok(){continue}
+                    break
+                }
+            })
+            .map_err(|error| {
+                self.inner
+                    .thumbnail_worker_active
+                    .store(false, Ordering::Release);
+                error.to_string()
+            })?;
+        Ok(())
+    }
+    pub fn resume_background(&self, cfg: LibraryConfig) -> Result<(), String> {
+        let conn = catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite"))
+            .map_err(|e| e.to_string())?;
+        let pending:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM work_queue WHERE kind='thumbnail' AND state='pending')",[],|row|row.get(0)).map_err(|e|e.to_string())?;
+        drop(conn);
+        if pending {
+            self.start_thumbnail_worker(cfg)?
+        }
+        Ok(())
     }
     fn reserve(&self, job: &str) -> Result<(), String> {
         let mut active = self
@@ -69,20 +176,23 @@ impl JobManager {
             }
         }
         self.inner.tokens.lock().unwrap().remove(job);
-        let next = self
-            .inner
-            .pending_analysis
-            .lock()
-            .ok()
-            .and_then(|mut q| q.pop_front());
+        let cfg = self.inner.library.lock().ok().and_then(|cfg| cfg.clone());
+        let next = cfg.and_then(|cfg| {
+            let path = Path::new(&cfg.master_path).join(".lumina/catalog.sqlite");
+            catalog::open(&path).ok().and_then(|conn| {
+                conn.query_row(
+                    "SELECT id,source_path,COALESCE((SELECT name FROM sources WHERE id=jobs.source_id),'Fonte') FROM jobs WHERE state='queued' AND stage='discovery' ORDER BY created_at,id LIMIT 1",
+                    [],
+                    |row| Ok(PendingAnalysis { cfg: cfg.clone(), job: row.get(0)?, path: row.get(1)?, name: row.get(2)? }),
+                ).ok()
+            })
+        });
         if let Some(next) = next {
             if self.reserve(&next.job).is_ok() {
                 if let Err(error) = self.spawn_analysis(next.clone()) {
                     self.mark_failed(&next.cfg, &next.job, &error);
                     self.release(&next.job);
                 }
-            } else if let Ok(mut queue) = self.inner.pending_analysis.lock() {
-                queue.push_front(next);
             }
         }
     }
@@ -90,7 +200,7 @@ impl JobManager {
         if let Ok(conn) = catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite"))
         {
             let now = Utc::now().to_rfc3339();
-            let _ = conn.execute("UPDATE jobs SET state='failed',interruption_reason=?2,finished_at=?3,updated_at=?3 WHERE id=?1", params![job,error,now]);
+            let _ = conn.execute("UPDATE jobs SET state=CASE WHEN state IN('backup_error','waiting_backup_space') THEN state ELSE 'failed' END,interruption_reason=?2,finished_at=?3,updated_at=?3 WHERE id=?1", params![job,error,now]);
         }
     }
     fn mark_canceled(&self, cfg: &LibraryConfig, job: &str) {
@@ -150,9 +260,6 @@ impl JobManager {
                 token.cancel();
             }
         }
-        if let Ok(mut pending) = self.inner.pending_analysis.lock() {
-            pending.retain(|item| item.job != job);
-        }
     }
     pub fn start_analysis(
         &self,
@@ -160,6 +267,11 @@ impl JobManager {
         path: String,
         name: String,
     ) -> Result<String, String> {
+        *self
+            .inner
+            .library
+            .lock()
+            .map_err(|_| "Biblioteca indisponível")? = Some(cfg.clone());
         let job = engine::queue_analysis(&cfg, &path, &name)?;
         let pending = PendingAnalysis {
             cfg,
@@ -169,12 +281,7 @@ impl JobManager {
         };
         match self.reserve(&job) {
             Ok(()) => self.spawn_analysis(pending)?,
-            Err(_) => self
-                .inner
-                .pending_analysis
-                .lock()
-                .map_err(|_| "Fila de análises indisponível")?
-                .push_back(pending),
+            Err(_) => (), // O catálogo mantém o job em queued até o slot ficar livre.
         }
         Ok(job)
     }
@@ -206,6 +313,31 @@ impl JobManager {
             .map_err(|e| e.to_string())?;
         Ok(())
     }
+    fn spawn_verification(&self, cfg: LibraryConfig, job: String) -> Result<(), String> {
+        self.reserve(&job)?;
+        let cancel = self.token(&job)?;
+        let manager = self.clone();
+        let worker = job.clone();
+        std::thread::Builder::new()
+            .name(format!("lumina-verification-{job}"))
+            .spawn(move || {
+                if let Err(error) = engine::verify_job(&cfg, &worker, &cancel) {
+                    if error == "JOB_CANCELED" {
+                        manager.mark_canceled(&cfg, &worker)
+                    } else {
+                        manager.mark_failed(&cfg, &worker, &error)
+                    }
+                }
+                manager.release(&worker)
+            })
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    pub fn start_verification(&self, cfg: LibraryConfig) -> Result<String, String> {
+        let job = engine::queue_verification(&cfg)?;
+        self.spawn_verification(cfg, job.clone())?;
+        Ok(job)
+    }
     pub fn has_active(&self) -> bool {
         self.inner
             .active
@@ -229,6 +361,9 @@ impl JobManager {
             "protection_pending" | "backup" | "waiting_backup_space" | "backup_error"
         ) {
             return self.start_protection(cfg, job);
+        }
+        if matches!(stage.as_str(), "verification" | "verification_error") {
+            return self.spawn_verification(cfg, job);
         }
         self.reserve(&job)?;
         let cancel = self.token(&job)?;
@@ -330,7 +465,7 @@ pub fn emit_progress(app: tauri::AppHandle, cfg: LibraryConfig, job: String) {
                 }
                 Err(_) => break,
             }
-            std::thread::sleep(std::time::Duration::from_millis(150));
+            std::thread::sleep(std::time::Duration::from_millis(500));
         });
 }
 
@@ -373,7 +508,7 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
-    fn cancel_removes_an_analysis_that_is_still_queued() {
+    fn analysis_queue_configuration_is_kept_without_a_volatile_job_queue() {
         let manager = JobManager::new();
         let cfg = LibraryConfig {
             id: "l".into(),
@@ -382,18 +517,45 @@ mod tests {
             backup_path: "backup".into(),
             created_at: Utc::now().to_rfc3339(),
         };
-        manager
-            .inner
-            .pending_analysis
-            .lock()
-            .unwrap()
-            .push_back(PendingAnalysis {
-                cfg,
-                path: "source".into(),
-                name: "source".into(),
-                job: "queued".into(),
-            });
-        manager.cancel("queued");
-        assert!(manager.inner.pending_analysis.lock().unwrap().is_empty());
+        *manager.inner.library.lock().unwrap() = Some(cfg);
+        assert!(manager.inner.library.lock().unwrap().is_some());
+    }
+
+    #[test]
+    fn restart_recovers_processing_work_from_the_catalog() {
+        let root = std::env::temp_dir().join(format!("lumina-restart-{}", Uuid::new_v4()));
+        let master = root.join("master");
+        let backup = root.join("backup");
+        fs::create_dir_all(master.join(".lumina")).unwrap();
+        fs::create_dir_all(&backup).unwrap();
+        let cfg = LibraryConfig {
+            id: "l".into(),
+            name: "t".into(),
+            master_path: master.to_string_lossy().into(),
+            backup_path: backup.to_string_lossy().into(),
+            created_at: Utc::now().to_rfc3339(),
+        };
+        let conn = catalog::open(&master.join(".lumina/catalog.sqlite")).unwrap();
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO sources(id,name,path,volume_label)VALUES('s','s','source','v')",
+            [],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO jobs(id,source_id,source_path,state,stage,created_at,updated_at)VALUES('j','s','source','analyzing','validation',?1,?1)",[&now]).unwrap();
+        conn.execute("INSERT INTO work_queue(job_id,kind,state,created_at,updated_at)VALUES('j','verification','processing',?1,?1)",[&now]).unwrap();
+        drop(conn);
+        JobManager::interrupt_running(&cfg).unwrap();
+        assert_eq!(JobManager::recoverable(&cfg).unwrap().len(), 1);
+        let conn = catalog::open(&master.join(".lumina/catalog.sqlite")).unwrap();
+        assert_eq!(
+            conn.query_row("SELECT state FROM work_queue WHERE job_id='j'", [], |row| {
+                row.get::<_, String>(0)
+            })
+            .unwrap(),
+            "pending"
+        );
+        drop(conn);
+        fs::remove_dir_all(root).unwrap();
     }
 }
