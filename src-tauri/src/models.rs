@@ -44,6 +44,50 @@ pub struct DashboardStats {
     pub snapshot_generated_at: String,
     pub stale: bool,
     pub timings: Vec<DashboardTiming>,
+    #[serde(default)]
+    pub storage: DashboardStorage,
+    #[serde(default)]
+    pub technical: DashboardTechnical,
+    #[serde(default)]
+    pub codecs: Vec<DashboardBreakdown>,
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DashboardStorage {
+    pub master_total_bytes: u64,
+    pub master_used_bytes: u64,
+    pub master_free_bytes: u64,
+    pub library_bytes: u64,
+    pub cache_bytes: u64,
+    pub temporary_bytes: u64,
+    pub backup_total_bytes: u64,
+    pub backup_used_bytes: u64,
+    pub backup_free_bytes: u64,
+    pub pending_backup_bytes: u64,
+    pub projected_backup_free_bytes: i64,
+    pub reserve_bytes: u64,
+    pub estimated_additional_items: i64,
+    pub average_asset_bytes: i64,
+    pub p90_asset_bytes: i64,
+    pub backup_available: bool,
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DashboardTechnical {
+    pub enriched: i64,
+    pub complete: i64,
+    pub partial: i64,
+    pub preservation: i64,
+    pub unknown: i64,
+    pub mismatches: i64,
+    pub codec_known: i64,
+    pub codec_missing: i64,
+    pub thumbnails_ready: i64,
+    pub thumbnails_pending: i64,
+    pub thumbnails_failed: i64,
+    pub metadata_complete: i64,
+    pub review_items: i64,
+    pub review_bytes: i64,
 }
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

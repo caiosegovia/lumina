@@ -240,6 +240,48 @@ where
     (result, validations)
 }
 
+fn technical_photo_batches(
+    paths: &[PathBuf],
+    cancel: &crate::process::CancellationToken,
+) -> HashMap<String, serde_json::Value> {
+    let mut result = HashMap::new();
+    for batch in paths.chunks(200) {
+        if cancel.is_cancelled() {
+            break;
+        }
+        let mut args = vec![
+            "-json".into(),
+            "-n".into(),
+            "-LensModel".into(),
+            "-ISO".into(),
+            "-FNumber".into(),
+            "-ExposureTime".into(),
+            "-FocalLength".into(),
+            "-Orientation#".into(),
+            "-ColorSpace".into(),
+            "-PreviewImageLength".into(),
+        ];
+        args.extend(batch.iter().map(|path| path.as_os_str().to_os_string()));
+        let Ok(output) = crate::process::run(
+            crate::process::ProcessSpec::new("ExifTool", "exiftool")
+                .args(args)
+                .timeout(std::time::Duration::from_secs(60))
+                .logical("ExifTool technical inventory batch"),
+            cancel,
+        ) else {
+            continue;
+        };
+        if let Ok(values) = serde_json::from_slice::<Vec<serde_json::Value>>(&output.stdout) {
+            for value in values {
+                if let Some(source) = value.get("SourceFile").and_then(|item| item.as_str()) {
+                    result.insert(cache_key(Path::new(source)), value);
+                }
+            }
+        }
+    }
+    result
+}
+
 fn ignored(entry: &DirEntry) -> bool {
     crate::pipeline::ignored(entry)
 }
@@ -1425,7 +1467,8 @@ pub fn process_thumbnail_queue(
         match result {
             Ok(thumb) => {
                 generated += 1;
-                conn.execute("UPDATE thumbnails SET generator_version=?2,path=?3,state='ready',last_error=NULL,updated_at=?4 WHERE asset_id=?1",params![asset,crate::media::THUMBNAIL_VERSION,thumb.to_string_lossy(),Utc::now().to_rfc3339()]).ok();
+                let file_bytes = thumb.metadata().map(|value| value.len()).unwrap_or(0);
+                conn.execute("UPDATE thumbnails SET generator_version=?2,path=?3,file_bytes=?4,state='ready',last_error=NULL,updated_at=?5 WHERE asset_id=?1",params![asset,crate::media::THUMBNAIL_VERSION,thumb.to_string_lossy(),file_bytes,Utc::now().to_rfc3339()]).ok();
                 conn.execute("UPDATE work_queue SET state='completed',last_error=NULL,updated_at=?2 WHERE id=?1",params![qid,Utc::now().to_rfc3339()]).ok();
             }
             Err(error) => {
@@ -1546,15 +1589,15 @@ pub fn queue_format_enrichment(cfg: &LibraryConfig) -> Result<String, String> {
     let conn = catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite"))
         .map_err(|e| e.to_string())?;
     if let Some(job)=conn.query_row("SELECT id FROM jobs WHERE stage='technical_enrichment' AND state IN('queued','analyzing','paused','interrupted') ORDER BY created_at DESC LIMIT 1",[],|row|row.get::<_,String>(0)).optional().map_err(|e|e.to_string())?{return Ok(job)}
-    let missing:i64=conn.query_row("SELECT COUNT(*) FROM assets a WHERE NOT EXISTS(SELECT 1 FROM asset_technical_metadata t WHERE t.asset_id=a.id)",[],|row|row.get(0)).map_err(|error|error.to_string())?;
+    let missing:i64=conn.query_row("SELECT COUNT(*) FROM assets a LEFT JOIN asset_technical_metadata t ON t.asset_id=a.id WHERE t.asset_id IS NULL OR t.inventory_state!='complete' OR (a.media_type='video' AND (t.codec IS NULL OR t.container IS NULL))",[],|row|row.get(0)).map_err(|error|error.to_string())?;
     if missing == 0 {
         if let Some(job)=conn.query_row("SELECT id FROM jobs WHERE source_id='_lumina_maintenance' ORDER BY created_at DESC LIMIT 1",[],|row|row.get::<_,String>(0)).optional().map_err(|error|error.to_string())? { return Ok(job); }
     }
     let job = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
     conn.execute("INSERT OR IGNORE INTO sources(id,name,path,volume_label,available)VALUES('_lumina_maintenance','Manutenção da biblioteca','lumina://maintenance','internal',1)",[]).map_err(|e|e.to_string())?;
-    conn.execute("INSERT INTO jobs(id,source_id,source_path,state,stage,created_at,updated_at,total_items,total_bytes)VALUES(?1,'_lumina_maintenance','lumina://format-enrichment','queued','technical_enrichment',?2,?2,(SELECT COUNT(*) FROM assets a WHERE NOT EXISTS(SELECT 1 FROM asset_technical_metadata t WHERE t.asset_id=a.id)),(SELECT COALESCE(SUM(bytes),0) FROM assets a WHERE NOT EXISTS(SELECT 1 FROM asset_technical_metadata t WHERE t.asset_id=a.id)))",params![job,now]).map_err(|e|e.to_string())?;
-    conn.execute("INSERT INTO work_queue(job_id,asset_id,kind,state,priority,created_at,updated_at)SELECT ?1,a.id,'technical_metadata','pending',-10,?2,?2 FROM assets a WHERE NOT EXISTS(SELECT 1 FROM asset_technical_metadata t WHERE t.asset_id=a.id)",params![job,now]).map_err(|e|e.to_string())?;
+    conn.execute("INSERT INTO jobs(id,source_id,source_path,state,stage,created_at,updated_at,total_items,total_bytes)VALUES(?1,'_lumina_maintenance','lumina://format-enrichment','queued','technical_enrichment',?2,?2,?3,(SELECT COALESCE(SUM(a.bytes),0) FROM assets a LEFT JOIN asset_technical_metadata t ON t.asset_id=a.id WHERE t.asset_id IS NULL OR t.inventory_state!='complete' OR (a.media_type='video' AND (t.codec IS NULL OR t.container IS NULL))))",params![job,now,missing]).map_err(|e|e.to_string())?;
+    conn.execute("INSERT INTO work_queue(job_id,asset_id,kind,state,priority,created_at,updated_at)SELECT ?1,a.id,'technical_metadata','pending',-10,?2,?2 FROM assets a LEFT JOIN asset_technical_metadata t ON t.asset_id=a.id WHERE t.asset_id IS NULL OR t.inventory_state!='complete' OR (a.media_type='video' AND (t.codec IS NULL OR t.container IS NULL))",params![job,now]).map_err(|e|e.to_string())?;
     Ok(job)
 }
 
@@ -1587,6 +1630,14 @@ pub fn enrich_formats_job(
     };
     let total = rows.len() as i64;
     let total_bytes = rows.iter().map(|row| row.4).sum::<i64>();
+    let photo_paths = rows
+        .iter()
+        .filter(|row| {
+            crate::formats::descriptor(&row.3).family != crate::formats::MediaFamily::Video
+        })
+        .map(|row| PathBuf::from(&row.2))
+        .collect::<Vec<_>>();
+    let photo_metadata = technical_photo_batches(&photo_paths, cancel);
     let mut done = 0;
     let mut done_bytes = 0;
     for (qid, asset, path, extension, bytes) in rows {
@@ -1599,15 +1650,26 @@ pub fn enrich_formats_job(
         let (detected, matches) = crate::formats::detected_format(Path::new(&path), &extension);
         let mut codec = None;
         let mut container = None;
+        let mut audio_codec: Option<String> = None;
+        let mut frame_rate: Option<f64> = None;
+        let mut bitrate: Option<i64> = None;
+        let mut pixel_format: Option<String> = None;
+        let mut lens: Option<String> = None;
+        let mut iso: Option<i64> = None;
+        let mut aperture: Option<f64> = None;
+        let mut exposure: Option<String> = None;
+        let mut focal_length: Option<f64> = None;
+        let mut orientation: Option<i64> = None;
+        let mut color_profile: Option<String> = None;
+        let mut preview_available: Option<bool> = None;
+        let mut inventory_error: Option<String> = None;
         if descriptor.family == crate::formats::MediaFamily::Video {
             let spec = crate::process::ProcessSpec::new("FFprobe", "ffprobe")
                 .args([
                     "-v",
                     "error",
-                    "-select_streams",
-                    "v:0",
                     "-show_entries",
-                    "stream=codec_name:format=format_name",
+                    "stream=codec_type,codec_name,width,height,r_frame_rate,bit_rate,pix_fmt:format=format_name,bit_rate,duration",
                     "-of",
                     "json",
                     path.as_str(),
@@ -1617,17 +1679,101 @@ pub fn enrich_formats_job(
             if let Ok(result) = crate::process::run(spec, cancel) {
                 if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&result.stdout) {
                     codec = json
-                        .pointer("/streams/0/codec_name")
+                        .get("streams")
+                        .and_then(|v| v.as_array())
+                        .and_then(|items| {
+                            items.iter().find(|v| {
+                                v.get("codec_type").and_then(|x| x.as_str()) == Some("video")
+                            })
+                        })
+                        .and_then(|v| v.get("codec_name"))
                         .and_then(|value| value.as_str())
                         .map(str::to_string);
+                    let video = json
+                        .get("streams")
+                        .and_then(|v| v.as_array())
+                        .and_then(|items| {
+                            items.iter().find(|v| {
+                                v.get("codec_type").and_then(|x| x.as_str()) == Some("video")
+                            })
+                        });
+                    audio_codec = json
+                        .get("streams")
+                        .and_then(|v| v.as_array())
+                        .and_then(|items| {
+                            items.iter().find(|v| {
+                                v.get("codec_type").and_then(|x| x.as_str()) == Some("audio")
+                            })
+                        })
+                        .and_then(|v| v.get("codec_name"))
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string);
+                    pixel_format = video
+                        .and_then(|v| v.get("pix_fmt"))
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string);
+                    bitrate = video
+                        .and_then(|v| v.get("bit_rate"))
+                        .and_then(|v| v.as_str())
+                        .and_then(|v| v.parse().ok())
+                        .or_else(|| {
+                            json.pointer("/format/bit_rate")
+                                .and_then(|v| v.as_str())
+                                .and_then(|v| v.parse().ok())
+                        });
+                    frame_rate = video
+                        .and_then(|v| v.get("r_frame_rate"))
+                        .and_then(|v| v.as_str())
+                        .and_then(|v| {
+                            let mut p = v.split('/');
+                            let a = p.next()?.parse::<f64>().ok()?;
+                            let b = p.next().unwrap_or("1").parse::<f64>().ok()?;
+                            if b > 0.0 {
+                                Some(a / b)
+                            } else {
+                                None
+                            }
+                        });
                     container = json
                         .pointer("/format/format_name")
                         .and_then(|value| value.as_str())
                         .map(str::to_string)
+                } else {
+                    inventory_error = Some("FFprobe retornou dados técnicos inválidos".into());
                 }
             }
+        } else {
+            match photo_metadata.get(&cache_key(Path::new(&path))) {
+                Some(value) => {
+                    lens = value
+                        .get("LensModel")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string);
+                    iso = value.get("ISO").and_then(|v| v.as_i64());
+                    aperture = value.get("FNumber").and_then(|v| v.as_f64());
+                    exposure = value.get("ExposureTime").map(|v| v.to_string());
+                    focal_length = value.get("FocalLength").and_then(|v| v.as_f64());
+                    orientation = value.get("Orientation").and_then(|v| v.as_i64());
+                    color_profile = value
+                        .get("ColorSpace")
+                        .map(|v| v.to_string().trim_matches('"').to_string());
+                    preview_available = value
+                        .get("PreviewImageLength")
+                        .and_then(|v| v.as_i64())
+                        .map(|v| v > 0);
+                }
+                None => inventory_error = Some("Metadados técnicos não retornados".into()),
+            }
         }
-        conn.execute("INSERT INTO asset_technical_metadata(asset_id,declared_extension,detected_format,family,container,codec,support_level,extension_matches,metadata_supported,thumbnail_supported,preview_supported,enriched_at)VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)ON CONFLICT(asset_id)DO UPDATE SET declared_extension=excluded.declared_extension,detected_format=excluded.detected_format,family=excluded.family,container=excluded.container,codec=excluded.codec,support_level=excluded.support_level,extension_matches=excluded.extension_matches,metadata_supported=excluded.metadata_supported,thumbnail_supported=excluded.thumbnail_supported,preview_supported=excluded.preview_supported,enriched_at=excluded.enriched_at",params![asset,extension,detected,descriptor.family.as_str(),container,codec,descriptor.support.as_str(),matches,descriptor.metadata,descriptor.thumbnail,descriptor.preview,Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
+        let inventory_state = if inventory_error.is_none()
+            && (descriptor.family != crate::formats::MediaFamily::Video
+                || (codec.is_some() && container.is_some()))
+        {
+            "complete"
+        } else {
+            "partial"
+        };
+        conn.execute("INSERT INTO asset_technical_metadata(asset_id,declared_extension,detected_format,family,container,codec,audio_codec,frame_rate,bitrate,pixel_format,lens,iso,aperture,exposure,focal_length,orientation,color_profile,preview_available,inventory_state,inventory_error,support_level,extension_matches,metadata_supported,thumbnail_supported,preview_supported,enriched_at)VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26)ON CONFLICT(asset_id)DO UPDATE SET declared_extension=excluded.declared_extension,detected_format=excluded.detected_format,family=excluded.family,container=excluded.container,codec=excluded.codec,audio_codec=excluded.audio_codec,frame_rate=excluded.frame_rate,bitrate=excluded.bitrate,pixel_format=excluded.pixel_format,lens=excluded.lens,iso=excluded.iso,aperture=excluded.aperture,exposure=excluded.exposure,focal_length=excluded.focal_length,orientation=excluded.orientation,color_profile=excluded.color_profile,preview_available=excluded.preview_available,inventory_state=excluded.inventory_state,inventory_error=excluded.inventory_error,support_level=excluded.support_level,extension_matches=excluded.extension_matches,metadata_supported=excluded.metadata_supported,thumbnail_supported=excluded.thumbnail_supported,preview_supported=excluded.preview_supported,enriched_at=excluded.enriched_at",params![asset,extension,detected,descriptor.family.as_str(),container,codec,audio_codec,frame_rate,bitrate,pixel_format,lens,iso,aperture,exposure,focal_length,orientation,color_profile,preview_available,inventory_state,inventory_error,descriptor.support.as_str(),matches,descriptor.metadata,descriptor.thumbnail,descriptor.preview,Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
         conn.execute(
             "UPDATE work_queue SET state='completed',last_error=NULL,updated_at=?2 WHERE id=?1",
             params![qid, Utc::now().to_rfc3339()],

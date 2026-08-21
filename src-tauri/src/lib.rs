@@ -196,7 +196,7 @@ async fn get_dashboard(state: State<'_, AppState>) -> Result<DashboardStats, Str
 
 fn get_dashboard_sync(cfg: &LibraryConfig) -> Result<DashboardStats, String> {
     let conn = db(cfg)?;
-    let cached = conn.query_row("SELECT payload,invalidated_at IS NOT NULL FROM dashboard_snapshots WHERE id=1 AND schema_version=1",[],|row|Ok((row.get::<_,String>(0)?,row.get::<_,bool>(1)?))).optional().map_err(|error|error.to_string())?;
+    let cached = conn.query_row("SELECT payload,invalidated_at IS NOT NULL FROM dashboard_snapshots WHERE id=1 AND schema_version=2",[],|row|Ok((row.get::<_,String>(0)?,row.get::<_,bool>(1)?))).optional().map_err(|error|error.to_string())?;
     if let Some((payload, stale)) = cached {
         let mut result: DashboardStats =
             serde_json::from_str(&payload).map_err(|error| error.to_string())?;
@@ -307,6 +307,9 @@ fn quick_dashboard(cfg: &LibraryConfig) -> Result<DashboardStats, String> {
             section: "snapshot".into(),
             milliseconds: started.elapsed().as_millis() as i64,
         }],
+        storage: DashboardStorage::default(),
+        technical: DashboardTechnical::default(),
+        codecs: Vec::new(),
     })
 }
 
@@ -330,7 +333,7 @@ fn save_dashboard_snapshot(
 ) -> Result<(), String> {
     let conn = db(cfg)?;
     let payload = serde_json::to_string(result).map_err(|error| error.to_string())?;
-    conn.execute("INSERT INTO dashboard_snapshots(id,schema_version,generated_at,invalidated_at,payload,generation_ms,catalog_items)VALUES(1,1,?1,NULL,?2,?3,?4)ON CONFLICT(id)DO UPDATE SET schema_version=excluded.schema_version,generated_at=excluded.generated_at,invalidated_at=NULL,payload=excluded.payload,generation_ms=excluded.generation_ms,catalog_items=excluded.catalog_items",params![result.snapshot_generated_at,payload,generation_ms,result.total_assets]).map_err(|error|error.to_string())?;
+    conn.execute("INSERT INTO dashboard_snapshots(id,schema_version,generated_at,invalidated_at,payload,generation_ms,catalog_items)VALUES(1,2,?1,NULL,?2,?3,?4)ON CONFLICT(id)DO UPDATE SET schema_version=excluded.schema_version,generated_at=excluded.generated_at,invalidated_at=NULL,payload=excluded.payload,generation_ms=excluded.generation_ms,catalog_items=excluded.catalog_items",params![result.snapshot_generated_at,payload,generation_ms,result.total_assets]).map_err(|error|error.to_string())?;
     let section = |name: &str| {
         result
             .timings
@@ -350,9 +353,11 @@ fn compute_dashboard(cfg: &LibraryConfig) -> Result<DashboardStats, String> {
     let row=conn.query_row("SELECT COUNT(*),COALESCE(SUM(media_type!='video'),0),COALESCE(SUM(media_type='video'),0),COALESCE(SUM(bytes),0),COALESCE(SUM(protection_state='replica_verified'),0),COALESCE(SUM(protection_state IN('source_only','consolidated','stale')),0),COALESCE(SUM(protection_state='error'),0) FROM assets",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).map_err(|e|e.to_string())?;
     let duplicate_groups=conn.query_row("SELECT COUNT(*) FROM(SELECT asset_id FROM occurrences GROUP BY asset_id HAVING COUNT(*)>1)",[],|r|r.get(0)).unwrap_or(0);
     let offline = conn
-        .query_row("SELECT COUNT(*) FROM sources WHERE available=0", [], |r| {
-            r.get(0)
-        })
+        .query_row(
+            "SELECT COUNT(*) FROM sources WHERE available=0 AND path NOT LIKE 'lumina://%'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap_or(0);
     let rollup = |dimension: &str| -> Result<Vec<DashboardBreakdown>, String> {
         let mut statement=conn.prepare("SELECT key,items,bytes FROM library_rollups WHERE dimension=?1 AND items>0 ORDER BY bytes DESC").map_err(|e|e.to_string())?;
@@ -401,7 +406,6 @@ fn compute_dashboard(cfg: &LibraryConfig) -> Result<DashboardStats, String> {
         )
         .unwrap_or(0);
     let duplicate_bytes:i64=conn.query_row("SELECT COALESCE(SUM(a.bytes*(x.copies-1)),0)FROM assets a JOIN(SELECT asset_id,COUNT(*) copies FROM occurrences GROUP BY asset_id HAVING copies>1)x ON x.asset_id=a.id",[],|r|r.get(0)).unwrap_or(0);
-    let thumbnail_issues:i64=conn.query_row("SELECT COUNT(*)FROM assets a LEFT JOIN thumbnails t ON t.asset_id=a.id WHERE t.asset_id IS NULL OR t.state!='ready'",[],|r|r.get(0)).unwrap_or(0);
     let suspicious:i64=conn.query_row("SELECT COUNT(*)FROM assets WHERE date_source='filesystem_modified' OR CAST(substr(captured_at,1,4)AS INTEGER)<1990 OR CAST(substr(captured_at,1,4)AS INTEGER)>CAST(strftime('%Y','now')AS INTEGER)+1",[],|r|r.get(0)).unwrap_or(0);
     let format_mismatches: i64 = conn
         .query_row(
@@ -410,6 +414,9 @@ fn compute_dashboard(cfg: &LibraryConfig) -> Result<DashboardStats, String> {
             |row| row.get(0),
         )
         .unwrap_or(0);
+    let technical=conn.query_row("SELECT COUNT(*),COALESCE(SUM(support_level='complete'),0),COALESCE(SUM(support_level='partial'),0),COALESCE(SUM(support_level='preservation'),0),COALESCE(SUM(support_level='unknown'),0),COALESCE(SUM(extension_matches=0),0),COALESCE(SUM(codec IS NOT NULL),0),COALESCE(SUM(family='video' AND codec IS NULL),0),COALESCE(SUM(inventory_state='complete'),0) FROM asset_technical_metadata",[],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?,r.get::<_,i64>(5)?,r.get::<_,i64>(6)?,r.get::<_,i64>(7)?,r.get::<_,i64>(8)?))).map_err(|e|e.to_string())?;
+    let thumbnail_states=conn.query_row("SELECT COALESCE(SUM(state='ready'),0),COALESCE(SUM(state='pending'),0),COALESCE(SUM(state='failed'),0) FROM thumbnails",[],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?))).unwrap_or((0,0,0));
+    let review=conn.query_row("SELECT COUNT(*),COALESCE(SUM(bytes),0) FROM job_items WHERE state='review' AND job_id=(SELECT id FROM jobs WHERE source_id!='_lumina_maintenance' ORDER BY created_at DESC LIMIT 1)",[],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?))).unwrap_or((0,0));
     let mut insights = Vec::new();
     if pending_bytes > 0 {
         insights.push(DashboardInsight {
@@ -437,20 +444,6 @@ fn compute_dashboard(cfg: &LibraryConfig) -> Result<DashboardStats, String> {
             action_label: "Analisar ocorrências".into(),
             confidence: "high".into(),
             reason: "Estimativa baseada em hashes idênticos e ocorrências conhecidas".into(),
-        });
-    }
-    if thumbnail_issues > 0 {
-        insights.push(DashboardInsight {
-            kind: "thumbnails".into(),
-            severity: "medium".into(),
-            title: "Prévias sendo preparadas".into(),
-            detail: "Algumas mídias ainda não têm miniatura pronta.".into(),
-            value: thumbnail_issues,
-            bytes: 0,
-            action: "library".into(),
-            action_label: "Abrir biblioteca".into(),
-            confidence: "high".into(),
-            reason: "Miniatura ausente, desatualizada ou com falha".into(),
         });
     }
     if suspicious > 0 {
@@ -493,6 +486,28 @@ fn compute_dashboard(cfg: &LibraryConfig) -> Result<DashboardStats, String> {
             action_label: "Revisar formatos".into(),
             confidence: "high".into(),
             reason: "Assinatura interna comparada com a extensão declarada".into(),
+        });
+    }
+    if thumbnail_states.1 + thumbnail_states.2 > 0 {
+        insights.push(DashboardInsight {
+            kind: "thumbnails".into(),
+            severity: if thumbnail_states.2 > 0 {
+                "medium"
+            } else {
+                "low"
+            }
+            .into(),
+            title: "Galeria sendo preparada".into(),
+            detail: format!(
+                "{} miniaturas pendentes e {} com falha.",
+                thumbnail_states.1, thumbnail_states.2
+            ),
+            value: thumbnail_states.1 + thumbnail_states.2,
+            bytes: 0,
+            action: "library".into(),
+            action_label: "Acompanhar galeria".into(),
+            confidence: "high".into(),
+            reason: "Cobertura calculada pelo catálogo de miniaturas".into(),
         });
     }
     let latest_benchmark=conn.query_row("SELECT j.id,j.total_items,j.total_bytes,COALESCE((SELECT duration_ms FROM job_metrics WHERE job_id=j.id AND stage='analysis_total'),0),COALESCE((SELECT duration_ms FROM job_metrics WHERE job_id=j.id AND stage='hashing_total'),0),COALESCE((SELECT duration_ms FROM job_metrics WHERE job_id=j.id AND stage='copy_and_verify'),0),COALESCE((SELECT duration_ms FROM job_metrics WHERE job_id=j.id AND stage='thumbnails'),0),COALESCE((SELECT items FROM job_metrics WHERE job_id=j.id AND stage='hashing_workers'),0),COALESCE((SELECT bytes FROM job_metrics WHERE job_id=j.id AND stage='hashing_workers'),0),COALESCE((SELECT items FROM job_metrics WHERE job_id=j.id AND stage='deferred_hash'),0),COALESCE((SELECT items FROM job_metrics WHERE job_id=j.id AND stage='cache_hits'),0)FROM jobs j WHERE EXISTS(SELECT 1 FROM job_metrics m WHERE m.job_id=j.id AND m.stage='analysis_total')ORDER BY j.created_at DESC LIMIT 1",[],|r|Ok(DashboardBenchmark{job_id:r.get(0)?,items:r.get(1)?,bytes:r.get(2)?,analysis_ms:r.get(3)?,hashing_ms:r.get(4)?,copy_ms:r.get(5)?,thumbnails_ms:r.get(6)?,hash_workers:r.get(7)?,hashed_bytes:r.get(8)?,deferred_hash_items:r.get(9)?,cache_hits:r.get(10)?})).optional().map_err(|e|e.to_string())?;
@@ -550,10 +565,70 @@ fn compute_dashboard(cfg: &LibraryConfig) -> Result<DashboardStats, String> {
     };
     let protection_years=grouped("SELECT substr(captured_at,1,4),COUNT(*),COALESCE(SUM(bytes),0) FROM assets WHERE protection_state='replica_verified' GROUP BY 1 ORDER BY 1 DESC")?;
     let protection_sources=grouped("SELECT s.name,COUNT(DISTINCT a.id),COALESCE(SUM(a.bytes),0) FROM sources s JOIN occurrences o ON o.source_id=s.id JOIN assets a ON a.id=o.asset_id WHERE a.protection_state='replica_verified' GROUP BY s.id ORDER BY 3 DESC")?;
+    let codecs=grouped("SELECT COALESCE(codec,'Não identificado'),COUNT(*),COALESCE(SUM(a.bytes),0) FROM asset_technical_metadata t JOIN assets a ON a.id=t.asset_id WHERE t.family='video' GROUP BY codec ORDER BY 3 DESC")?;
     let catalog_ms = total_started.elapsed().as_millis() as i64;
     let storage_started = std::time::Instant::now();
     let master_available_bytes = fs2::available_space(&cfg.master_path).unwrap_or(0);
     let backup_available_bytes = fs2::available_space(&cfg.backup_path).unwrap_or(0);
+    let master_total_bytes = fs2::total_space(&cfg.master_path).unwrap_or(0);
+    let backup_available = Path::new(&cfg.backup_path).exists();
+    let backup_total_bytes = fs2::total_space(&cfg.backup_path).unwrap_or(0);
+    let cache_bytes: u64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(file_bytes),0) FROM thumbnails WHERE state='ready'",
+            [],
+            |r| r.get::<_, u64>(0),
+        )
+        .unwrap_or(0);
+    let temporary_bytes = 0;
+    let average_asset_bytes = if row.0 > 0 { row.3 / row.0 } else { 0 };
+    let p90_asset_bytes = if row.0 > 0 {
+        conn.query_row(
+            "SELECT bytes FROM assets ORDER BY bytes LIMIT 1 OFFSET ?1",
+            [(((row.0 - 1) as f64 * 0.9) as i64)],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap_or(average_asset_bytes)
+    } else {
+        0
+    };
+    let reserve_bytes = (backup_total_bytes / 20).max(1_073_741_824);
+    let projected_backup_free_bytes =
+        backup_available_bytes as i64 - pending_bytes - reserve_bytes as i64;
+    if pending_bytes > 0 && backup_available {
+        insights.push(DashboardInsight {
+            kind: "capacity".into(),
+            severity: if projected_backup_free_bytes < 0 {
+                "high"
+            } else {
+                "medium"
+            }
+            .into(),
+            title: if projected_backup_free_bytes < 0 {
+                "Backup sem capacidade suficiente"
+            } else {
+                "Backup comporta a réplica atual"
+            }
+            .into(),
+            detail: if projected_backup_free_bytes < 0 {
+                format!(
+                    "Faltam {} bytes além da reserva.",
+                    -projected_backup_free_bytes
+                )
+            } else {
+                format!(
+                    "Restarão aproximadamente {} bytes após réplica e reserva.",
+                    projected_backup_free_bytes
+                )
+            },
+            value: row.5,
+            bytes: pending_bytes,
+            action: "protection".into(),
+            action_label: "Planejar proteção".into(),
+            confidence: "high".into(),
+            reason: "Projeção usa espaço livre atual, pendências e 5% de reserva".into(),
+        });
+    }
     let storage_ms = storage_started.elapsed().as_millis() as i64;
     Ok(DashboardStats {
         total_assets: row.0,
@@ -577,7 +652,7 @@ fn compute_dashboard(cfg: &LibraryConfig) -> Result<DashboardStats, String> {
         protection_years,
         protection_sources,
         sources,
-        months: rollup("month")?,
+        months: grouped("SELECT key,items,bytes FROM library_rollups WHERE dimension='month' AND items>0 ORDER BY key DESC")?,
         formats,
         cameras: rollup("camera")?,
         insights,
@@ -589,13 +664,16 @@ fn compute_dashboard(cfg: &LibraryConfig) -> Result<DashboardStats, String> {
             DashboardTiming{section:"storage".into(),milliseconds:storage_ms},
             DashboardTiming{section:"total".into(),milliseconds:total_started.elapsed().as_millis() as i64}
         ],
+        storage:DashboardStorage{master_total_bytes,master_used_bytes:master_total_bytes.saturating_sub(master_available_bytes),master_free_bytes:master_available_bytes,library_bytes:row.3.max(0) as u64,cache_bytes,temporary_bytes,backup_total_bytes,backup_used_bytes:backup_total_bytes.saturating_sub(backup_available_bytes),backup_free_bytes:backup_available_bytes,pending_backup_bytes:pending_bytes.max(0) as u64,projected_backup_free_bytes,reserve_bytes,estimated_additional_items:if average_asset_bytes>0{(master_available_bytes/(average_asset_bytes as u64)) as i64}else{0},average_asset_bytes,p90_asset_bytes,backup_available},
+        technical:DashboardTechnical{enriched:technical.0,complete:technical.1,partial:technical.2,preservation:technical.3,unknown:technical.4,mismatches:technical.5,codec_known:technical.6,codec_missing:technical.7,thumbnails_ready:thumbnail_states.0,thumbnails_pending:thumbnail_states.1,thumbnails_failed:thumbnail_states.2,metadata_complete:technical.8,review_items:review.0,review_bytes:review.1},
+        codecs,
     })
 }
 #[tauri::command]
 fn list_sources(state: State<AppState>) -> Result<Vec<Source>, String> {
     let cfg = current(&state)?;
     let conn = db(&cfg)?;
-    let mut stmt=conn.prepare("SELECT id,name,COALESCE(mount_path,path),volume_label,last_scan,asset_count FROM sources ORDER BY last_scan DESC").map_err(|e|e.to_string())?;
+    let mut stmt=conn.prepare("SELECT id,name,COALESCE(mount_path,path),volume_label,last_scan,asset_count FROM sources WHERE path NOT LIKE 'lumina://%' ORDER BY last_scan DESC").map_err(|e|e.to_string())?;
     let raw = stmt
         .query_map([], |r| {
             Ok((
@@ -1274,7 +1352,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod protocol_tests {
-    use super::{quick_dashboard, valid_thumbnail_asset_id};
+    use super::{compute_dashboard, quick_dashboard, valid_thumbnail_asset_id};
     use crate::{catalog, models::LibraryConfig};
     use std::{
         fs,
@@ -1346,7 +1424,45 @@ mod protocol_tests {
                 p95 <= ceiling_ms,
                 "{items} itens: p95 {p95} ms > {ceiling_ms} ms"
             );
+            let full_started = Instant::now();
+            let full = compute_dashboard(&cfg).unwrap();
+            let full_ms = full_started.elapsed().as_millis();
+            assert_eq!(full.total_assets, items);
+            eprintln!("BENCHMARK dashboard_full_records={items} total_ms={full_ms}");
+            assert!(
+                full_ms <= if items == 100_000 { 1_500 } else { 4_000 },
+                "dashboard completo com {items} itens: {full_ms} ms"
+            );
             fs::remove_dir_all(root).unwrap();
         }
+    }
+
+    #[test]
+    fn dashboard_reports_persisted_storage_and_technical_health() {
+        let root =
+            std::env::temp_dir().join(format!("lumina-dashboard-health-{}", uuid::Uuid::new_v4()));
+        let master = root.join("master");
+        let backup = root.join("backup");
+        fs::create_dir_all(&master).unwrap();
+        fs::create_dir_all(&backup).unwrap();
+        let cfg = LibraryConfig {
+            id: "health".into(),
+            name: "health".into(),
+            master_path: master.to_string_lossy().into(),
+            backup_path: backup.to_string_lossy().into(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+        let conn = catalog::open(&master.join(".lumina/catalog.sqlite")).unwrap();
+        conn.execute("INSERT INTO assets(id,hash,filename,media_type,extension,captured_at,date_source,bytes,master_path,created_at)VALUES('video',?1,'clip.mp4','video','mp4','2025-08-01','metadata',1000,'clip.mp4',datetime('now'))",["a".repeat(64)]).unwrap();
+        conn.execute("INSERT INTO asset_technical_metadata(asset_id,declared_extension,detected_format,family,container,codec,support_level,inventory_state,enriched_at)VALUES('video','mp4','video','video','mov,mp4','h264','partial','complete',datetime('now'))",[]).unwrap();
+        conn.execute("INSERT INTO thumbnails(asset_id,generator_version,path,file_bytes,state,updated_at)VALUES('video',2,'thumb.jpg',321,'ready',datetime('now'))",[]).unwrap();
+        drop(conn);
+        let result = compute_dashboard(&cfg).unwrap();
+        assert_eq!(result.storage.library_bytes, 1000);
+        assert_eq!(result.storage.cache_bytes, 321);
+        assert_eq!(result.technical.metadata_complete, 1);
+        assert_eq!(result.technical.codec_known, 1);
+        assert_eq!(result.codecs[0].key, "h264");
+        fs::remove_dir_all(root).unwrap();
     }
 }

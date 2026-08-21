@@ -132,4 +132,17 @@ describe("fluxo principal do aplicativo", () => {
     expect(screen.queryByText("Analisando em segundo plano…")).not.toBeInTheDocument();
     expect(screen.getByText(/memórias ·/)).toBeInTheDocument();
   });
+
+  it("apresenta capacidade, saúde técnica e tendência mensal sem bloquear o snapshot", async()=>{
+    vi.spyOn(api,"getLibrary").mockResolvedValue({id:"lib",name:"Teste",masterPath:"D:\\Lumina",backupPath:"G:\\Backup",createdAt:new Date().toISOString()});
+    vi.spyOn(api,"recoverableJobs").mockResolvedValue([]);
+    const dashboard:DashboardStats={...emptyDashboard(),totalAssets:12,photos:10,videos:2,bytes:12_000,types:[{key:"photo",items:10,bytes:8_000},{key:"video",items:2,bytes:4_000}],months:[{key:"2026-08",items:7,bytes:7_000},{key:"2026-07",items:5,bytes:5_000}],storage:{masterTotalBytes:100_000,masterUsedBytes:40_000,masterFreeBytes:60_000,libraryBytes:12_000,cacheBytes:321,temporaryBytes:0,backupTotalBytes:200_000,backupUsedBytes:20_000,backupFreeBytes:180_000,pendingBackupBytes:12_000,projectedBackupFreeBytes:158_000,reserveBytes:10_000,estimatedAdditionalItems:60,averageAssetBytes:1_000,p90AssetBytes:2_000,backupAvailable:true},technical:{enriched:12,complete:10,partial:2,preservation:0,unknown:0,mismatches:0,codecKnown:2,codecMissing:0,thumbnailsReady:11,thumbnailsPending:1,thumbnailsFailed:0,metadataComplete:10,reviewItems:0,reviewBytes:0},codecs:[{key:"h264",items:2,bytes:4_000}]};
+    vi.spyOn(api,"dashboard").mockResolvedValue(dashboard);
+    vi.spyOn(api,"refreshDashboard").mockResolvedValue(dashboard);
+    render(<App/>);
+    expect(await screen.findByText("Onde sua biblioteca está e quanto ainda cabe")).toBeInTheDocument();
+    expect(screen.getByText("Detalhes que tornam a biblioteca pesquisável")).toBeInTheDocument();
+    expect(screen.getByText("Volume capturado nos últimos 12 meses ativos")).toBeInTheDocument();
+    expect(screen.getByText("h264")).toBeInTheDocument();
+  });
 });

@@ -97,11 +97,13 @@ pub fn validate(path: &Path, extension: &str, cancel: &CancellationToken) -> Val
                 details: "Imagem decodificada".into(),
             },
             Err(error) => ValidationResult {
-                state: if error.contains("does not support")
+                state: if (error.contains("does not support")
                     || error.contains("Memory limit exceeded")
-                    || error.contains("Unsupported")
+                    || error.contains("Unsupported"))
+                    && crate::formats::descriptor(&ext).family
+                        != crate::formats::MediaFamily::Unknown
                 {
-                    ValidationState::UnsupportedFormat
+                    ValidationState::ValidWithoutPreview
                 } else {
                     ValidationState::Corrupted
                 },
@@ -495,7 +497,8 @@ pub fn rebuild_cache(cfg: &LibraryConfig) -> Result<CacheResult, String> {
         ) {
             Ok(thumb) => {
                 generated += 1;
-                conn.execute("INSERT INTO thumbnails(asset_id,generator_version,path,state,updated_at)VALUES(?1,?2,?3,'ready',datetime('now'))ON CONFLICT(asset_id)DO UPDATE SET generator_version=excluded.generator_version,path=excluded.path,state='ready',last_error=NULL,updated_at=excluded.updated_at",params![id,THUMBNAIL_VERSION,thumb.to_string_lossy()]).ok();
+                let file_bytes = thumb.metadata().map(|value| value.len()).unwrap_or(0);
+                conn.execute("INSERT INTO thumbnails(asset_id,generator_version,path,file_bytes,state,updated_at)VALUES(?1,?2,?3,?4,'ready',datetime('now'))ON CONFLICT(asset_id)DO UPDATE SET generator_version=excluded.generator_version,path=excluded.path,file_bytes=excluded.file_bytes,state='ready',last_error=NULL,updated_at=excluded.updated_at",params![id,THUMBNAIL_VERSION,thumb.to_string_lossy(),file_bytes]).ok();
             }
             Err(error) => {
                 failed += 1;
@@ -566,7 +569,8 @@ pub fn audit_thumbnails(cfg: &LibraryConfig, repair: bool) -> Result<ThumbnailAu
             ) {
                 Ok(p) => {
                     out.regenerated += 1;
-                    conn.execute("INSERT INTO thumbnails(asset_id,generator_version,path,state,last_error,updated_at)VALUES(?1,?2,?3,'ready',NULL,datetime('now'))ON CONFLICT(asset_id)DO UPDATE SET generator_version=excluded.generator_version,path=excluded.path,state='ready',last_error=NULL,updated_at=excluded.updated_at",params![id,THUMBNAIL_VERSION,p.to_string_lossy()]).map_err(|e|e.to_string())?;
+                    let file_bytes = p.metadata().map(|value| value.len()).unwrap_or(0);
+                    conn.execute("INSERT INTO thumbnails(asset_id,generator_version,path,file_bytes,state,last_error,updated_at)VALUES(?1,?2,?3,?4,'ready',NULL,datetime('now'))ON CONFLICT(asset_id)DO UPDATE SET generator_version=excluded.generator_version,path=excluded.path,file_bytes=excluded.file_bytes,state='ready',last_error=NULL,updated_at=excluded.updated_at",params![id,THUMBNAIL_VERSION,p.to_string_lossy(),file_bytes]).map_err(|e|e.to_string())?;
                 }
                 Err(e) => {
                     out.failed += 1;

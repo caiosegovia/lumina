@@ -419,6 +419,13 @@ const duration = (ms: number) =>
   ms < 60000
     ? `${Math.round(ms / 1000)}s`
     : `${Math.floor(ms / 60000)}min ${Math.round((ms % 60000) / 1000)}s`;
+const monthRange = (key: string) => {
+  const [year, month] = key.split("-").map(Number);
+  return {
+    dateFrom: `${key}-01`,
+    dateTo: new Date(Date.UTC(year, month, 1)).toISOString().slice(0, 10),
+  };
+};
 function Dashboard({ onImport,navigate }: { onImport: () => void;navigate:(view:View)=>void }) {
   const [s, setS] = useState<DashboardStats>(),[updating,setUpdating]=useState(false),[refreshError,setRefreshError]=useState(""),[inventoryMessage,setInventoryMessage]=useState("");
   const refresh=()=>{setUpdating(true);setRefreshError("");api.refreshDashboard().then(setS).catch(error=>setRefreshError(String(error))).finally(()=>setUpdating(false))};
@@ -430,7 +437,9 @@ function Dashboard({ onImport,navigate }: { onImport: () => void;navigate:(view:
   }, []);
   if (!s) return <LoaderCircle className="spin" />;
   const coverage = (s.protected / Math.max(1, s.totalAssets)) * 100,
-    maxType = Math.max(1, ...s.types.map((x) => x.bytes));
+    maxType = Math.max(1, ...s.types.map((x) => x.bytes)),storage=s.storage,technical=s.technical,
+    recentMonths=[...s.months.slice(0,12)].reverse(),maxMonth=Math.max(1,...recentMonths.map(value=>value.bytes)),
+    latestMonth=recentMonths.at(-1),previousMonth=recentMonths.at(-2),monthDelta=latestMonth&&previousMonth?((latestMonth.bytes-previousMonth.bytes)/Math.max(1,previousMonth.bytes))*100:undefined;
   return (
     <>
       <div className="hero dashboard-hero">
@@ -483,12 +492,26 @@ function Dashboard({ onImport,navigate }: { onImport: () => void;navigate:(view:
           }
         />
       </div>
+      {storage&&<section className="storage-intelligence">
+        <div className="storage-heading"><div><p className="eyebrow">CAPACIDADE E PROTEÇÃO</p><h3>Onde sua biblioteca está e quanto ainda cabe</h3></div><button onClick={()=>navigate("protection")}>Gerenciar proteção <ChevronRight/></button></div>
+        <div className="storage-volumes">
+          <StorageVolume title="Acervo principal" used={storage.masterUsedBytes} total={storage.masterTotalBytes} managed={storage.libraryBytes} detail={`${storage.estimatedAdditionalItems.toLocaleString("pt-BR")} mídias adicionais pela média atual`}/>
+          <StorageVolume title="Réplica local" used={storage.backupUsedBytes} total={storage.backupTotalBytes} managed={Math.max(0,s.bytes-storage.pendingBackupBytes)} detail={storage.backupAvailable?`${formatBytes(Math.max(0,storage.projectedBackupFreeBytes))} livres após réplica e reserva`:"Destino indisponível"}/>
+        </div>
+        <div className="storage-facts"><span><small>Administrado pelo Lumina</small><b>{formatBytes(storage.libraryBytes)}</b></span><span><small>Pendente de proteção</small><b>{formatBytes(storage.pendingBackupBytes)}</b></span><span><small>Cache e temporários</small><b>{formatBytes(storage.cacheBytes+storage.temporaryBytes)}</b></span><span><small>Tamanho médio / p90</small><b>{formatBytes(storage.averageAssetBytes)} / {formatBytes(storage.p90AssetBytes)}</b></span></div>
+      </section>}
+      {technical&&<section className="technical-health">
+        <div><p className="eyebrow">QUALIDADE DO INVENTÁRIO</p><h3>Detalhes que tornam a biblioteca pesquisável</h3></div>
+        <div className="technical-score"><strong>{Math.round(technical.metadataComplete/Math.max(1,s.totalAssets)*100)}%</strong><span>inventário profundo</span></div>
+        <div className="technical-meter"><i style={{width:`${technical.thumbnailsReady/Math.max(1,s.totalAssets)*100}%`}}/><span>{technical.thumbnailsReady.toLocaleString("pt-BR")} previews prontos · {technical.thumbnailsPending.toLocaleString("pt-BR")} pendentes · {technical.thumbnailsFailed} falhas</span></div>
+        <div className="technical-facts"><span><b>{technical.codecKnown}</b><small>vídeos com codec</small></span><span><b>{technical.codecMissing}</b><small>codecs pendentes</small></span><span><b>{technical.reviewItems}</b><small>itens para revisão</small></span><span><b>{technical.mismatches}</b><small>extensões divergentes</small></span></div>
+      </section>}
       <div className="dashboard-layout">
         <article className="panel composition">
           <p className="eyebrow">COMPOSIÇÃO</p>
           <h3>O que ocupa sua biblioteca</h3>
           {s.types.map((x) => (
-            <div className="composition-row" key={x.key}>
+            <button className="composition-row" key={x.key} onClick={()=>openLibrary({mediaType:x.key})}>
               <span>
                 <b>{typeLabel(x.key)}</b>
                 <small>{x.items.toLocaleString("pt-BR")} itens</small>
@@ -497,8 +520,14 @@ function Dashboard({ onImport,navigate }: { onImport: () => void;navigate:(view:
                 <em style={{ width: `${(x.bytes / maxType) * 100}%` }} />
               </i>
               <strong>{formatBytes(x.bytes)}</strong>
-            </div>
+            </button>
           ))}
+        </article>
+        <article className="panel growth-panel">
+          <p className="eyebrow">RITMO DO ACERVO</p>
+          <h3>Volume capturado nos últimos 12 meses ativos</h3>
+          <div className="growth-summary"><strong>{latestMonth?formatBytes(latestMonth.bytes):"—"}</strong><span>{latestMonth?.key||"Sem período"}{monthDelta!==undefined&&` · ${monthDelta>=0?"+":""}${Math.round(monthDelta)}% ante o mês ativo anterior`}</span></div>
+          <div className="growth-bars">{recentMonths.map(value=><button key={value.key} title={`${value.key}: ${value.items.toLocaleString("pt-BR")} itens · ${formatBytes(value.bytes)}`} onClick={()=>openLibrary(monthRange(value.key))}><i style={{height:`${Math.max(5,value.bytes/maxMonth*100)}%`}}/><small>{value.key.slice(5)}</small></button>)}</div>
         </article>
         <article className="panel protection-card">
           <p className="eyebrow">PROTEÇÃO E ESPAÇO</p>
@@ -548,7 +577,8 @@ function Dashboard({ onImport,navigate }: { onImport: () => void;navigate:(view:
           <h3>Inventário técnico</h3>
           {s.formats.slice(0,6).map(x=><button key={x.key} onClick={()=>openLibrary({extension:x.key})}><span><b>{x.label}</b><small>{x.family} · suporte {x.support}</small></span><strong>{x.items.toLocaleString("pt-BR")} · {formatBytes(x.bytes)}</strong></button>)}
           <h4>Principais câmeras</h4>
-          {s.cameras.slice(0,4).map(x=><div className="dashboard-rank" key={x.key}><span>{x.key}</span><b>{x.items.toLocaleString("pt-BR")}</b><small>{formatBytes(x.bytes)}</small></div>)}
+          {s.cameras.slice(0,4).map(x=><button className="dashboard-rank" key={x.key} onClick={()=>openLibrary({camera:x.key})}><span>{x.key}</span><b>{x.items.toLocaleString("pt-BR")}</b><small>{formatBytes(x.bytes)}</small></button>)}
+          {!!s.codecs?.length&&<><h4>Codecs de vídeo</h4>{s.codecs.slice(0,4).map(x=><div className="dashboard-rank" key={x.key}><span>{x.key}</span><b>{x.items.toLocaleString("pt-BR")}</b><small>{formatBytes(x.bytes)}</small></div>)}</>}
           <button onClick={()=>api.startFormatEnrichment().then(id=>setInventoryMessage(`Inventário iniciado · ${id.slice(0,8)}`)).catch(error=>setInventoryMessage(String(error)))}>Atualizar inventário técnico</button>
           {inventoryMessage&&<small className="inventory-message">{inventoryMessage}</small>}
         </article>
@@ -623,6 +653,7 @@ function Dashboard({ onImport,navigate }: { onImport: () => void;navigate:(view:
     </>
   );
 }
+function StorageVolume({title,used,total,managed,detail}:{title:string;used:number;total:number;managed:number;detail:string}){const percent=total?Math.min(100,used/total*100):0,managedPercent=total?Math.min(100,managed/total*100):0;return <article><header><span>{title}</span><strong>{formatBytes(Math.max(0,total-used))} livres</strong></header><div className="volume-bar"><i style={{width:`${percent}%`}}/><em style={{width:`${managedPercent}%`}}/></div><div><b>{formatBytes(used)} usados de {formatBytes(total)}</b><small>{detail}</small></div></article>}
 function Stat({
   label,
   value,
