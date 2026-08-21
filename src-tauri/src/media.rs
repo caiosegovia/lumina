@@ -15,8 +15,6 @@ use std::{
 };
 
 pub const THUMBNAIL_VERSION: i64 = 2;
-const VIDEO: &[&str] = &["mp4", "mov", "avi", "mkv", "mts", "m2ts", "3gp", "wmv"];
-const RAW: &[&str] = &["dng", "cr2", "cr3", "nef", "arw", "raf", "orf", "rw2"];
 const INTERNAL_IMAGE: &[&str] = &["jpg", "jpeg", "png", "gif", "webp", "tif", "tiff", "bmp"];
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -76,6 +74,17 @@ pub fn validate(path: &Path, extension: &str, cancel: &CancellationToken) -> Val
         };
     }
     let ext = extension.to_ascii_lowercase();
+    let format = crate::formats::descriptor(&ext);
+    if format.family != crate::formats::MediaFamily::Unknown && !format.preview {
+        return ValidationResult {
+            state: ValidationState::ValidWithoutPreview,
+            tool: "lumina".into(),
+            details: format!(
+                "{} preservado; esta versÃ£o nÃ£o gera preview",
+                format.label
+            ),
+        };
+    }
     if INTERNAL_IMAGE.contains(&ext.as_str()) {
         return match ImageReader::open(path)
             .and_then(|reader| reader.with_guessed_format())
@@ -101,7 +110,7 @@ pub fn validate(path: &Path, extension: &str, cancel: &CancellationToken) -> Val
             },
         };
     }
-    if VIDEO.contains(&ext.as_str()) {
+    if crate::formats::family(&ext) == crate::formats::MediaFamily::Video {
         let probe = ProcessSpec::new("FFprobe", "ffprobe")
             .args([
                 "-v",
@@ -142,7 +151,7 @@ pub fn validate(path: &Path, extension: &str, cancel: &CancellationToken) -> Val
             Err(error) => process_failure("ffmpeg", error),
         };
     }
-    if RAW.contains(&ext.as_str()) {
+    if crate::formats::family(&ext) == crate::formats::MediaFamily::Raw {
         let spec = ProcessSpec::new("ExifTool", "exiftool")
             .args([
                 "-validate",
@@ -186,7 +195,7 @@ pub fn validate(path: &Path, extension: &str, cancel: &CancellationToken) -> Val
             Err(error) => process_failure("exiftool", error),
         };
     }
-    if matches!(ext.as_str(), "heic" | "heif") {
+    if crate::formats::family(&ext) == crate::formats::MediaFamily::Photo {
         let spec = ProcessSpec::new("FFmpeg", "ffmpeg")
             .args([
                 "-v",
@@ -200,12 +209,12 @@ pub fn validate(path: &Path, extension: &str, cancel: &CancellationToken) -> Val
                 "-",
             ])
             .timeout(Duration::from_secs(45))
-            .logical("FFmpeg HEIC validation");
+            .logical("FFmpeg image validation");
         return match process::run(spec, cancel) {
             Ok(_) => ValidationResult {
                 state: ValidationState::Valid,
                 tool: "ffmpeg".into(),
-                details: "Imagem HEIC decodificada".into(),
+                details: "Imagem decodificada por ferramenta compatível".into(),
             },
             Err(error) => process_failure("ffmpeg", error),
         };
@@ -243,7 +252,7 @@ fn read_orientation(source: &Path, cancel: &CancellationToken) -> u8 {
         .and_then(|value| value.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    if !RAW.contains(&extension.as_str()) {
+    if crate::formats::family(&extension) != crate::formats::MediaFamily::Raw {
         return 1;
     }
     process::run(
@@ -301,7 +310,7 @@ pub fn generate_thumbnail(
             .thumbnail(640, 640)
             .save_with_format(&temporary, image::ImageFormat::Jpeg)
             .map_err(|e| e.to_string())?;
-    } else if RAW.contains(&ext.as_str()) {
+    } else if crate::formats::family(&ext) == crate::formats::MediaFamily::Raw {
         let preview = process::run(
             ProcessSpec::new("ExifTool", "exiftool")
                 .args(["-b", "-PreviewImage", source.to_string_lossy().as_ref()])
@@ -330,7 +339,7 @@ pub fn generate_thumbnail(
         result?;
     } else {
         let mut args = vec!["-y".to_string(), "-v".into(), "error".into()];
-        if VIDEO.contains(&ext.as_str()) {
+        if crate::formats::family(&ext) == crate::formats::MediaFamily::Video {
             args.extend(["-ss".into(), "1".into()])
         }
         args.extend([
@@ -895,5 +904,14 @@ mod tests {
         let final_audit = audit_thumbnails(&cfg, false).unwrap();
         assert_eq!(final_audit.valid, 2);
         fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn preservation_format_is_valid_even_without_a_preview_decoder() {
+        let path = std::env::temp_dir().join(format!("{}.jxl", Uuid::new_v4()));
+        fs::write(&path, b"valid opaque payload for preservation").unwrap();
+        let result = validate(&path, "jxl", &CancellationToken::default());
+        assert_eq!(result.state, ValidationState::ValidWithoutPreview);
+        assert!(result.state.accepted());
+        fs::remove_file(path).unwrap();
     }
 }

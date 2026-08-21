@@ -10,7 +10,7 @@ pub struct LibraryConfig {
     pub created_at: String,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DashboardStats {
     pub total_assets: i64,
@@ -20,6 +20,8 @@ pub struct DashboardStats {
     pub protected: i64,
     pub pending: i64,
     pub duplicate_groups: i64,
+    pub duplicate_bytes: i64,
+    pub reclaimable_bytes: i64,
     pub errors: i64,
     pub offline_sources: i64,
     pub oldest: Option<String>,
@@ -29,18 +31,28 @@ pub struct DashboardStats {
     pub types: Vec<DashboardBreakdown>,
     pub years: Vec<DashboardBreakdown>,
     pub protection: Vec<DashboardBreakdown>,
+    #[serde(default)]
+    pub protection_years: Vec<DashboardBreakdown>,
+    #[serde(default)]
+    pub protection_sources: Vec<DashboardBreakdown>,
     pub sources: Vec<DashboardSource>,
+    pub months: Vec<DashboardBreakdown>,
+    pub formats: Vec<DashboardFormat>,
+    pub cameras: Vec<DashboardBreakdown>,
     pub insights: Vec<DashboardInsight>,
     pub latest_benchmark: Option<DashboardBenchmark>,
+    pub snapshot_generated_at: String,
+    pub stale: bool,
+    pub timings: Vec<DashboardTiming>,
 }
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DashboardBreakdown {
     pub key: String,
     pub items: i64,
     pub bytes: i64,
 }
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DashboardSource {
     pub id: String,
@@ -49,7 +61,23 @@ pub struct DashboardSource {
     pub items: i64,
     pub bytes: i64,
 }
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DashboardFormat {
+    pub key: String,
+    pub label: String,
+    pub family: String,
+    pub support: String,
+    pub items: i64,
+    pub bytes: i64,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DashboardTiming {
+    pub section: String,
+    pub milliseconds: i64,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DashboardInsight {
     pub kind: String,
@@ -59,8 +87,11 @@ pub struct DashboardInsight {
     pub value: i64,
     pub bytes: i64,
     pub action: String,
+    pub action_label: String,
+    pub confidence: String,
+    pub reason: String,
 }
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DashboardBenchmark {
     pub job_id: String,
@@ -301,6 +332,9 @@ pub struct DuplicateGroup {
     pub hash: String,
     pub filename: String,
     pub bytes: i64,
+    pub additional_bytes: i64,
+    pub reclaimable_bytes: i64,
+    pub safety: String,
     pub occurrences: Vec<Occurrence>,
 }
 #[derive(Serialize)]

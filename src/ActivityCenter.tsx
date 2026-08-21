@@ -14,6 +14,7 @@ const stateLabel: Record<string, string> = {
 const stageLabel: Record<string, string> = {
   discovery: "Inventariando pastas", inventory:"Inventário rápido", confirmation:"Confirmando conteúdo", metadata: "Identificando datas e câmeras",
   validation: "Verificando os arquivos", hashing: "Comparando com sua biblioteca",
+  technical_enrichment: "Organizando formatos e detalhes técnicos",
   deduplication: "Organizando os resultados", copying: "Copiando com segurança",
   thumbnail: "Preparando a galeria", backup: "Criando a cópia de proteção",
   verification: "Conferindo a integridade da réplica", verification_error: "Revisando falhas da réplica",

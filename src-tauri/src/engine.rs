@@ -1296,6 +1296,9 @@ pub fn consolidate_cancel(
             ).map_err(|e|e.to_string())?;
             let id = Uuid::new_v4().to_string();
             conn.execute("INSERT INTO assets(id,hash,filename,media_type,extension,captured_at,date_source,bytes,width,height,duration,camera,latitude,longitude,master_path,protection_state,created_at)VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,'consolidated',?16)",params![id,hash,filename,kind,ext,captured,date_source,bytes,width,height,duration,camera,lat,lng,dest.to_string_lossy(),Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
+            let format = crate::formats::descriptor(&ext);
+            let (detected, matches) = crate::formats::detected_format(&dest, &ext);
+            conn.execute("INSERT INTO asset_technical_metadata(asset_id,declared_extension,detected_format,family,support_level,extension_matches,metadata_supported,thumbnail_supported,preview_supported,enriched_at)VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",params![id,ext,detected,format.family.as_str(),format.support.as_str(),matches,format.metadata,format.thumbnail,format.preview,Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
             id
         };
         if status != "duplicate" {
@@ -1537,6 +1540,107 @@ pub fn verify_job(
 pub fn verify(cfg: &LibraryConfig) -> Result<VerifyResult, String> {
     let job = queue_verification(cfg)?;
     verify_job(cfg, &job, &crate::process::CancellationToken::default())
+}
+
+pub fn queue_format_enrichment(cfg: &LibraryConfig) -> Result<String, String> {
+    let conn = catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite"))
+        .map_err(|e| e.to_string())?;
+    if let Some(job)=conn.query_row("SELECT id FROM jobs WHERE stage='technical_enrichment' AND state IN('queued','analyzing','paused','interrupted') ORDER BY created_at DESC LIMIT 1",[],|row|row.get::<_,String>(0)).optional().map_err(|e|e.to_string())?{return Ok(job)}
+    let missing:i64=conn.query_row("SELECT COUNT(*) FROM assets a WHERE NOT EXISTS(SELECT 1 FROM asset_technical_metadata t WHERE t.asset_id=a.id)",[],|row|row.get(0)).map_err(|error|error.to_string())?;
+    if missing == 0 {
+        if let Some(job)=conn.query_row("SELECT id FROM jobs WHERE source_id='_lumina_maintenance' ORDER BY created_at DESC LIMIT 1",[],|row|row.get::<_,String>(0)).optional().map_err(|error|error.to_string())? { return Ok(job); }
+    }
+    let job = Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
+    conn.execute("INSERT OR IGNORE INTO sources(id,name,path,volume_label,available)VALUES('_lumina_maintenance','Manutenção da biblioteca','lumina://maintenance','internal',1)",[]).map_err(|e|e.to_string())?;
+    conn.execute("INSERT INTO jobs(id,source_id,source_path,state,stage,created_at,updated_at,total_items,total_bytes)VALUES(?1,'_lumina_maintenance','lumina://format-enrichment','queued','technical_enrichment',?2,?2,(SELECT COUNT(*) FROM assets a WHERE NOT EXISTS(SELECT 1 FROM asset_technical_metadata t WHERE t.asset_id=a.id)),(SELECT COALESCE(SUM(bytes),0) FROM assets a WHERE NOT EXISTS(SELECT 1 FROM asset_technical_metadata t WHERE t.asset_id=a.id)))",params![job,now]).map_err(|e|e.to_string())?;
+    conn.execute("INSERT INTO work_queue(job_id,asset_id,kind,state,priority,created_at,updated_at)SELECT ?1,a.id,'technical_metadata','pending',-10,?2,?2 FROM assets a WHERE NOT EXISTS(SELECT 1 FROM asset_technical_metadata t WHERE t.asset_id=a.id)",params![job,now]).map_err(|e|e.to_string())?;
+    Ok(job)
+}
+
+pub fn enrich_formats_job(
+    cfg: &LibraryConfig,
+    job: &str,
+    cancel: &crate::process::CancellationToken,
+) -> Result<(), String> {
+    let db_path = Path::new(&cfg.master_path).join(".lumina/catalog.sqlite");
+    let conn = catalog::open(&db_path).map_err(|e| e.to_string())?;
+    let now = Utc::now().to_rfc3339();
+    conn.execute("UPDATE work_queue SET state='pending',updated_at=?2 WHERE job_id=?1 AND kind='technical_metadata' AND state='processing'",params![job,now]).map_err(|e|e.to_string())?;
+    conn.execute("UPDATE jobs SET state='analyzing',stage='technical_enrichment',processed_items=0,processed_bytes=0,updated_at=?2 WHERE id=?1",params![job,now]).map_err(|e|e.to_string())?;
+    let rows = {
+        let mut statement=conn.prepare("SELECT q.id,a.id,a.master_path,a.extension,a.bytes FROM work_queue q JOIN assets a ON a.id=q.asset_id WHERE q.job_id=?1 AND q.kind='technical_metadata' AND q.state IN('pending','failed') ORDER BY q.id").map_err(|e|e.to_string())?;
+        let values = statement
+            .query_map([job], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        values
+    };
+    let total = rows.len() as i64;
+    let total_bytes = rows.iter().map(|row| row.4).sum::<i64>();
+    let mut done = 0;
+    let mut done_bytes = 0;
+    for (qid, asset, path, extension, bytes) in rows {
+        control_point(&conn, job)?;
+        if cancel.is_cancelled() {
+            return Err("JOB_CANCELED".into());
+        }
+        conn.execute("UPDATE work_queue SET state='processing',attempts=attempts+1,updated_at=?2 WHERE id=?1",params![qid,Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
+        let descriptor = crate::formats::descriptor(&extension);
+        let (detected, matches) = crate::formats::detected_format(Path::new(&path), &extension);
+        let mut codec = None;
+        let mut container = None;
+        if descriptor.family == crate::formats::MediaFamily::Video {
+            let spec = crate::process::ProcessSpec::new("FFprobe", "ffprobe")
+                .args([
+                    "-v",
+                    "error",
+                    "-select_streams",
+                    "v:0",
+                    "-show_entries",
+                    "stream=codec_name:format=format_name",
+                    "-of",
+                    "json",
+                    path.as_str(),
+                ])
+                .timeout(std::time::Duration::from_secs(30))
+                .logical("FFprobe technical inventory");
+            if let Ok(result) = crate::process::run(spec, cancel) {
+                if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&result.stdout) {
+                    codec = json
+                        .pointer("/streams/0/codec_name")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string);
+                    container = json
+                        .pointer("/format/format_name")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string)
+                }
+            }
+        }
+        conn.execute("INSERT INTO asset_technical_metadata(asset_id,declared_extension,detected_format,family,container,codec,support_level,extension_matches,metadata_supported,thumbnail_supported,preview_supported,enriched_at)VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)ON CONFLICT(asset_id)DO UPDATE SET declared_extension=excluded.declared_extension,detected_format=excluded.detected_format,family=excluded.family,container=excluded.container,codec=excluded.codec,support_level=excluded.support_level,extension_matches=excluded.extension_matches,metadata_supported=excluded.metadata_supported,thumbnail_supported=excluded.thumbnail_supported,preview_supported=excluded.preview_supported,enriched_at=excluded.enriched_at",params![asset,extension,detected,descriptor.family.as_str(),container,codec,descriptor.support.as_str(),matches,descriptor.metadata,descriptor.thumbnail,descriptor.preview,Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
+        conn.execute(
+            "UPDATE work_queue SET state='completed',last_error=NULL,updated_at=?2 WHERE id=?1",
+            params![qid, Utc::now().to_rfc3339()],
+        )
+        .map_err(|e| e.to_string())?;
+        done += 1;
+        done_bytes += bytes;
+        if progress_due(done, total) {
+            conn.execute("UPDATE jobs SET processed_items=?2,total_items=?3,processed_bytes=?4,total_bytes=?5,current_file=?6,updated_at=?7 WHERE id=?1",params![job,done,total,done_bytes,total_bytes,path,Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
+        }
+    }
+    conn.execute("UPDATE jobs SET state='completed',stage='completed',current_file=NULL,finished_at=?2,updated_at=?2 WHERE id=?1",params![job,Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
+    Ok(())
 }
 
 pub fn protection_stats(
@@ -2501,6 +2605,39 @@ mod tests {
         latencies.sort_unstable();
         let p95 = latencies[latencies.len() * 95 / 100];
         assert!(p95 < 300, "p95 da galeria sob carga: {p95} ms");
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn technical_inventory_is_persistent_idempotent_and_detects_content_mismatch() {
+        let root = std::env::temp_dir().join(format!("lumina-formats-{}", Uuid::new_v4()));
+        let master = root.join("master");
+        let backup = root.join("backup");
+        fs::create_dir_all(&master).unwrap();
+        fs::create_dir_all(&backup).unwrap();
+        let cfg = LibraryConfig {
+            id: "l".into(),
+            name: "t".into(),
+            master_path: master.to_string_lossy().into(),
+            backup_path: backup.to_string_lossy().into(),
+            created_at: Utc::now().to_rfc3339(),
+        };
+        let path = master.join("wrong.png");
+        fs::write(&path, [0xff, 0xd8, 0xff, 0xd9]).unwrap();
+        let conn = catalog::open(&master.join(".lumina/catalog.sqlite")).unwrap();
+        conn.execute("INSERT INTO assets(id,hash,filename,media_type,extension,captured_at,date_source,bytes,master_path,created_at)VALUES('a',?1,'wrong.png','photo','png',?2,'file',4,?3,?2)",params!["a".repeat(64),Utc::now().to_rfc3339(),path.to_string_lossy()]).unwrap();
+        drop(conn);
+        let job = queue_format_enrichment(&cfg).unwrap();
+        enrich_formats_job(&cfg, &job, &crate::process::CancellationToken::default()).unwrap();
+        let conn = catalog::open(&master.join(".lumina/catalog.sqlite")).unwrap();
+        let value:(String,bool)=conn.query_row("SELECT detected_format,extension_matches FROM asset_technical_metadata WHERE asset_id='a'",[],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+        assert_eq!(value, ("jpeg".into(), false));
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*)FROM asset_technical_metadata", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        drop(conn);
         fs::remove_dir_all(root).unwrap();
     }
 }

@@ -215,6 +215,9 @@ impl JobManager {
                 let _=conn.execute("UPDATE jobs SET state='protection_pending',stage='protection_pending',interruption_reason='Proteção interrompida pelo usuário',current_file=NULL,updated_at=?2 WHERE id=?1",params![job,now]);
                 return;
             }
+            if stage == "technical_enrichment" {
+                let _=conn.execute("UPDATE work_queue SET state='pending',updated_at=?2 WHERE job_id=?1 AND kind='technical_metadata' AND state='processing'",params![job,now]);
+            }
             let _ = conn.execute("UPDATE job_items SET state='queued',current_stage='validation',updated_at=?2 WHERE job_id=?1 AND state='processing'", params![job,now]);
             let _ = conn.execute("UPDATE jobs SET state='canceled',interruption_reason='Cancelado pelo usuário',current_file=NULL,finished_at=?2,updated_at=?2 WHERE id=?1", params![job,now]);
             let _ = conn.execute("INSERT INTO events(job_id,at,path,state,details)VALUES(?1,?2,'','canceled','Cancelamento concluído com segurança')", params![job,now]);
@@ -338,6 +341,31 @@ impl JobManager {
         self.spawn_verification(cfg, job.clone())?;
         Ok(job)
     }
+    fn spawn_format_enrichment(&self, cfg: LibraryConfig, job: String) -> Result<(), String> {
+        self.reserve(&job)?;
+        let cancel = self.token(&job)?;
+        let manager = self.clone();
+        let worker = job.clone();
+        std::thread::Builder::new()
+            .name(format!("lumina-format-enrichment-{job}"))
+            .spawn(move || {
+                if let Err(error) = engine::enrich_formats_job(&cfg, &worker, &cancel) {
+                    if error == "JOB_CANCELED" {
+                        manager.mark_canceled(&cfg, &worker)
+                    } else {
+                        manager.mark_failed(&cfg, &worker, &error)
+                    }
+                }
+                manager.release(&worker)
+            })
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+    pub fn start_format_enrichment(&self, cfg: LibraryConfig) -> Result<String, String> {
+        let job = engine::queue_format_enrichment(&cfg)?;
+        self.spawn_format_enrichment(cfg, job.clone())?;
+        Ok(job)
+    }
     pub fn has_active(&self) -> bool {
         self.inner
             .active
@@ -364,6 +392,9 @@ impl JobManager {
         }
         if matches!(stage.as_str(), "verification" | "verification_error") {
             return self.spawn_verification(cfg, job);
+        }
+        if stage == "technical_enrichment" {
+            return self.spawn_format_enrichment(cfg, job);
         }
         self.reserve(&job)?;
         let cancel = self.token(&job)?;

@@ -3,6 +3,8 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 import { api } from "./api";
+import type { DashboardStats } from "./types";
+const emptyDashboard=():DashboardStats=>({totalAssets:0,photos:0,videos:0,bytes:0,protected:0,pending:0,duplicateGroups:0,duplicateBytes:0,reclaimableBytes:0,errors:0,offlineSources:0,masterAvailableBytes:0,backupAvailableBytes:0,types:[],years:[],months:[],protection:[],cameras:[],formats:[],sources:[],insights:[],snapshotGeneratedAt:new Date().toISOString(),stale:false,timings:[]});
 
 describe("fluxo principal do aplicativo", () => {
   afterEach(() => { cleanup(); vi.restoreAllMocks(); });
@@ -88,7 +90,7 @@ describe("fluxo principal do aplicativo", () => {
   it("oferece retomar ou descartar um trabalho interrompido", async () => {
     const user = userEvent.setup();
     vi.spyOn(api, "getLibrary").mockResolvedValue({id:"lib",name:"Teste",masterPath:"D:\\Lumina",backupPath:"G:\\Backup",createdAt:new Date().toISOString()});
-    vi.spyOn(api, "dashboard").mockResolvedValue({totalAssets:0,photos:0,videos:0,bytes:0,protected:0,pending:0,duplicateGroups:0,errors:0,offlineSources:0,masterAvailableBytes:0,backupAvailableBytes:0,types:[],years:[],protection:[],sources:[],insights:[]});
+    vi.spyOn(api, "dashboard").mockResolvedValue(emptyDashboard());
     vi.spyOn(api, "recoverableJobs").mockResolvedValue([{jobId:"job-1",sourcePath:"E:\\DCIM",state:"interrupted",stage:"hashing",interruptionReason:"Fechamento inesperado",updatedAt:new Date().toISOString()}]);
     const discard = vi.spyOn(api, "discardJob").mockResolvedValue();
     render(<App/>);
@@ -102,7 +104,7 @@ describe("fluxo principal do aplicativo", () => {
   it("cancela uma consolidação e mantém um diagnóstico compreensível", async () => {
     const user=userEvent.setup();
     vi.spyOn(api,"getLibrary").mockResolvedValue({id:"lib",name:"Teste",masterPath:"D:\\Lumina",backupPath:"G:\\Backup",createdAt:new Date().toISOString()});
-    vi.spyOn(api,"dashboard").mockResolvedValue({totalAssets:0,photos:0,videos:0,bytes:0,protected:0,pending:0,duplicateGroups:0,errors:0,offlineSources:0,masterAvailableBytes:0,backupAvailableBytes:0,types:[],years:[],protection:[],sources:[],insights:[]});
+    vi.spyOn(api,"dashboard").mockResolvedValue(emptyDashboard());
     vi.spyOn(api,"recoverableJobs").mockResolvedValue([]);
     render(<App/>);
     await screen.findByText(/memórias ·/);
@@ -119,7 +121,7 @@ describe("fluxo principal do aplicativo", () => {
   it("permite fechar a análise e continuar navegando", async()=>{
     const user=userEvent.setup();
     vi.spyOn(api,"getLibrary").mockResolvedValue({id:"lib",name:"Teste",masterPath:"D:\\Lumina",backupPath:"G:\\Backup",createdAt:new Date().toISOString()});
-    vi.spyOn(api,"dashboard").mockResolvedValue({totalAssets:0,photos:0,videos:0,bytes:0,protected:0,pending:0,duplicateGroups:0,errors:0,offlineSources:0,masterAvailableBytes:0,backupAvailableBytes:0,types:[],years:[],protection:[],sources:[],insights:[]});
+    vi.spyOn(api,"dashboard").mockResolvedValue(emptyDashboard());
     vi.spyOn(api,"recoverableJobs").mockResolvedValue([]);
     render(<App/>);
     await screen.findByText(/memórias ·/);

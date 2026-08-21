@@ -2,6 +2,7 @@ mod backup;
 mod catalog;
 mod engine;
 mod events;
+mod formats;
 mod gallery;
 mod jobs;
 mod library;
@@ -194,6 +195,157 @@ async fn get_dashboard(state: State<'_, AppState>) -> Result<DashboardStats, Str
 }
 
 fn get_dashboard_sync(cfg: &LibraryConfig) -> Result<DashboardStats, String> {
+    let conn = db(cfg)?;
+    let cached = conn.query_row("SELECT payload,invalidated_at IS NOT NULL FROM dashboard_snapshots WHERE id=1 AND schema_version=1",[],|row|Ok((row.get::<_,String>(0)?,row.get::<_,bool>(1)?))).optional().map_err(|error|error.to_string())?;
+    if let Some((payload, stale)) = cached {
+        let mut result: DashboardStats =
+            serde_json::from_str(&payload).map_err(|error| error.to_string())?;
+        result.stale = stale;
+        return Ok(result);
+    }
+    drop(conn);
+    let result = quick_dashboard(cfg)?;
+    Ok(result)
+}
+
+fn quick_dashboard(cfg: &LibraryConfig) -> Result<DashboardStats, String> {
+    let started = std::time::Instant::now();
+    let conn = db(cfg)?;
+    let read = |dimension: &str| -> Result<Vec<DashboardBreakdown>, String> {
+        let mut statement = conn.prepare("SELECT key,items,bytes FROM library_rollups WHERE dimension=?1 AND items>0 ORDER BY bytes DESC").map_err(|error| error.to_string())?;
+        let values = statement
+            .query_map([dimension], |row| {
+                Ok(DashboardBreakdown {
+                    key: row.get(0)?,
+                    items: row.get(1)?,
+                    bytes: row.get(2)?,
+                })
+            })
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        Ok(values)
+    };
+    let types = read("type")?;
+    let years = read("year")?;
+    let protection = read("protection")?;
+    let extensions = read("extension")?;
+    let total_assets = types.iter().map(|value| value.items).sum();
+    let bytes = types.iter().map(|value| value.bytes).sum();
+    let videos = types
+        .iter()
+        .find(|value| value.key == "video")
+        .map(|value| value.items)
+        .unwrap_or(0);
+    let protected = protection
+        .iter()
+        .find(|value| value.key == "replica_verified")
+        .map(|value| value.items)
+        .unwrap_or(0);
+    let pending = protection
+        .iter()
+        .filter(|value| value.key != "replica_verified" && value.key != "error")
+        .map(|value| value.items)
+        .sum();
+    let errors = protection
+        .iter()
+        .find(|value| value.key == "error")
+        .map(|value| value.items)
+        .unwrap_or(0);
+    let formats = extensions
+        .iter()
+        .map(|value| {
+            let descriptor = crate::formats::descriptor(&value.key);
+            DashboardFormat {
+                key: value.key.clone(),
+                label: descriptor.label.into(),
+                family: descriptor.family.as_str().into(),
+                support: descriptor.support.as_str().into(),
+                items: value.items,
+                bytes: value.bytes,
+            }
+        })
+        .collect();
+    Ok(DashboardStats {
+        total_assets,
+        photos: total_assets - videos,
+        videos,
+        bytes,
+        protected,
+        pending,
+        duplicate_groups: 0,
+        duplicate_bytes: 0,
+        reclaimable_bytes: 0,
+        errors,
+        offline_sources: 0,
+        oldest: years
+            .iter()
+            .map(|value| value.key.as_str())
+            .min()
+            .map(|year| format!("{year}-01-01T00:00:00Z")),
+        newest: years
+            .iter()
+            .map(|value| value.key.as_str())
+            .max()
+            .map(|year| format!("{year}-12-31T23:59:59Z")),
+        master_available_bytes: 0,
+        backup_available_bytes: 0,
+        types,
+        years,
+        protection,
+        protection_years: Vec::new(),
+        protection_sources: Vec::new(),
+        sources: Vec::new(),
+        months: read("month")?,
+        formats,
+        cameras: read("camera")?,
+        insights: Vec::new(),
+        latest_benchmark: None,
+        snapshot_generated_at: Utc::now().to_rfc3339(),
+        stale: true,
+        timings: vec![DashboardTiming {
+            section: "snapshot".into(),
+            milliseconds: started.elapsed().as_millis() as i64,
+        }],
+    })
+}
+
+#[tauri::command]
+async fn refresh_dashboard(state: State<'_, AppState>) -> Result<DashboardStats, String> {
+    let cfg = current(&state)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let started = std::time::Instant::now();
+        let result = compute_dashboard(&cfg)?;
+        save_dashboard_snapshot(&cfg, &result, started.elapsed().as_millis() as i64)?;
+        Ok(result)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+fn save_dashboard_snapshot(
+    cfg: &LibraryConfig,
+    result: &DashboardStats,
+    generation_ms: i64,
+) -> Result<(), String> {
+    let conn = db(cfg)?;
+    let payload = serde_json::to_string(result).map_err(|error| error.to_string())?;
+    conn.execute("INSERT INTO dashboard_snapshots(id,schema_version,generated_at,invalidated_at,payload,generation_ms,catalog_items)VALUES(1,1,?1,NULL,?2,?3,?4)ON CONFLICT(id)DO UPDATE SET schema_version=excluded.schema_version,generated_at=excluded.generated_at,invalidated_at=NULL,payload=excluded.payload,generation_ms=excluded.generation_ms,catalog_items=excluded.catalog_items",params![result.snapshot_generated_at,payload,generation_ms,result.total_assets]).map_err(|error|error.to_string())?;
+    let section = |name: &str| {
+        result
+            .timings
+            .iter()
+            .find(|value| value.section == name)
+            .map(|value| value.milliseconds)
+            .unwrap_or(0)
+    };
+    conn.execute("INSERT INTO dashboard_metrics(generated_at,mode,total_ms,catalog_ms,rollups_ms,storage_ms,insights_ms,items)VALUES(?1,'full',?2,?3,?4,?5,?6,?7)",params![result.snapshot_generated_at,generation_ms,section("catalog"),section("rollups"),section("storage"),section("insights"),result.total_assets]).map_err(|error|error.to_string())?;
+    conn.execute("DELETE FROM dashboard_metrics WHERE id NOT IN(SELECT id FROM dashboard_metrics ORDER BY id DESC LIMIT 100)",[]).map_err(|error|error.to_string())?;
+    Ok(())
+}
+
+fn compute_dashboard(cfg: &LibraryConfig) -> Result<DashboardStats, String> {
+    let total_started = std::time::Instant::now();
     let conn = db(&cfg)?;
     let row=conn.query_row("SELECT COUNT(*),COALESCE(SUM(media_type!='video'),0),COALESCE(SUM(media_type='video'),0),COALESCE(SUM(bytes),0),COALESCE(SUM(protection_state='replica_verified'),0),COALESCE(SUM(protection_state IN('source_only','consolidated','stale')),0),COALESCE(SUM(protection_state='error'),0) FROM assets",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).map_err(|e|e.to_string())?;
     let duplicate_groups=conn.query_row("SELECT COUNT(*) FROM(SELECT asset_id FROM occurrences GROUP BY asset_id HAVING COUNT(*)>1)",[],|r|r.get(0)).unwrap_or(0);
@@ -251,6 +403,13 @@ fn get_dashboard_sync(cfg: &LibraryConfig) -> Result<DashboardStats, String> {
     let duplicate_bytes:i64=conn.query_row("SELECT COALESCE(SUM(a.bytes*(x.copies-1)),0)FROM assets a JOIN(SELECT asset_id,COUNT(*) copies FROM occurrences GROUP BY asset_id HAVING copies>1)x ON x.asset_id=a.id",[],|r|r.get(0)).unwrap_or(0);
     let thumbnail_issues:i64=conn.query_row("SELECT COUNT(*)FROM assets a LEFT JOIN thumbnails t ON t.asset_id=a.id WHERE t.asset_id IS NULL OR t.state!='ready'",[],|r|r.get(0)).unwrap_or(0);
     let suspicious:i64=conn.query_row("SELECT COUNT(*)FROM assets WHERE date_source='filesystem_modified' OR CAST(substr(captured_at,1,4)AS INTEGER)<1990 OR CAST(substr(captured_at,1,4)AS INTEGER)>CAST(strftime('%Y','now')AS INTEGER)+1",[],|r|r.get(0)).unwrap_or(0);
+    let format_mismatches: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM asset_technical_metadata WHERE extension_matches=0",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
     let mut insights = Vec::new();
     if pending_bytes > 0 {
         insights.push(DashboardInsight {
@@ -261,6 +420,9 @@ fn get_dashboard_sync(cfg: &LibraryConfig) -> Result<DashboardStats, String> {
             value: row.5,
             bytes: pending_bytes,
             action: "protection".into(),
+            action_label: "Ver proteção".into(),
+            confidence: "high".into(),
+            reason: "Há itens sem réplica local verificada".into(),
         });
     }
     if duplicate_bytes > 0 {
@@ -272,6 +434,9 @@ fn get_dashboard_sync(cfg: &LibraryConfig) -> Result<DashboardStats, String> {
             value: duplicate_groups,
             bytes: duplicate_bytes,
             action: "duplicates".into(),
+            action_label: "Analisar ocorrências".into(),
+            confidence: "high".into(),
+            reason: "Estimativa baseada em hashes idênticos e ocorrências conhecidas".into(),
         });
     }
     if thumbnail_issues > 0 {
@@ -283,6 +448,9 @@ fn get_dashboard_sync(cfg: &LibraryConfig) -> Result<DashboardStats, String> {
             value: thumbnail_issues,
             bytes: 0,
             action: "library".into(),
+            action_label: "Abrir biblioteca".into(),
+            confidence: "high".into(),
+            reason: "Miniatura ausente, desatualizada ou com falha".into(),
         });
     }
     if suspicious > 0 {
@@ -294,6 +462,9 @@ fn get_dashboard_sync(cfg: &LibraryConfig) -> Result<DashboardStats, String> {
             value: suspicious,
             bytes: 0,
             action: "library".into(),
+            action_label: "Revisar datas".into(),
+            confidence: "medium".into(),
+            reason: "Data de arquivo usada como fallback ou ano fora da faixa esperada".into(),
         });
     }
     if offline > 0 {
@@ -305,9 +476,85 @@ fn get_dashboard_sync(cfg: &LibraryConfig) -> Result<DashboardStats, String> {
             value: offline,
             bytes: 0,
             action: "sources".into(),
+            action_label: "Ver fontes".into(),
+            confidence: "high".into(),
+            reason: "O volume registrado não está acessível neste momento".into(),
+        });
+    }
+    if format_mismatches > 0 {
+        insights.push(DashboardInsight {
+            kind: "formats".into(),
+            severity: "medium".into(),
+            title: "Extensões divergentes".into(),
+            detail: "O conteúdo detectado não corresponde ao nome de alguns arquivos.".into(),
+            value: format_mismatches,
+            bytes: 0,
+            action: "library".into(),
+            action_label: "Revisar formatos".into(),
+            confidence: "high".into(),
+            reason: "Assinatura interna comparada com a extensão declarada".into(),
         });
     }
     let latest_benchmark=conn.query_row("SELECT j.id,j.total_items,j.total_bytes,COALESCE((SELECT duration_ms FROM job_metrics WHERE job_id=j.id AND stage='analysis_total'),0),COALESCE((SELECT duration_ms FROM job_metrics WHERE job_id=j.id AND stage='hashing_total'),0),COALESCE((SELECT duration_ms FROM job_metrics WHERE job_id=j.id AND stage='copy_and_verify'),0),COALESCE((SELECT duration_ms FROM job_metrics WHERE job_id=j.id AND stage='thumbnails'),0),COALESCE((SELECT items FROM job_metrics WHERE job_id=j.id AND stage='hashing_workers'),0),COALESCE((SELECT bytes FROM job_metrics WHERE job_id=j.id AND stage='hashing_workers'),0),COALESCE((SELECT items FROM job_metrics WHERE job_id=j.id AND stage='deferred_hash'),0),COALESCE((SELECT items FROM job_metrics WHERE job_id=j.id AND stage='cache_hits'),0)FROM jobs j WHERE EXISTS(SELECT 1 FROM job_metrics m WHERE m.job_id=j.id AND m.stage='analysis_total')ORDER BY j.created_at DESC LIMIT 1",[],|r|Ok(DashboardBenchmark{job_id:r.get(0)?,items:r.get(1)?,bytes:r.get(2)?,analysis_ms:r.get(3)?,hashing_ms:r.get(4)?,copy_ms:r.get(5)?,thumbnails_ms:r.get(6)?,hash_workers:r.get(7)?,hashed_bytes:r.get(8)?,deferred_hash_items:r.get(9)?,cache_hits:r.get(10)?})).optional().map_err(|e|e.to_string())?;
+    let formats = {
+        let mut statement=conn.prepare("SELECT LOWER(a.extension),COALESCE(t.family,''),COALESCE(t.support_level,''),COUNT(*),COALESCE(SUM(a.bytes),0) FROM assets a LEFT JOIN asset_technical_metadata t ON t.asset_id=a.id GROUP BY 1,2,3 ORDER BY 5 DESC").map_err(|error|error.to_string())?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            })
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        rows.into_iter()
+            .map(|(key, family, support, items, bytes)| {
+                let descriptor = crate::formats::descriptor(&key);
+                DashboardFormat {
+                    key,
+                    label: descriptor.label.into(),
+                    family: if family.is_empty() {
+                        descriptor.family.as_str().into()
+                    } else {
+                        family
+                    },
+                    support: if support.is_empty() {
+                        descriptor.support.as_str().into()
+                    } else {
+                        support
+                    },
+                    items,
+                    bytes,
+                }
+            })
+            .collect()
+    };
+    let grouped = |sql: &str| -> Result<Vec<DashboardBreakdown>, String> {
+        let mut statement = conn.prepare(sql).map_err(|error| error.to_string())?;
+        let values = statement
+            .query_map([], |row| {
+                Ok(DashboardBreakdown {
+                    key: row.get(0)?,
+                    items: row.get(1)?,
+                    bytes: row.get(2)?,
+                })
+            })
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        Ok(values)
+    };
+    let protection_years=grouped("SELECT substr(captured_at,1,4),COUNT(*),COALESCE(SUM(bytes),0) FROM assets WHERE protection_state='replica_verified' GROUP BY 1 ORDER BY 1 DESC")?;
+    let protection_sources=grouped("SELECT s.name,COUNT(DISTINCT a.id),COALESCE(SUM(a.bytes),0) FROM sources s JOIN occurrences o ON o.source_id=s.id JOIN assets a ON a.id=o.asset_id WHERE a.protection_state='replica_verified' GROUP BY s.id ORDER BY 3 DESC")?;
+    let catalog_ms = total_started.elapsed().as_millis() as i64;
+    let storage_started = std::time::Instant::now();
+    let master_available_bytes = fs2::available_space(&cfg.master_path).unwrap_or(0);
+    let backup_available_bytes = fs2::available_space(&cfg.backup_path).unwrap_or(0);
+    let storage_ms = storage_started.elapsed().as_millis() as i64;
     Ok(DashboardStats {
         total_assets: row.0,
         photos: row.1,
@@ -316,18 +563,32 @@ fn get_dashboard_sync(cfg: &LibraryConfig) -> Result<DashboardStats, String> {
         protected: row.4,
         pending: row.5,
         duplicate_groups,
+        duplicate_bytes,
+        reclaimable_bytes: conn.query_row("SELECT COALESCE(SUM(a.bytes*(x.copies-1)),0) FROM assets a JOIN(SELECT asset_id,COUNT(*) copies FROM occurrences GROUP BY asset_id HAVING copies>1)x ON x.asset_id=a.id WHERE a.protection_state='replica_verified'",[],|row|row.get(0)).unwrap_or(0),
         errors: row.6,
         offline_sources: offline,
         oldest,
         newest,
-        master_available_bytes: fs2::available_space(&cfg.master_path).unwrap_or(0),
-        backup_available_bytes: fs2::available_space(&cfg.backup_path).unwrap_or(0),
+        master_available_bytes,
+        backup_available_bytes,
         types: rollup("type")?,
         years: rollup("year")?,
         protection: rollup("protection")?,
+        protection_years,
+        protection_sources,
         sources,
+        months: rollup("month")?,
+        formats,
+        cameras: rollup("camera")?,
         insights,
         latest_benchmark,
+        snapshot_generated_at: chrono::Utc::now().to_rfc3339(),
+        stale:false,
+        timings:vec![
+            DashboardTiming{section:"catalog".into(),milliseconds:catalog_ms},
+            DashboardTiming{section:"storage".into(),milliseconds:storage_ms},
+            DashboardTiming{section:"total".into(),milliseconds:total_started.elapsed().as_millis() as i64}
+        ],
     })
 }
 #[tauri::command]
@@ -444,7 +705,7 @@ async fn search_gallery(
 fn list_duplicates(state: State<AppState>) -> Result<Vec<DuplicateGroup>, String> {
     let cfg = current(&state)?;
     let conn = db(&cfg)?;
-    let mut stmt=conn.prepare("SELECT a.id,a.hash,a.filename,a.bytes FROM assets a WHERE(SELECT COUNT(*) FROM occurrences o WHERE o.asset_id=a.id)>1 ORDER BY a.captured_at DESC").map_err(|e|e.to_string())?;
+    let mut stmt=conn.prepare("SELECT a.id,a.hash,a.filename,a.bytes,a.protection_state,(SELECT COUNT(*) FROM occurrences o WHERE o.asset_id=a.id) FROM assets a WHERE(SELECT COUNT(*) FROM occurrences o WHERE o.asset_id=a.id)>1 ORDER BY a.captured_at DESC").map_err(|e|e.to_string())?;
     let rows = stmt
         .query_map([], |r| {
             Ok((
@@ -452,6 +713,8 @@ fn list_duplicates(state: State<AppState>) -> Result<Vec<DuplicateGroup>, String
                 r.get::<_, String>(1)?,
                 r.get::<_, String>(2)?,
                 r.get::<_, i64>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, i64>(5)?,
             ))
         })
         .map_err(|e| e.to_string())?
@@ -464,6 +727,17 @@ fn list_duplicates(state: State<AppState>) -> Result<Vec<DuplicateGroup>, String
             hash: r.1,
             filename: r.2,
             bytes: r.3,
+            additional_bytes: r.3 * (r.5 - 1),
+            reclaimable_bytes: if r.4 == "replica_verified" {
+                r.3 * (r.5 - 1)
+            } else {
+                0
+            },
+            safety: if r.4 == "replica_verified" {
+                "eligible_for_review".into()
+            } else {
+                "protection_required".into()
+            },
             occurrences: engine::duplicate_occurrences(&conn, &r.0),
         })
         .collect())
@@ -763,6 +1037,17 @@ fn start_analysis(
     Ok(job)
 }
 #[tauri::command]
+fn start_format_enrichment(
+    state: State<AppState>,
+    manager: State<jobs::JobManager>,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    let cfg = current(&state)?;
+    let job = manager.start_format_enrichment(cfg.clone())?;
+    jobs::emit_progress(app, cfg, job.clone());
+    Ok(job)
+}
+#[tauri::command]
 fn start_consolidation(
     job_id: String,
     state: State<AppState>,
@@ -944,6 +1229,7 @@ pub fn run() {
             frontend_ready,
             create_library,
             get_dashboard,
+            refresh_dashboard,
             list_sources,
             list_assets,
             search_gallery,
@@ -968,6 +1254,7 @@ pub fn run() {
             get_job_snapshot,
             verify_backup,
             start_analysis,
+            start_format_enrichment,
             start_consolidation,
             start_protection,
             list_recoverable_jobs,
@@ -987,7 +1274,16 @@ pub fn run() {
 
 #[cfg(test)]
 mod protocol_tests {
-    use super::valid_thumbnail_asset_id;
+    use super::{quick_dashboard, valid_thumbnail_asset_id};
+    use crate::{catalog, models::LibraryConfig};
+    use std::{
+        fs,
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        },
+        time::Instant,
+    };
 
     #[test]
     fn thumbnail_protocol_rejects_paths_and_accepts_catalog_ids() {
@@ -995,5 +1291,62 @@ mod protocol_tests {
         assert!(!valid_thumbnail_asset_id("../catalog.sqlite"));
         assert!(!valid_thumbnail_asset_id("folder/asset"));
         assert!(!valid_thumbnail_asset_id(""));
+    }
+
+    #[test]
+    #[ignore = "benchmark de escala executado na validação de release"]
+    fn dashboard_rollups_scale_to_100k_and_500k_with_concurrent_reads() {
+        for (items, ceiling_ms) in [(100_000i64, 100u128), (500_000, 300)] {
+            let root = std::env::temp_dir()
+                .join(format!("lumina-dashboard-{items}-{}", uuid::Uuid::new_v4()));
+            let master = root.join("master");
+            let backup = root.join("backup");
+            fs::create_dir_all(&master).unwrap();
+            fs::create_dir_all(&backup).unwrap();
+            let cfg = LibraryConfig {
+                id: "bench".into(),
+                name: "bench".into(),
+                master_path: master.to_string_lossy().into(),
+                backup_path: backup.to_string_lossy().into(),
+                created_at: chrono::Utc::now().to_rfc3339(),
+            };
+            let conn = catalog::open(&master.join(".lumina/catalog.sqlite")).unwrap();
+            conn.execute_batch("PRAGMA synchronous=OFF; DROP TRIGGER rollup_asset_insert; DROP TRIGGER assets_fts_insert;").unwrap();
+            conn.execute("WITH RECURSIVE n(x) AS(SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<?1) INSERT INTO assets(id,hash,filename,media_type,extension,captured_at,date_source,bytes,master_path,protection_state,created_at) SELECT printf('a-%d',x),printf('%064x',x),printf('IMG_%d.jpg',x),CASE WHEN x%10=0 THEN 'video' ELSE 'photo' END,CASE WHEN x%10=0 THEN 'mp4' ELSE 'jpg' END,printf('%04d-01-01T00:00:00Z',2000+x%25),'benchmark',1000000,printf('master/%d',x),CASE WHEN x%3=0 THEN 'replica_verified' ELSE 'consolidated' END,datetime('now') FROM n",[items]).unwrap();
+            conn.execute_batch("DELETE FROM library_rollups; INSERT INTO library_rollups SELECT 'type',media_type,COUNT(*),SUM(bytes)FROM assets GROUP BY media_type;INSERT INTO library_rollups SELECT 'year',substr(captured_at,1,4),COUNT(*),SUM(bytes)FROM assets GROUP BY 2;INSERT INTO library_rollups SELECT 'protection',protection_state,COUNT(*),SUM(bytes)FROM assets GROUP BY protection_state;INSERT INTO library_rollups SELECT 'extension',extension,COUNT(*),SUM(bytes)FROM assets GROUP BY extension;INSERT INTO library_rollups SELECT 'month',substr(captured_at,1,7),COUNT(*),SUM(bytes)FROM assets GROUP BY 2;").unwrap();
+            drop(conn);
+            let running = Arc::new(AtomicBool::new(true));
+            let worker_running = running.clone();
+            let db_path = master.join(".lumina/catalog.sqlite");
+            let reader = std::thread::spawn(move || {
+                let c = rusqlite::Connection::open(db_path).unwrap();
+                while worker_running.load(Ordering::Relaxed) {
+                    let _: i64 = c
+                        .query_row(
+                            "SELECT COUNT(*) FROM assets WHERE captured_at>'2020'",
+                            [],
+                            |r| r.get(0),
+                        )
+                        .unwrap();
+                }
+            });
+            let mut measurements = Vec::new();
+            for _ in 0..20 {
+                let start = Instant::now();
+                let result = quick_dashboard(&cfg).unwrap();
+                assert_eq!(result.total_assets, items);
+                measurements.push(start.elapsed().as_millis());
+            }
+            running.store(false, Ordering::Relaxed);
+            reader.join().unwrap();
+            measurements.sort_unstable();
+            let p95 = measurements[18];
+            eprintln!("BENCHMARK dashboard_records={items} p50_ms={} p95_ms={p95} concurrent_full_scan=true",measurements[10]);
+            assert!(
+                p95 <= ceiling_ms,
+                "{items} itens: p95 {p95} ms > {ceiling_ms} ms"
+            );
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 }

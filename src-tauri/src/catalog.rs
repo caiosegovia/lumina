@@ -26,7 +26,7 @@ pub fn open(path: &Path) -> Result<Connection> {
     if guard.contains_key(&key) {
         return connect(path);
     }
-    let db = connect(path)?;
+    let mut db = connect(path)?;
     db.execute_batch("
       CREATE TABLE IF NOT EXISTS sources(id TEXT PRIMARY KEY,name TEXT NOT NULL,path TEXT NOT NULL UNIQUE,volume_label TEXT NOT NULL,available INTEGER NOT NULL DEFAULT 1,last_scan TEXT,asset_count INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS assets(id TEXT PRIMARY KEY,hash TEXT NOT NULL UNIQUE,filename TEXT NOT NULL,media_type TEXT NOT NULL,extension TEXT NOT NULL,captured_at TEXT NOT NULL,date_source TEXT NOT NULL,bytes INTEGER NOT NULL,width INTEGER,height INTEGER,duration REAL,camera TEXT,latitude REAL,longitude REAL,master_path TEXT NOT NULL,protection_state TEXT NOT NULL DEFAULT 'consolidated',created_at TEXT NOT NULL);
@@ -65,8 +65,13 @@ pub fn open(path: &Path) -> Result<Connection> {
             )?;
         }
     }
+    db.execute_batch("CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at TEXT NOT NULL);")?;
+    let needs_v11 = db.query_row(
+        "SELECT NOT EXISTS(SELECT 1 FROM schema_migrations WHERE version=11)",
+        [],
+        |row| row.get::<_, bool>(0),
+    )?;
     db.execute_batch("BEGIN IMMEDIATE;
-      CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS job_items(
         id INTEGER PRIMARY KEY AUTOINCREMENT,job_id TEXT NOT NULL REFERENCES jobs(id),source_path TEXT NOT NULL,filename TEXT NOT NULL,extension TEXT NOT NULL,media_type TEXT NOT NULL,
         bytes INTEGER NOT NULL DEFAULT 0,modified_at TEXT,sha256 TEXT,destination_path TEXT,temp_path TEXT,current_stage TEXT NOT NULL DEFAULT 'discovery',state TEXT NOT NULL DEFAULT 'queued',
@@ -112,20 +117,48 @@ pub fn open(path: &Path) -> Result<Connection> {
         SELECT 'queue:'||id,job_id,kind,state,attempts,updated_at FROM work_queue;
       CREATE TABLE IF NOT EXISTS library_migrations(id TEXT PRIMARY KEY,old_master TEXT NOT NULL,new_master TEXT NOT NULL,state TEXT NOT NULL,processed_items INTEGER NOT NULL DEFAULT 0,total_items INTEGER NOT NULL DEFAULT 0,processed_bytes INTEGER NOT NULL DEFAULT 0,total_bytes INTEGER NOT NULL DEFAULT 0,last_error TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS library_rollups(dimension TEXT NOT NULL,key TEXT NOT NULL,items INTEGER NOT NULL DEFAULT 0,bytes INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(dimension,key));
+      CREATE TABLE IF NOT EXISTS asset_technical_metadata(
+        asset_id TEXT PRIMARY KEY REFERENCES assets(id) ON DELETE CASCADE,
+        declared_extension TEXT NOT NULL,detected_format TEXT NOT NULL,family TEXT NOT NULL,mime TEXT,container TEXT,codec TEXT,
+        support_level TEXT NOT NULL,extension_matches INTEGER NOT NULL DEFAULT 1,metadata_supported INTEGER NOT NULL DEFAULT 0,
+        thumbnail_supported INTEGER NOT NULL DEFAULT 0,preview_supported INTEGER NOT NULL DEFAULT 0,enriched_at TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS idx_technical_format ON asset_technical_metadata(detected_format,support_level);
+      CREATE INDEX IF NOT EXISTS idx_technical_codec ON asset_technical_metadata(codec) WHERE codec IS NOT NULL;
+      CREATE TABLE IF NOT EXISTS dashboard_snapshots(
+        id INTEGER PRIMARY KEY CHECK(id=1),schema_version INTEGER NOT NULL,generated_at TEXT NOT NULL,invalidated_at TEXT,
+        payload TEXT NOT NULL,generation_ms INTEGER NOT NULL DEFAULT 0,catalog_items INTEGER NOT NULL DEFAULT 0);
+      CREATE TABLE IF NOT EXISTS dashboard_metrics(id INTEGER PRIMARY KEY AUTOINCREMENT,generated_at TEXT NOT NULL,mode TEXT NOT NULL,total_ms INTEGER NOT NULL,catalog_ms INTEGER NOT NULL DEFAULT 0,rollups_ms INTEGER NOT NULL DEFAULT 0,storage_ms INTEGER NOT NULL DEFAULT 0,insights_ms INTEGER NOT NULL DEFAULT 0,items INTEGER NOT NULL DEFAULT 0);
+      CREATE TABLE IF NOT EXISTS occurrence_decisions(occurrence_id INTEGER PRIMARY KEY REFERENCES occurrences(id) ON DELETE CASCADE,decision TEXT NOT NULL CHECK(decision IN('keep','review','remove_candidate')),reason TEXT,decided_at TEXT NOT NULL);
       CREATE TRIGGER IF NOT EXISTS rollup_asset_insert AFTER INSERT ON assets BEGIN
         INSERT INTO library_rollups(dimension,key,items,bytes)VALUES('type',new.media_type,1,new.bytes)ON CONFLICT(dimension,key)DO UPDATE SET items=items+1,bytes=bytes+new.bytes;
         INSERT INTO library_rollups(dimension,key,items,bytes)VALUES('year',substr(new.captured_at,1,4),1,new.bytes)ON CONFLICT(dimension,key)DO UPDATE SET items=items+1,bytes=bytes+new.bytes;
         INSERT INTO library_rollups(dimension,key,items,bytes)VALUES('protection',new.protection_state,1,new.bytes)ON CONFLICT(dimension,key)DO UPDATE SET items=items+1,bytes=bytes+new.bytes;
+        INSERT INTO library_rollups(dimension,key,items,bytes)VALUES('extension',LOWER(new.extension),1,new.bytes)ON CONFLICT(dimension,key)DO UPDATE SET items=items+1,bytes=bytes+new.bytes;
+        INSERT INTO library_rollups(dimension,key,items,bytes)VALUES('month',substr(new.captured_at,1,7),1,new.bytes)ON CONFLICT(dimension,key)DO UPDATE SET items=items+1,bytes=bytes+new.bytes;
+        INSERT INTO library_rollups(dimension,key,items,bytes)SELECT 'camera',new.camera,1,new.bytes WHERE new.camera IS NOT NULL AND new.camera!='' ON CONFLICT(dimension,key)DO UPDATE SET items=items+1,bytes=bytes+new.bytes;
+        UPDATE dashboard_snapshots SET invalidated_at=datetime('now') WHERE id=1;
       END;
       CREATE TRIGGER IF NOT EXISTS rollup_asset_delete AFTER DELETE ON assets BEGIN
         UPDATE library_rollups SET items=items-1,bytes=bytes-old.bytes WHERE dimension='type' AND key=old.media_type;
         UPDATE library_rollups SET items=items-1,bytes=bytes-old.bytes WHERE dimension='year' AND key=substr(old.captured_at,1,4);
         UPDATE library_rollups SET items=items-1,bytes=bytes-old.bytes WHERE dimension='protection' AND key=old.protection_state;
+        UPDATE library_rollups SET items=items-1,bytes=bytes-old.bytes WHERE dimension='extension' AND key=LOWER(old.extension);
+        UPDATE library_rollups SET items=items-1,bytes=bytes-old.bytes WHERE dimension='month' AND key=substr(old.captured_at,1,7);
+        UPDATE library_rollups SET items=items-1,bytes=bytes-old.bytes WHERE dimension='camera' AND key=old.camera;
+        UPDATE library_rollups SET bytes=bytes-old.bytes+new.bytes WHERE dimension='protection' AND key=old.protection_state;
+        UPDATE dashboard_snapshots SET invalidated_at=datetime('now') WHERE id=1;
       END;
       CREATE TRIGGER IF NOT EXISTS rollup_asset_protection AFTER UPDATE OF protection_state ON assets WHEN old.protection_state!=new.protection_state BEGIN
         UPDATE library_rollups SET items=items-1,bytes=bytes-old.bytes WHERE dimension='protection' AND key=old.protection_state;
         INSERT INTO library_rollups(dimension,key,items,bytes)VALUES('protection',new.protection_state,1,new.bytes)ON CONFLICT(dimension,key)DO UPDATE SET items=items+1,bytes=bytes+new.bytes;
+        UPDATE dashboard_snapshots SET invalidated_at=datetime('now') WHERE id=1;
       END;
+      CREATE TRIGGER IF NOT EXISTS dashboard_asset_shape_invalidate AFTER UPDATE OF captured_at,media_type,extension,camera,bytes ON assets BEGIN UPDATE dashboard_snapshots SET invalidated_at=datetime('now') WHERE id=1; END;
+      CREATE TRIGGER IF NOT EXISTS dashboard_occurrence_insert AFTER INSERT ON occurrences BEGIN UPDATE dashboard_snapshots SET invalidated_at=datetime('now') WHERE id=1; END;
+      CREATE TRIGGER IF NOT EXISTS dashboard_occurrence_delete AFTER DELETE ON occurrences BEGIN UPDATE dashboard_snapshots SET invalidated_at=datetime('now') WHERE id=1; END;
+      CREATE TRIGGER IF NOT EXISTS dashboard_thumbnail_change AFTER UPDATE ON thumbnails BEGIN UPDATE dashboard_snapshots SET invalidated_at=datetime('now') WHERE id=1; END;
+      CREATE TRIGGER IF NOT EXISTS dashboard_technical_insert AFTER INSERT ON asset_technical_metadata BEGIN UPDATE dashboard_snapshots SET invalidated_at=datetime('now') WHERE id=1; END;
+      CREATE TRIGGER IF NOT EXISTS dashboard_technical_update AFTER UPDATE ON asset_technical_metadata BEGIN UPDATE dashboard_snapshots SET invalidated_at=datetime('now') WHERE id=1; END;
       INSERT OR IGNORE INTO schema_migrations(version,applied_at)VALUES(1,datetime('now'));
       INSERT OR IGNORE INTO schema_migrations(version,applied_at)VALUES(2,datetime('now'));
       INSERT OR IGNORE INTO schema_migrations(version,applied_at)VALUES(3,datetime('now'));
@@ -137,6 +170,38 @@ pub fn open(path: &Path) -> Result<Connection> {
       INSERT OR IGNORE INTO schema_migrations(version,applied_at)VALUES(9,datetime('now'));
       INSERT OR IGNORE INTO schema_migrations(version,applied_at)VALUES(10,datetime('now'));
       COMMIT;")?;
+    if needs_v11 {
+        let tx = db.transaction()?;
+        for dimension in ["extension", "month", "camera"] {
+            tx.execute(
+                "DELETE FROM library_rollups WHERE dimension=?1",
+                [dimension],
+            )?;
+        }
+        tx.execute_batch("INSERT INTO library_rollups(dimension,key,items,bytes)SELECT 'extension',LOWER(extension),COUNT(*),COALESCE(SUM(bytes),0)FROM assets GROUP BY LOWER(extension);
+          INSERT INTO library_rollups(dimension,key,items,bytes)SELECT 'month',substr(captured_at,1,7),COUNT(*),COALESCE(SUM(bytes),0)FROM assets GROUP BY substr(captured_at,1,7);
+          INSERT INTO library_rollups(dimension,key,items,bytes)SELECT 'camera',camera,COUNT(*),COALESCE(SUM(bytes),0)FROM assets WHERE camera IS NOT NULL AND camera!='' GROUP BY camera;
+          INSERT INTO schema_migrations(version,applied_at)VALUES(11,datetime('now'));")?;
+        tx.commit()?;
+    }
+    if needs_v11 {
+        db.execute_batch("DROP TRIGGER IF EXISTS dashboard_asset_shape_invalidate; DROP TRIGGER IF EXISTS dashboard_asset_shape_rollup;
+      CREATE TRIGGER dashboard_asset_shape_rollup AFTER UPDATE OF captured_at,media_type,extension,camera,bytes ON assets BEGIN
+        UPDATE library_rollups SET items=items-1,bytes=bytes-old.bytes WHERE dimension='type' AND key=old.media_type;
+        UPDATE library_rollups SET items=items-1,bytes=bytes-old.bytes WHERE dimension='year' AND key=substr(old.captured_at,1,4);
+        UPDATE library_rollups SET items=items-1,bytes=bytes-old.bytes WHERE dimension='extension' AND key=LOWER(old.extension);
+        UPDATE library_rollups SET items=items-1,bytes=bytes-old.bytes WHERE dimension='month' AND key=substr(old.captured_at,1,7);
+        UPDATE library_rollups SET items=items-1,bytes=bytes-old.bytes WHERE dimension='camera' AND key=old.camera;
+        INSERT INTO library_rollups(dimension,key,items,bytes)VALUES('type',new.media_type,1,new.bytes)ON CONFLICT(dimension,key)DO UPDATE SET items=items+1,bytes=bytes+new.bytes;
+        INSERT INTO library_rollups(dimension,key,items,bytes)VALUES('year',substr(new.captured_at,1,4),1,new.bytes)ON CONFLICT(dimension,key)DO UPDATE SET items=items+1,bytes=bytes+new.bytes;
+        INSERT INTO library_rollups(dimension,key,items,bytes)VALUES('extension',LOWER(new.extension),1,new.bytes)ON CONFLICT(dimension,key)DO UPDATE SET items=items+1,bytes=bytes+new.bytes;
+        INSERT INTO library_rollups(dimension,key,items,bytes)VALUES('month',substr(new.captured_at,1,7),1,new.bytes)ON CONFLICT(dimension,key)DO UPDATE SET items=items+1,bytes=bytes+new.bytes;
+        INSERT INTO library_rollups(dimension,key,items,bytes)SELECT 'camera',new.camera,1,new.bytes WHERE new.camera IS NOT NULL AND new.camera!='' ON CONFLICT(dimension,key)DO UPDATE SET items=items+1,bytes=bytes+new.bytes;
+        UPDATE dashboard_snapshots SET invalidated_at=datetime('now') WHERE id=1;
+      END;
+      CREATE TRIGGER IF NOT EXISTS dashboard_source_change AFTER UPDATE OF available ON sources WHEN old.available!=new.available BEGIN UPDATE dashboard_snapshots SET invalidated_at=datetime('now') WHERE id=1; END;
+      DELETE FROM library_rollups WHERE items<=0;")?;
+    }
     let rollups: i64 = db.query_row("SELECT COUNT(*) FROM library_rollups", [], |r| r.get(0))?;
     if rollups == 0 {
         db.execute_batch("INSERT INTO library_rollups(dimension,key,items,bytes)SELECT 'type',media_type,COUNT(*),SUM(bytes)FROM assets GROUP BY media_type;INSERT INTO library_rollups(dimension,key,items,bytes)SELECT 'year',substr(captured_at,1,4),COUNT(*),SUM(bytes)FROM assets GROUP BY 2;INSERT INTO library_rollups(dimension,key,items,bytes)SELECT 'protection',protection_state,COUNT(*),SUM(bytes)FROM assets GROUP BY protection_state;")?;
@@ -212,7 +277,7 @@ pub fn open(path: &Path) -> Result<Connection> {
             )?;
         }
     }
-    db.pragma_update(None, "user_version", 11)?;
+    db.pragma_update(None, "user_version", 12)?;
     db.execute_batch("PRAGMA optimize;")?;
     db.execute(
         "UPDATE jobs SET state='waiting_space',stage='space_check',finished_at=NULL WHERE state='failed' AND processed_items=0 AND interruption_reason LIKE 'Espaço insuficiente:%'",
@@ -429,13 +494,13 @@ mod tests {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            11
+            12
         );
         assert_eq!(
             db.query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row
                 .get::<_, i64>(0))
                 .unwrap(),
-            10
+            11
         );
         let transaction = db.transaction().unwrap();
         {
@@ -544,6 +609,40 @@ mod tests {
             started.elapsed().as_secs() < 5,
             "consultas principais excederam cinco segundos"
         );
+        drop(db);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn asset_edits_update_every_dashboard_rollup_and_invalidate_snapshot() {
+        let root = std::env::temp_dir().join(format!("lumina-rollup-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let db = open(&root.join("catalog.sqlite")).unwrap();
+        db.execute("INSERT INTO assets(id,hash,filename,media_type,extension,captured_at,date_source,bytes,camera,master_path,created_at)VALUES('a',?1,'a.jpg','photo','jpg','2020-01-01','file',100,'Old','a','2020-01-01')",["a".repeat(64)]).unwrap();
+        db.execute("INSERT INTO dashboard_snapshots(id,schema_version,generated_at,payload)VALUES(1,1,datetime('now'),'{}')",[]).unwrap();
+        db.execute("UPDATE assets SET media_type='video',extension='mp4',captured_at='2024-03-01',camera='New',bytes=250 WHERE id='a'",[]).unwrap();
+        for (dimension, key, items, bytes) in [
+            ("type", "video", 1, 250),
+            ("year", "2024", 1, 250),
+            ("month", "2024-03", 1, 250),
+            ("extension", "mp4", 1, 250),
+            ("camera", "New", 1, 250),
+        ] {
+            let value: (i64, i64) = db
+                .query_row(
+                    "SELECT items,bytes FROM library_rollups WHERE dimension=?1 AND key=?2",
+                    params![dimension, key],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(value, (items, bytes));
+        }
+        assert!(db
+            .query_row(
+                "SELECT invalidated_at IS NOT NULL FROM dashboard_snapshots WHERE id=1",
+                [],
+                |r| r.get::<_, bool>(0)
+            )
+            .unwrap());
         drop(db);
         fs::remove_dir_all(root).unwrap();
     }

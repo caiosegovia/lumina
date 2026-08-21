@@ -40,6 +40,12 @@ export function resetGallerySession() {
   session.scrollY = 0;
   thumbs.clear();
 }
+export function openGalleryWithFilters(filters: Partial<GalleryFilters>) {
+  session.filters = { ...empty, ...filters };
+  session.result = undefined;
+  session.assets = [];
+  session.scrollY = 0;
+}
 export default function Gallery() {
   const [filters, setFilters] = useState(session.filters),
     [draft, setDraft] = useState(session.filters),

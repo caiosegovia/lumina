@@ -1,10 +1,5 @@
 use walkdir::DirEntry;
-pub const MEDIA: &[&str] = &[
-    "jpg", "jpeg", "png", "gif", "webp", "heic", "heif", "tif", "tiff", "bmp", "dng", "cr2", "cr3",
-    "nef", "arw", "raf", "orf", "rw2", "mp4", "mov", "avi", "mkv", "mts", "m2ts", "3gp", "wmv",
-];
-const VIDEO: &[&str] = &["mp4", "mov", "avi", "mkv", "mts", "m2ts", "3gp", "wmv"];
-const RAW: &[&str] = &["dng", "cr2", "cr3", "nef", "arw", "raf", "orf", "rw2"];
+pub const MEDIA: &[&str] = crate::formats::SUPPORTED_EXTENSIONS;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JobState {
@@ -105,13 +100,7 @@ impl TryFrom<&str> for JobState {
     }
 }
 pub fn media_type(ext: &str) -> &'static str {
-    if VIDEO.contains(&ext) {
-        "video"
-    } else if RAW.contains(&ext) {
-        "raw"
-    } else {
-        "photo"
-    }
+    crate::formats::family(ext).as_str()
 }
 pub fn ignored(entry: &DirEntry) -> bool {
     let name = entry.file_name().to_string_lossy();

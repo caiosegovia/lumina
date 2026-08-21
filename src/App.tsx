@@ -16,12 +16,13 @@ import {
   LayoutDashboard,
   LoaderCircle,
   Plus,
+  RefreshCw,
   Search,
   ShieldCheck,
   X,
 } from "lucide-react";
 import { api } from "./api";
-import Gallery, { MediaThumb } from "./Gallery";
+import Gallery, { MediaThumb, openGalleryWithFilters } from "./Gallery";
 import ActivityCenter from "./ActivityCenter";
 import "./gallery.css";
 import { formatBytes, formatDate } from "./format";
@@ -166,6 +167,7 @@ export default function App() {
         <section className="content">
           <Content
             view={view}
+            navigate={setView}
             onImport={() => {
               setJobId(undefined);
               setImportOpen(true);
@@ -350,11 +352,13 @@ function JobBar({
 }
 function Content({
   view,
+  navigate,
   onImport,
   jobs,
   openJob,
 }: {
   view: View;
+  navigate: (view: View) => void;
   onImport: () => void;
   jobs: JobOverview[];
   openJob: (x: string) => void;
@@ -366,7 +370,7 @@ function Content({
   if (view === "activity")
     return <ActivityCenter jobs={jobs} openJob={openJob} />;
   if (view === "protection") return <Protection />;
-  return <Dashboard onImport={onImport} />;
+  return <Dashboard onImport={onImport} navigate={navigate} />;
 }
 function ReportTools() {
   const [job, setJob] = useState(""),
@@ -415,10 +419,14 @@ const duration = (ms: number) =>
   ms < 60000
     ? `${Math.round(ms / 1000)}s`
     : `${Math.floor(ms / 60000)}min ${Math.round((ms % 60000) / 1000)}s`;
-function Dashboard({ onImport }: { onImport: () => void }) {
-  const [s, setS] = useState<DashboardStats>();
+function Dashboard({ onImport,navigate }: { onImport: () => void;navigate:(view:View)=>void }) {
+  const [s, setS] = useState<DashboardStats>(),[updating,setUpdating]=useState(false),[refreshError,setRefreshError]=useState(""),[inventoryMessage,setInventoryMessage]=useState("");
+  const refresh=()=>{setUpdating(true);setRefreshError("");api.refreshDashboard().then(setS).catch(error=>setRefreshError(String(error))).finally(()=>setUpdating(false))};
+  const openLibrary=(filters:Parameters<typeof openGalleryWithFilters>[0])=>{openGalleryWithFilters(filters);navigate("library")};
   useEffect(() => {
-    api.dashboard().then(setS);
+    let live=true;
+    api.dashboard().then(snapshot=>{if(!live)return;setS(snapshot);setUpdating(true);return api.refreshDashboard()}).then(full=>{if(live&&full)setS(full)}).catch(error=>live&&setRefreshError(String(error))).finally(()=>live&&setUpdating(false));
+    return()=>{live=false};
   }, []);
   if (!s) return <LoaderCircle className="spin" />;
   const coverage = (s.protected / Math.max(1, s.totalAssets)) * 100,
@@ -437,10 +445,13 @@ function Dashboard({ onImport }: { onImport: () => void }) {
               ? `${formatDate(s.oldest)} até ${formatDate(s.newest)}`
               : "Sua biblioteca está pronta para crescer."}
           </p>
+          <small className="dashboard-freshness">{updating?"Atualizando análises em segundo plano…":s.stale?"Exibindo snapshot salvo":"Atualizado agora"} · {new Date(s.snapshotGeneratedAt).toLocaleString("pt-BR")}</small>
+          {refreshError&&<small className="dashboard-refresh-error">Uma seção não pôde ser atualizada. O snapshot continua disponível.</small>}
         </div>
-        <button className="primary" onClick={onImport}>
-          <Plus /> Importar mídia
-        </button>
+        <div className="dashboard-actions">
+          <button onClick={refresh} disabled={updating}><RefreshCw className={updating?"spin":""}/> Atualizar visão</button>
+          <button className="primary" onClick={onImport}><Plus /> Importar mídia</button>
+        </div>
       </div>
       <div className="dashboard-big">
         <Stat
@@ -508,13 +519,15 @@ function Dashboard({ onImport }: { onImport: () => void }) {
               <dd>{formatBytes(s.backupAvailableBytes)}</dd>
             </div>
           </dl>
+          {!!s.protectionYears?.length&&<small>Mais protegido por período: {s.protectionYears.slice(0,3).map(value=>`${value.key} (${value.items.toLocaleString("pt-BR")})`).join(" · ")}</small>}
+          {!!s.protectionSources?.length&&<small>Origens protegidas: {s.protectionSources.slice(0,2).map(value=>`${value.key} (${value.items.toLocaleString("pt-BR")})`).join(" · ")}</small>}
         </article>
         <article className="panel timeline-panel">
           <p className="eyebrow">LINHA DO TEMPO</p>
           <h3>Volume por ano</h3>
           <div className="year-bars">
             {s.years.slice(0, 8).map((x) => (
-              <div key={x.key}>
+              <div key={x.key} role="button" tabIndex={0} onClick={()=>openLibrary({year:Number(x.key)})} onKeyDown={event=>event.key==="Enter"&&openLibrary({year:Number(x.key)})}>
                 <b>{x.key}</b>
                 <i>
                   <em
@@ -530,25 +543,44 @@ function Dashboard({ onImport }: { onImport: () => void }) {
             ))}
           </div>
         </article>
+        <article className="panel ranking-panel">
+          <p className="eyebrow">FORMATOS E EQUIPAMENTOS</p>
+          <h3>Inventário técnico</h3>
+          {s.formats.slice(0,6).map(x=><button key={x.key} onClick={()=>openLibrary({extension:x.key})}><span><b>{x.label}</b><small>{x.family} · suporte {x.support}</small></span><strong>{x.items.toLocaleString("pt-BR")} · {formatBytes(x.bytes)}</strong></button>)}
+          <h4>Principais câmeras</h4>
+          {s.cameras.slice(0,4).map(x=><div className="dashboard-rank" key={x.key}><span>{x.key}</span><b>{x.items.toLocaleString("pt-BR")}</b><small>{formatBytes(x.bytes)}</small></div>)}
+          <button onClick={()=>api.startFormatEnrichment().then(id=>setInventoryMessage(`Inventário iniciado · ${id.slice(0,8)}`)).catch(error=>setInventoryMessage(String(error)))}>Atualizar inventário técnico</button>
+          {inventoryMessage&&<small className="inventory-message">{inventoryMessage}</small>}
+        </article>
+        <article className="panel duplicate-overview">
+          <p className="eyebrow">CONTEÚDO EM VÁRIAS ORIGENS</p>
+          <h3>{s.duplicateGroups.toLocaleString("pt-BR")} grupos conhecidos</h3>
+          <div><span><small>Ocorrências adicionais</small><b>{formatBytes(s.duplicateBytes)}</b></span><span><small>Com proteção suficiente para futura revisão</small><b>{formatBytes(s.reclaimableBytes)}</b></span></div>
+          <p>Estimativa informativa baseada em conteúdo idêntico. Nenhum arquivo será removido automaticamente.</p>
+          <button onClick={()=>navigate("duplicates")}>Analisar ocorrências <ChevronRight/></button>
+        </article>
         <article className="panel insight-panel">
           <p className="eyebrow">PRECISA DA SUA ATENÇÃO</p>
           <h3>Insights da biblioteca</h3>
           {s.insights.length ? (
             s.insights.map((x) => (
-              <div
+              <button
                 className={`dashboard-insight ${x.severity}`}
                 key={`${x.kind}-${x.title}`}
+                onClick={()=>x.kind==="dates"?openLibrary({dateSuspicious:true}):navigate(x.action)}
               >
                 <span>
                   <b>{x.title}</b>
                   <small>{x.detail}</small>
+                  <em>{x.reason} · confiança {x.confidence}</em>
                 </span>
                 <strong>
                   {x.bytes
                     ? formatBytes(x.bytes)
                     : x.value.toLocaleString("pt-BR")}
                 </strong>
-              </div>
+                <i>{x.actionLabel}<ChevronRight/></i>
+              </button>
             ))
           ) : (
             <p className="all-good">Nenhuma pendência encontrada.</p>
@@ -583,6 +615,10 @@ function Dashboard({ onImport }: { onImport: () => void }) {
             </p>
           </article>
         )}
+        <details className="panel dashboard-diagnostics">
+          <summary>Diagnóstico da visão geral</summary>
+          {s.timings.map(value=><span key={value.section}>{value.section}<b>{value.milliseconds} ms</b></span>)}
+        </details>
       </div>
     </>
   );
@@ -672,6 +708,7 @@ function Duplicates() {
             <div className="duplicate-main">
               <h3>{g.filename}</h3>
               <p>{formatBytes(g.bytes)}</p>
+              <p>{formatBytes(g.additionalBytes)} em ocorrências adicionais · {g.safety==="eligible_for_review"?`${formatBytes(g.reclaimableBytes)} aptos para futura revisão`:"proteja o acervo antes de decidir"}</p>
               <div>
                 {g.occurrences.map((o, i) => (
                   <span key={i}>
