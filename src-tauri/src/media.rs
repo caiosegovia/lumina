@@ -439,9 +439,26 @@ pub fn enqueue_thumbnail(cfg: &LibraryConfig, asset: &str, priority: i64) -> Res
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute("INSERT OR IGNORE INTO sources(id,name,path,volume_label,available)VALUES('_lumina_maintenance','Manutenção da biblioteca','lumina://maintenance','internal',1)",[]).map_err(|e|e.to_string())?;
     conn.execute("INSERT OR IGNORE INTO jobs(id,source_id,source_path,state,stage,created_at,updated_at,library_state,backup_state)VALUES('_thumbnail_background','_lumina_maintenance','lumina://thumbnails','queued','thumbnail',?1,?1,'verified','pending')",[&now]).map_err(|e|e.to_string())?;
-    let pending = crate::pipeline::WorkState::Pending.as_str();
-    conn.execute("INSERT INTO work_queue(job_id,asset_id,kind,state,priority,created_at,updated_at)VALUES('_thumbnail_background',?1,'thumbnail',?2,?3,?4,?4)ON CONFLICT(job_id,asset_id,kind)DO UPDATE SET state=CASE WHEN work_queue.state IN('completed','processing') THEN work_queue.state ELSE excluded.state END,priority=MAX(work_queue.priority,excluded.priority),updated_at=excluded.updated_at",params![asset,pending,priority,now]).map_err(|e|e.to_string())?;
     conn.execute("INSERT INTO thumbnails(asset_id,generator_version,path,state,updated_at)VALUES(?1,?2,'','pending',?3)ON CONFLICT(asset_id)DO UPDATE SET generator_version=excluded.generator_version,state=CASE WHEN thumbnails.state='ready' AND thumbnails.generator_version=?2 THEN 'ready' ELSE 'pending' END,updated_at=excluded.updated_at",params![asset,THUMBNAIL_VERSION,now]).map_err(|e|e.to_string())?;
+    let ready: bool = conn
+        .query_row(
+            "SELECT state='ready' AND generator_version=?2 FROM thumbnails WHERE asset_id=?1",
+            params![asset, THUMBNAIL_VERSION],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    let existing: Option<i64> = conn.query_row("SELECT id FROM work_queue WHERE asset_id=?1 AND kind='thumbnail' ORDER BY CASE state WHEN 'processing' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END,id LIMIT 1",[asset],|row|row.get(0)).optional().map_err(|e|e.to_string())?;
+    if let Some(id) = existing {
+        conn.execute("UPDATE work_queue SET state=CASE WHEN ?2 THEN 'completed' WHEN state='processing' THEN state ELSE 'pending' END,last_error=CASE WHEN ?2 THEN NULL ELSE last_error END,priority=MAX(priority,?3),updated_at=?4 WHERE id=?1",params![id,ready,priority,now]).map_err(|e|e.to_string())?;
+        conn.execute("DELETE FROM work_queue WHERE asset_id=?1 AND kind='thumbnail' AND id<>?2 AND state<>'processing'",params![asset,id]).map_err(|e|e.to_string())?;
+    } else {
+        let state = if ready {
+            crate::pipeline::WorkState::Completed.as_str()
+        } else {
+            crate::pipeline::WorkState::Pending.as_str()
+        };
+        conn.execute("INSERT INTO work_queue(job_id,asset_id,kind,state,priority,created_at,updated_at)VALUES('_thumbnail_background',?1,'thumbnail',?2,?3,?4,?4)",params![asset,state,priority,now]).map_err(|e|e.to_string())?;
+    }
     Ok(())
 }
 pub fn clear_cache(cfg: &LibraryConfig) -> Result<i64, String> {

@@ -1448,7 +1448,7 @@ pub fn process_thumbnail_queue(
             break;
         }
         let conn = catalog::open(&db_path).map_err(|e| e.to_string())?;
-        let next=conn.query_row("SELECT q.id,a.id,a.master_path,a.extension,a.hash FROM work_queue q JOIN assets a ON a.id=q.asset_id WHERE q.job_id=?1 AND q.kind='thumbnail' AND q.state='pending' ORDER BY q.priority DESC,q.id LIMIT 1",[job],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?))).optional().map_err(|e|e.to_string())?;
+        let next=conn.query_row("SELECT q.id,a.id,a.master_path,a.extension,a.hash FROM work_queue q JOIN assets a ON a.id=q.asset_id WHERE q.kind='thumbnail' AND q.state='pending' ORDER BY q.priority DESC,q.id LIMIT 1",[],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?))).optional().map_err(|e|e.to_string())?;
         let Some((qid, asset, path, ext, hash)) = next else {
             break;
         };

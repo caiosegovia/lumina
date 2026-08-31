@@ -126,7 +126,7 @@ impl JobManager {
                 loop {
                     let _ = engine::process_thumbnail_queue(&cfg, "_thumbnail_background", &token);
                     manager.inner.thumbnail_worker_active.store(false, Ordering::Release);
-                    let pending=catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite")).ok().and_then(|conn|conn.query_row("SELECT EXISTS(SELECT 1 FROM work_queue WHERE job_id='_thumbnail_background' AND kind='thumbnail' AND state='pending')",[],|row|row.get::<_,bool>(0)).ok()).unwrap_or(false);
+                    let pending=catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite")).ok().and_then(|conn|conn.query_row("SELECT EXISTS(SELECT 1 FROM work_queue WHERE kind='thumbnail' AND state='pending')",[],|row|row.get::<_,bool>(0)).ok()).unwrap_or(false);
                     if pending&&manager.inner.thumbnail_worker_active.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_ok(){continue}
                     break
                 }
@@ -142,6 +142,27 @@ impl JobManager {
     pub fn resume_background(&self, cfg: LibraryConfig) -> Result<(), String> {
         let conn = catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite"))
             .map_err(|e| e.to_string())?;
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "UPDATE work_queue SET state='pending',updated_at=?1 WHERE kind='thumbnail' AND state='processing'",
+            [&now],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE work_queue SET state='completed',last_error=NULL,updated_at=?1 WHERE kind='thumbnail' AND EXISTS(SELECT 1 FROM thumbnails t WHERE t.asset_id=work_queue.asset_id AND t.state='ready' AND t.generator_version=?2)",
+            params![&now, crate::media::THUMBNAIL_VERSION],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute(
+            "DELETE FROM work_queue WHERE kind='thumbnail' AND id NOT IN(SELECT MIN(id) FROM work_queue WHERE kind='thumbnail' GROUP BY asset_id)",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE work_queue SET state='pending',updated_at=?1 WHERE kind='thumbnail' AND NOT EXISTS(SELECT 1 FROM thumbnails t WHERE t.asset_id=work_queue.asset_id AND t.state='ready' AND t.generator_version=?2)",
+            params![&now, crate::media::THUMBNAIL_VERSION],
+        )
+        .map_err(|e| e.to_string())?;
         let pending:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM work_queue WHERE kind='thumbnail' AND state='pending')",[],|row|row.get(0)).map_err(|e|e.to_string())?;
         drop(conn);
         if pending {
@@ -378,9 +399,12 @@ impl JobManager {
             .map_err(|e| e.to_string())?;
         let (source,name,stage):(String,String,String)=conn.query_row("SELECT j.source_path,s.name,j.stage FROM jobs j JOIN sources s ON s.id=j.source_id WHERE j.id=?1",[&job],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(|e|e.to_string())?;
         drop(conn);
+        if stage == "thumbnail" {
+            return self.resume_background(cfg);
+        }
         if matches!(
             stage.as_str(),
-            "ready" | "batch_pending" | "copying" | "thumbnail" | "completed"
+            "ready" | "batch_pending" | "copying" | "completed"
         ) {
             return self.start_consolidation(cfg, job);
         }
@@ -420,13 +444,13 @@ impl JobManager {
             [&now],
         )
         .map_err(|e| e.to_string())?;
-        conn.execute("UPDATE jobs SET state='interrupted',interruption_reason='Aplicativo encerrado durante o processamento',updated_at=?1 WHERE state IN('queued','analyzing','consolidating','protecting','pausing','paused','canceling')",[now]).map_err(|e|e.to_string())?;
+        conn.execute("UPDATE jobs SET state='interrupted',interruption_reason='Aplicativo encerrado durante o processamento',updated_at=?1 WHERE state IN('queued','analyzing','consolidating','protecting','pausing','paused','canceling') AND source_path NOT LIKE 'lumina://%'",[now]).map_err(|e|e.to_string())?;
         Ok(())
     }
     pub fn recoverable(cfg: &LibraryConfig) -> Result<Vec<RecoverableJob>, String> {
         let conn = catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite"))
             .map_err(|e| e.to_string())?;
-        let mut stmt=conn.prepare("SELECT id,source_path,state,stage,interruption_reason,updated_at FROM jobs WHERE state='interrupted' ORDER BY updated_at DESC").map_err(|e|e.to_string())?;
+        let mut stmt=conn.prepare("SELECT id,source_path,state,stage,interruption_reason,updated_at FROM jobs WHERE state='interrupted' AND source_path NOT LIKE 'lumina://%' ORDER BY updated_at DESC").map_err(|e|e.to_string())?;
         let rows = stmt
             .query_map([], |r| {
                 Ok(RecoverableJob {
@@ -585,6 +609,67 @@ mod tests {
             })
             .unwrap(),
             "pending"
+        );
+        drop(conn);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn thumbnail_maintenance_recovers_silently_and_deduplicates_legacy_work() {
+        let root = std::env::temp_dir().join(format!("lumina-thumbs-restart-{}", Uuid::new_v4()));
+        let master = root.join("master");
+        let backup = root.join("backup");
+        fs::create_dir_all(master.join(".lumina/cache/thumbnails")).unwrap();
+        fs::create_dir_all(&backup).unwrap();
+        let cfg = LibraryConfig {
+            id: "l".into(),
+            name: "t".into(),
+            master_path: master.to_string_lossy().into(),
+            backup_path: backup.to_string_lossy().into(),
+            created_at: Utc::now().to_rfc3339(),
+        };
+        let conn = catalog::open(&master.join(".lumina/catalog.sqlite")).unwrap();
+        let now = Utc::now().to_rfc3339();
+        conn.execute("INSERT INTO sources(id,name,path,volume_label)VALUES('s','s','source','v'),('_lumina_maintenance','Manutenção','lumina://maintenance','internal')",[]).unwrap();
+        conn.execute("INSERT INTO jobs(id,source_id,source_path,state,stage,created_at,updated_at)VALUES('import','s','source','queued','thumbnail',?1,?1),('_thumbnail_background','_lumina_maintenance','lumina://thumbnails','queued','thumbnail',?1,?1)",[&now]).unwrap();
+        conn.execute("INSERT INTO assets(id,hash,filename,media_type,extension,captured_at,date_source,bytes,master_path,created_at)VALUES('a',?1,'a.jpg','photo','jpg',?2,'file',1,'a.jpg',?2)",params!["a".repeat(64),&now]).unwrap();
+        conn.execute("INSERT INTO thumbnails(asset_id,generator_version,path,state,updated_at)VALUES('a',?1,'thumb.jpg','ready',?2)",params![crate::media::THUMBNAIL_VERSION,&now]).unwrap();
+        conn.execute("INSERT INTO work_queue(job_id,asset_id,kind,state,created_at,updated_at)VALUES('import','a','thumbnail','completed',?1,?1),('_thumbnail_background','a','thumbnail','processing',?1,?1)",[&now]).unwrap();
+        drop(conn);
+
+        JobManager::interrupt_running(&cfg).unwrap();
+        let recoverable = JobManager::recoverable(&cfg).unwrap();
+        assert_eq!(recoverable.len(), 1);
+        assert_eq!(recoverable[0].job_id, "import");
+        JobManager::new().resume_background(cfg.clone()).unwrap();
+
+        let conn = catalog::open(&master.join(".lumina/catalog.sqlite")).unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT state FROM jobs WHERE id='_thumbnail_background'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "queued"
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM work_queue WHERE asset_id='a' AND kind='thumbnail'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT state FROM work_queue WHERE asset_id='a' AND kind='thumbnail'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "completed"
         );
         drop(conn);
         fs::remove_dir_all(root).unwrap();
