@@ -185,6 +185,10 @@ pub struct MediaAsset {
     pub occurrence_count: i64,
     pub source_names: Vec<String>,
     pub tags: Vec<String>,
+    pub favorite: bool,
+    pub rating: i64,
+    pub review_later: bool,
+    pub description: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -204,6 +208,30 @@ pub struct GalleryFilters {
     pub album_id: Option<String>,
     pub protection_state: Option<String>,
     pub date_suspicious: Option<bool>,
+    pub favorite: Option<bool>,
+    pub minimum_rating: Option<i64>,
+    pub review_later: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedView {
+    pub id: String,
+    pub name: String,
+    pub filters: GalleryFilters,
+    pub smart_album: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserStateUpdate {
+    pub asset_ids: Vec<String>,
+    pub favorite: Option<bool>,
+    pub rating: Option<i64>,
+    pub review_later: Option<bool>,
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -373,6 +401,7 @@ pub struct Occurrence {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DuplicateGroup {
+    pub asset_id: String,
     pub hash: String,
     pub filename: String,
     pub bytes: i64,
@@ -380,6 +409,7 @@ pub struct DuplicateGroup {
     pub reclaimable_bytes: i64,
     pub safety: String,
     pub occurrences: Vec<Occurrence>,
+    pub decision: Option<String>,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]

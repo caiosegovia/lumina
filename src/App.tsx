@@ -38,6 +38,7 @@ import type {
   RecoverableJob,
   Source,
   StoragePlan,
+  ThumbnailAudit,
   View,
 } from "./types";
 const nav = [
@@ -719,6 +720,21 @@ function Sources({ onImport }: { onImport: () => void }) {
 }
 function Duplicates() {
   const [items, setItems] = useState<DuplicateGroup[]>([]);
+  const [notice, setNotice] = useState("");
+
+  async function decide(
+    group: DuplicateGroup,
+    decision: "keep_all" | "review" | "remove_candidates",
+    message: string,
+  ) {
+    await api.updateDuplicateDecision(group.assetId, decision, "user_review");
+    setItems((current) =>
+      current.map((item) =>
+        item.assetId === group.assetId ? { ...item, decision } : item,
+      ),
+    );
+    setNotice(message);
+  }
   useEffect(() => {
     api.duplicates().then(setItems);
   }, []);
@@ -730,6 +746,7 @@ function Duplicates() {
           <p>Mesmo conteúdo agrupado; nada é excluído.</p>
         </div>
       </div>
+      {notice&&<p className="safe-note" role="status">{notice}</p>}
       <div className="duplicate-list">
         {items.map((g) => (
           <article key={g.hash}>
@@ -748,6 +765,42 @@ function Duplicates() {
                     <small>{o.path}</small>
                   </span>
                 ))}
+              </div>
+              <div className="duplicate-actions">
+                <button
+                  className={g.decision === "keep_all" ? "active" : ""}
+                  onClick={() =>
+                    decide(g, "keep_all", "Grupo marcado para manter todas as cópias.")
+                  }
+                >
+                  Manter todas
+                </button>
+                <button
+                  className={g.decision === "review" ? "active" : ""}
+                  onClick={() =>
+                    decide(g, "review", "Grupo separado para revisão posterior.")
+                  }
+                >
+                  Revisar depois
+                </button>
+                <button
+                  className={g.decision === "remove_candidates" ? "active" : ""}
+                  disabled={g.safety !== "eligible_for_review"}
+                  title={
+                    g.safety !== "eligible_for_review"
+                      ? "Crie e verifique a réplica antes desta decisão."
+                      : undefined
+                  }
+                  onClick={() =>
+                    decide(
+                      g,
+                      "remove_candidates",
+                      "Cópias adicionais marcadas como candidatas. Nenhum arquivo foi removido.",
+                    )
+                  }
+                >
+                  Marcar candidatas
+                </button>
               </div>
             </div>
             <span className="count">{g.occurrences.length} cópias</span>
@@ -1016,6 +1069,8 @@ function Protection() {
     [config, setConfig] = useState<LibraryConfig>(),
     [backup, setBackup] = useState(""),
     [master, setMaster] = useState(""),
+    [thumbnailHealth, setThumbnailHealth] = useState<ThumbnailAudit>(),
+    [repairing, setRepairing] = useState(false),
     [queue, setQueue] = useState<{
       pending: number;
       failed: number;
@@ -1030,6 +1085,7 @@ function Protection() {
       }
     });
     api.protectionQueue().then(setQueue);
+    api.auditThumbnails(false).then(setThumbnailHealth).catch(() => {});
   }, []);
   const choose = async (set: (x: string) => void) => {
     const p = await api.chooseFolder();
@@ -1107,6 +1163,29 @@ function Protection() {
         </article>
       </div>
       <div className="storage-settings">
+        <article>
+          <h3>Saúde das miniaturas</h3>
+          <p>
+            <strong>{thumbnailHealth?.valid ?? 0}</strong> válidas ·{" "}
+            <strong>{(thumbnailHealth?.missing ?? 0) + (thumbnailHealth?.stale ?? 0) + (thumbnailHealth?.corrupt ?? 0)}</strong> para reparar
+          </p>
+          <button
+            disabled={repairing || !thumbnailHealth || thumbnailHealth.valid === thumbnailHealth.total}
+            onClick={async () => {
+              setRepairing(true);
+              try {
+                const audit = await api.auditThumbnails(true);
+                setThumbnailHealth(audit);
+                setResult(`${audit.regenerated} miniaturas recuperadas; ${audit.failed} falhas.`);
+              } finally {
+                setRepairing(false);
+              }
+            }}
+          >
+            <RefreshCw className={repairing ? "spin" : ""} />
+            {repairing ? "Reparando…" : "Reparar pendências"}
+          </button>
+        </article>
         <article>
           <h3>Fila de proteção</h3>
           <p>

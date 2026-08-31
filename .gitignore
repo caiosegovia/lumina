@@ -5,6 +5,7 @@ dist/
 # Rust / Tauri build outputs (including custom target dirs)
 **/target/
 **/target-*/
+.build-*/
 
 # Local releases and packaging work
 artifacts/

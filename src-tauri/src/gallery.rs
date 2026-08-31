@@ -126,6 +126,26 @@ fn conditions(f: &GalleryFilters) -> (Vec<String>, Vec<Value>) {
     if f.date_suspicious == Some(true) {
         c.push("(a.date_source IN ('file','fallback','filesystem') OR CAST(substr(a.captured_at,1,4) AS INTEGER)<1990 OR CAST(substr(a.captured_at,1,4) AS INTEGER)>CAST(strftime('%Y','now') AS INTEGER)+1)".into())
     }
+    if let Some(x) = f.favorite {
+        c.push(format!(
+            "COALESCE((SELECT favorite FROM asset_user_state us WHERE us.asset_id=a.id),0)={}",
+            if x { 1 } else { 0 }
+        ));
+    }
+    if let Some(x) = f.minimum_rating.filter(|value| *value > 0) {
+        add(
+            &mut c,
+            &mut v,
+            "COALESCE((SELECT rating FROM asset_user_state us WHERE us.asset_id=a.id),0)>=?",
+            Value::Integer(x.clamp(1, 5)),
+        );
+    }
+    if let Some(x) = f.review_later {
+        c.push(format!(
+            "COALESCE((SELECT review_later FROM asset_user_state us WHERE us.asset_id=a.id),0)={}",
+            if x { 1 } else { 0 }
+        ));
+    }
     (c, v)
 }
 fn where_sql(c: &[String]) -> String {
@@ -243,7 +263,7 @@ pub fn search(conn: &Connection, r: &GalleryRequest) -> Result<GalleryResult, St
         ));
     }
     let limit = r.limit.unwrap_or(100).clamp(1, 200) as usize;
-    let q=format!("SELECT a.id,a.filename,a.media_type,a.extension,a.captured_at,a.date_source,a.bytes,a.width,a.height,a.duration,a.camera,a.latitude,a.longitude,a.master_path,a.hash,a.protection_state,(SELECT COUNT(*) FROM occurrences o WHERE o.asset_id=a.id) FROM assets a WHERE {} ORDER BY a.captured_at DESC,a.id DESC LIMIT {}",where_sql(&clauses),limit+1);
+    let q=format!("SELECT a.id,a.filename,a.media_type,a.extension,a.captured_at,a.date_source,a.bytes,a.width,a.height,a.duration,a.camera,a.latitude,a.longitude,a.master_path,a.hash,a.protection_state,(SELECT COUNT(*) FROM occurrences o WHERE o.asset_id=a.id),COALESCE((SELECT favorite FROM asset_user_state us WHERE us.asset_id=a.id),0),COALESCE((SELECT rating FROM asset_user_state us WHERE us.asset_id=a.id),0),COALESCE((SELECT review_later FROM asset_user_state us WHERE us.asset_id=a.id),0),COALESCE((SELECT description FROM asset_user_state us WHERE us.asset_id=a.id),'') FROM assets a WHERE {} ORDER BY a.captured_at DESC,a.id DESC LIMIT {}",where_sql(&clauses),limit+1);
     let mut s = conn.prepare(&q).map_err(|e| e.to_string())?;
     let mut rows = s
         .query_map(params_from_iter(values.iter()), |x| {
@@ -265,6 +285,10 @@ pub fn search(conn: &Connection, r: &GalleryRequest) -> Result<GalleryResult, St
                 x.get::<_, String>(14)?,
                 x.get::<_, String>(15)?,
                 x.get::<_, i64>(16)?,
+                x.get::<_, bool>(17)?,
+                x.get::<_, i64>(18)?,
+                x.get::<_, bool>(19)?,
+                x.get::<_, String>(20)?,
             ))
         })
         .map_err(|e| e.to_string())?
@@ -329,6 +353,10 @@ pub fn search(conn: &Connection, r: &GalleryRequest) -> Result<GalleryResult, St
                 occurrence_count: x.16,
                 source_names: sources.remove(&x.0).unwrap_or_default(),
                 tags: tags.remove(&x.0).unwrap_or_default(),
+                favorite: x.17,
+                rating: x.18,
+                review_later: x.19,
+                description: x.20,
             }
         })
         .collect();
@@ -398,6 +426,35 @@ mod tests {
         assert_eq!(x.assets[0].id, "a");
         drop(d);
         fs::remove_dir_all(r).unwrap()
+    }
+    #[test]
+    fn personal_organization_is_persisted_and_filterable() {
+        let (root, db) = seed();
+        db.execute(
+            "INSERT INTO asset_user_state(asset_id,favorite,rating,review_later,description,updated_at)VALUES('a',1,5,1,'Viagem especial','2026-01-01')",
+            [],
+        )
+        .unwrap();
+        let result = search(
+            &db,
+            &GalleryRequest {
+                filters: GalleryFilters {
+                    favorite: Some(true),
+                    minimum_rating: Some(4),
+                    review_later: Some(true),
+                    ..Default::default()
+                },
+                cursor: None,
+                limit: Some(20),
+            },
+        )
+        .unwrap();
+        assert_eq!(result.matched, 1);
+        assert_eq!(result.assets[0].id, "a");
+        assert_eq!(result.assets[0].rating, 5);
+        assert_eq!(result.assets[0].description, "Viagem especial");
+        drop(db);
+        fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn page_relations_use_two_batched_queries_instead_of_n_plus_one() {

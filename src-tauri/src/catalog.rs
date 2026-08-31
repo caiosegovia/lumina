@@ -134,6 +134,22 @@ pub fn open(path: &Path) -> Result<Connection> {
         payload TEXT NOT NULL,generation_ms INTEGER NOT NULL DEFAULT 0,catalog_items INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS dashboard_metrics(id INTEGER PRIMARY KEY AUTOINCREMENT,generated_at TEXT NOT NULL,mode TEXT NOT NULL,total_ms INTEGER NOT NULL,catalog_ms INTEGER NOT NULL DEFAULT 0,rollups_ms INTEGER NOT NULL DEFAULT 0,storage_ms INTEGER NOT NULL DEFAULT 0,insights_ms INTEGER NOT NULL DEFAULT 0,items INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS occurrence_decisions(occurrence_id INTEGER PRIMARY KEY REFERENCES occurrences(id) ON DELETE CASCADE,decision TEXT NOT NULL CHECK(decision IN('keep','review','remove_candidate')),reason TEXT,decided_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS asset_user_state(
+        asset_id TEXT PRIMARY KEY REFERENCES assets(id) ON DELETE CASCADE,
+        favorite INTEGER NOT NULL DEFAULT 0 CHECK(favorite IN(0,1)),
+        rating INTEGER NOT NULL DEFAULT 0 CHECK(rating BETWEEN 0 AND 5),
+        review_later INTEGER NOT NULL DEFAULT 0 CHECK(review_later IN(0,1)),
+        description TEXT NOT NULL DEFAULT '',updated_at TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS idx_asset_user_favorite ON asset_user_state(favorite,asset_id) WHERE favorite=1;
+      CREATE INDEX IF NOT EXISTS idx_asset_user_review ON asset_user_state(review_later,asset_id) WHERE review_later=1;
+      CREATE INDEX IF NOT EXISTS idx_asset_user_rating ON asset_user_state(rating,asset_id) WHERE rating>0;
+      CREATE TABLE IF NOT EXISTS saved_views(
+        id TEXT PRIMARY KEY,name TEXT NOT NULL UNIQUE,filters_json TEXT NOT NULL,
+        smart_album INTEGER NOT NULL DEFAULT 0 CHECK(smart_album IN(0,1)),created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS duplicate_decisions(
+        asset_id TEXT PRIMARY KEY REFERENCES assets(id) ON DELETE CASCADE,
+        decision TEXT NOT NULL CHECK(decision IN('keep_all','review','remove_candidates')),
+        reason TEXT NOT NULL DEFAULT '',decided_at TEXT NOT NULL);
       CREATE TRIGGER IF NOT EXISTS rollup_asset_insert AFTER INSERT ON assets BEGIN
         INSERT INTO library_rollups(dimension,key,items,bytes)VALUES('type',new.media_type,1,new.bytes)ON CONFLICT(dimension,key)DO UPDATE SET items=items+1,bytes=bytes+new.bytes;
         INSERT INTO library_rollups(dimension,key,items,bytes)VALUES('year',substr(new.captured_at,1,4),1,new.bytes)ON CONFLICT(dimension,key)DO UPDATE SET items=items+1,bytes=bytes+new.bytes;
@@ -521,6 +537,7 @@ mod tests {
         let path = root.join("concurrency.sqlite");
         drop(open(&path).unwrap());
         let writer_path = path.clone();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let writer = std::thread::spawn(move || {
             let mut db = open(&writer_path).unwrap();
             let tx = db.transaction().unwrap();
@@ -529,18 +546,19 @@ mod tests {
                 [],
             )
             .unwrap();
-            std::thread::sleep(std::time::Duration::from_millis(75));
+            ready_tx.send(()).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(250));
             tx.commit().unwrap();
         });
-        std::thread::sleep(std::time::Duration::from_millis(15));
-        let started = Instant::now();
+        ready_rx.recv().unwrap();
         let reader = open(&path).unwrap();
+        let started = Instant::now();
         reader
             .query_row("SELECT COUNT(*) FROM sources", [], |row| {
                 row.get::<_, i64>(0)
             })
             .unwrap();
-        assert!(started.elapsed() < std::time::Duration::from_millis(50));
+        assert!(started.elapsed() < std::time::Duration::from_millis(150));
         writer.join().unwrap();
         drop(reader);
         fs::remove_dir_all(root).unwrap();

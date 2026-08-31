@@ -13,13 +13,16 @@ import {
   LoaderCircle,
   Rows3,
   Search,
+  Star,
+  Bookmark,
+  Save,
   Tags,
   Video,
   X,
 } from "lucide-react";
 import { api } from "./api";
 import { formatBytes } from "./format";
-import type { Album, GalleryFilters, GalleryResult, MediaAsset } from "./types";
+import type { Album, GalleryFilters, GalleryResult, MediaAsset, SavedView } from "./types";
 const thumbs = new Map<string, string | null>(),
   empty: GalleryFilters = { query: "" };
 type Mode = "grid" | "list";
@@ -61,6 +64,7 @@ export default function Gallery() {
     [selection, setSelection] = useState<Set<string>>(new Set()),
     [action, setAction] = useState<"tag" | "album" | "date">(),
     [notice, setNotice] = useState(""),
+    [savedViews, setSavedViews] = useState<SavedView[]>([]),
     [refresh, setRefresh] = useState(0);
   const seq = useRef(0),
     width = { compact: 145, normal: 190, large: 260 }[zoom],
@@ -100,6 +104,9 @@ export default function Gallery() {
     },
     [signature],
   );
+  useEffect(() => {
+    api.savedViews().then(setSavedViews);
+  }, []);
   useEffect(() => {
     const t = setTimeout(() => load(), 200);
     return () => clearTimeout(t);
@@ -273,6 +280,8 @@ export default function Gallery() {
         {mode === "grid" && (
           <ChoiceMenu icon={<Rows3/>} label="Tamanho da grade" value={zoom} options={[{value:"compact",label:"Compacta"},{value:"normal",label:"Confortável"},{value:"large",label:"Ampla"}]} onChange={v=>saveZoom(v as Zoom)}/>
         )}
+        {savedViews.length > 0 && <select aria-label="Visões salvas" value="" onChange={e=>{const view=savedViews.find(x=>x.id===e.target.value);if(view){setFilters(view.filters);setDraft(view.filters)}}}><option value="">Visões salvas</option>{savedViews.map(view=><option key={view.id} value={view.id}>{view.smartAlbum?"Álbum inteligente · ":""}{view.name}</option>)}</select>}
+        <button aria-label="Salvar visão atual" onClick={async()=>{const name=prompt("Nome da visão ou álbum inteligente");if(!name)return;const smartAlbum=confirm("Salvar também como álbum inteligente?");const view=await api.saveView(name,filters,smartAlbum);setSavedViews(v=>[...v.filter(x=>x.id!==view.id&&x.name!==view.name),view]);setNotice("Visão salva")}}><Save/> Salvar visão</button>
         <div className="view-switch">
           <button
             aria-label="Visão em grade"
@@ -322,6 +331,8 @@ export default function Gallery() {
           <button onClick={() => setAction("tag")}>Aplicar tag</button>
           <button onClick={() => setAction("album")}>Adicionar ao álbum</button>
           <button onClick={() => setAction("date")}>Corrigir data</button>
+          <button onClick={async()=>{const r=await api.updateUserState({assetIds:[...selection],favorite:true});setNotice(r.affected+" favoritas");setSelection(new Set());setRefresh(v=>v+1)}}><Star/> Favoritar</button>
+          <button onClick={async()=>{const r=await api.updateUserState({assetIds:[...selection],reviewLater:true});setNotice(r.affected+" marcadas para revisar");setSelection(new Set());setRefresh(v=>v+1)}}><Bookmark/> Revisar depois</button>
           <button onClick={() => setSelection(new Set())}>Limpar</button>
         </div>
       )}
@@ -396,7 +407,18 @@ export default function Gallery() {
         </p>
       )}
       {preview && (
-        <Preview asset={preview} close={() => setPreview(undefined)} />
+        <Preview
+          asset={preview}
+          close={() => setPreview(undefined)}
+          changed={(next) => {
+            setPreview(next);
+            setAssets((current) => {
+              const updated = current.map((item) => item.id === next.id ? next : item);
+              session.assets = updated;
+              return updated;
+            });
+          }}
+        />
       )}{" "}
       {action && (
         <Bulk
@@ -453,6 +475,9 @@ function Item({
             <AlertTriangle /> Data a revisar
           </span>
         )}
+        {asset.favorite && <span className="asset-favorite" title="Favorita"><Star fill="currentColor" /></span>}
+        {asset.reviewLater && <span className="asset-review"><Bookmark /> Revisar</span>}
+        {asset.rating > 0 && <span className="asset-rating">{"★".repeat(asset.rating)}</span>}
         {mode === "grid" && asset.protectionState === "error" && <span className="asset-state error">Revisar proteção</span>}
         {mode === "list" && (
           <>
@@ -672,6 +697,21 @@ function Filters({
           <option value="true">Datas a revisar</option>
         </select>
       </label>
+      <label>
+        Organização
+        <select value={value.favorite ? "favorite" : value.reviewLater ? "review" : ""} onChange={(e)=>change({...value,favorite:e.target.value==="favorite"?true:undefined,reviewLater:e.target.value==="review"?true:undefined})}>
+          <option value="">Todas</option>
+          <option value="favorite">Favoritas</option>
+          <option value="review">Revisar depois</option>
+        </select>
+      </label>
+      <label>
+        Avaliação mínima
+        <select value={value.minimumRating || ""} onChange={(e)=>change({...value,minimumRating:e.target.value?Number(e.target.value):undefined})}>
+          <option value="">Qualquer</option>
+          {[1,2,3,4,5].map((rating)=><option key={rating} value={rating}>{rating}+ estrelas</option>)}
+        </select>
+      </label>
       <div className="filter-actions">
         <button onClick={clear}>Limpar</button>
         <button className="primary" onClick={apply}>
@@ -735,7 +775,28 @@ export function MediaThumb({
     </div>
   );
 }
-function Preview({ asset, close }: { asset: MediaAsset; close: () => void }) {
+function Preview({
+  asset,
+  close,
+  changed,
+}: {
+  asset: MediaAsset;
+  close: () => void;
+  changed: (asset: MediaAsset) => void;
+}) {
+  const [description, setDescription] = useState(asset.description);
+  const [saving, setSaving] = useState(false);
+
+  async function update(state: Partial<Pick<MediaAsset, "favorite" | "rating" | "reviewLater" | "description">>) {
+    setSaving(true);
+    try {
+      await api.updateUserState({ assetIds: [asset.id], ...state });
+      changed({ ...asset, ...state });
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <div className="drawer">
       <button
@@ -748,6 +809,49 @@ function Preview({ asset, close }: { asset: MediaAsset; close: () => void }) {
       <MediaThumb asset={asset} className="drawer-preview" />
       <h2>{asset.filename}</h2>
       <p>{new Date(asset.capturedAt).toLocaleString("pt-BR")}</p>
+      <div className="asset-personal-actions" aria-label="Organização pessoal">
+        <button
+          className={asset.favorite ? "active" : ""}
+          aria-pressed={asset.favorite}
+          disabled={saving}
+          onClick={() => update({ favorite: !asset.favorite })}
+        >
+          <Star fill={asset.favorite ? "currentColor" : "none"} /> Favorita
+        </button>
+        <button
+          className={asset.reviewLater ? "active" : ""}
+          aria-pressed={asset.reviewLater}
+          disabled={saving}
+          onClick={() => update({ reviewLater: !asset.reviewLater })}
+        >
+          <Bookmark fill={asset.reviewLater ? "currentColor" : "none"} /> Revisar
+        </button>
+      </div>
+      <div className="asset-stars" aria-label="Avaliação">
+        {[1, 2, 3, 4, 5].map((rating) => (
+          <button
+            key={rating}
+            aria-label={`${rating} estrelas`}
+            aria-pressed={asset.rating === rating}
+            disabled={saving}
+            onClick={() => update({ rating: asset.rating === rating ? 0 : rating })}
+          >
+            <Star fill={rating <= asset.rating ? "currentColor" : "none"} />
+          </button>
+        ))}
+      </div>
+      <label className="asset-description">
+        Descrição
+        <textarea
+          value={description}
+          maxLength={2000}
+          placeholder="Contexto, pessoas, ocasião ou lembrete…"
+          onChange={(event) => setDescription(event.target.value)}
+          onBlur={() => {
+            if (description !== asset.description) update({ description });
+          }}
+        />
+      </label>
       {asset.dateSuspicious && (
         <p className="notice warning">
           <AlertTriangle /> Data a revisar

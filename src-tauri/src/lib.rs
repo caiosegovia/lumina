@@ -349,7 +349,7 @@ fn save_dashboard_snapshot(
 
 fn compute_dashboard(cfg: &LibraryConfig) -> Result<DashboardStats, String> {
     let total_started = std::time::Instant::now();
-    let conn = db(&cfg)?;
+    let conn = db(cfg)?;
     let row=conn.query_row("SELECT COUNT(*),COALESCE(SUM(media_type!='video'),0),COALESCE(SUM(media_type='video'),0),COALESCE(SUM(bytes),0),COALESCE(SUM(protection_state='replica_verified'),0),COALESCE(SUM(protection_state IN('source_only','consolidated','stale')),0),COALESCE(SUM(protection_state='error'),0) FROM assets",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).map_err(|e|e.to_string())?;
     let duplicate_groups=conn.query_row("SELECT COUNT(*) FROM(SELECT asset_id FROM occurrences GROUP BY asset_id HAVING COUNT(*)>1)",[],|r|r.get(0)).unwrap_or(0);
     let offline = conn
@@ -766,6 +766,10 @@ fn list_assets(query: String, state: State<AppState>) -> Result<Vec<MediaAsset>,
             occurrence_count: r.16,
             source_names: engine::grouped_sources(&conn, &r.0),
             tags: engine::grouped_tags(&conn, &r.0),
+            favorite: false,
+            rating: 0,
+            review_later: false,
+            description: String::new(),
         })
         .collect())
 }
@@ -783,7 +787,7 @@ async fn search_gallery(
 fn list_duplicates(state: State<AppState>) -> Result<Vec<DuplicateGroup>, String> {
     let cfg = current(&state)?;
     let conn = db(&cfg)?;
-    let mut stmt=conn.prepare("SELECT a.id,a.hash,a.filename,a.bytes,a.protection_state,(SELECT COUNT(*) FROM occurrences o WHERE o.asset_id=a.id) FROM assets a WHERE(SELECT COUNT(*) FROM occurrences o WHERE o.asset_id=a.id)>1 ORDER BY a.captured_at DESC").map_err(|e|e.to_string())?;
+    let mut stmt=conn.prepare("SELECT a.id,a.hash,a.filename,a.bytes,a.protection_state,(SELECT COUNT(*) FROM occurrences o WHERE o.asset_id=a.id),(SELECT decision FROM duplicate_decisions d WHERE d.asset_id=a.id) FROM assets a WHERE(SELECT COUNT(*) FROM occurrences o WHERE o.asset_id=a.id)>1 ORDER BY a.captured_at DESC").map_err(|e|e.to_string())?;
     let rows = stmt
         .query_map([], |r| {
             Ok((
@@ -793,6 +797,7 @@ fn list_duplicates(state: State<AppState>) -> Result<Vec<DuplicateGroup>, String
                 r.get::<_, i64>(3)?,
                 r.get::<_, String>(4)?,
                 r.get::<_, i64>(5)?,
+                r.get::<_, Option<String>>(6)?,
             ))
         })
         .map_err(|e| e.to_string())?
@@ -802,6 +807,7 @@ fn list_duplicates(state: State<AppState>) -> Result<Vec<DuplicateGroup>, String
     Ok(rows
         .into_iter()
         .map(|r| DuplicateGroup {
+            asset_id: r.0.clone(),
             hash: r.1,
             filename: r.2,
             bytes: r.3,
@@ -817,8 +823,45 @@ fn list_duplicates(state: State<AppState>) -> Result<Vec<DuplicateGroup>, String
                 "protection_required".into()
             },
             occurrences: engine::duplicate_occurrences(&conn, &r.0),
+            decision: r.6,
         })
         .collect())
+}
+#[tauri::command]
+fn update_duplicate_decision(
+    asset_id: String,
+    decision: String,
+    reason: String,
+    state: State<AppState>,
+) -> Result<BatchResult, String> {
+    if !matches!(
+        decision.as_str(),
+        "keep_all" | "review" | "remove_candidates"
+    ) {
+        return Err("Decisão de duplicata inválida".into());
+    }
+    if reason.chars().count() > 500 {
+        return Err("Motivo muito longo".into());
+    }
+    let conn = db(&current(&state)?)?;
+    if decision == "remove_candidates" {
+        let eligible: bool = conn
+            .query_row(
+                "SELECT protection_state='replica_verified' AND (SELECT COUNT(*) FROM occurrences WHERE asset_id=assets.id)>1 FROM assets WHERE id=?1",
+                [&asset_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?
+            .unwrap_or(false);
+        if !eligible {
+            return Err(
+                "A réplica precisa estar verificada antes de marcar cópias candidatas".into(),
+            );
+        }
+    }
+    let affected=conn.execute("INSERT INTO duplicate_decisions(asset_id,decision,reason,decided_at)SELECT id,?2,?3,?4 FROM assets WHERE id=?1 ON CONFLICT(asset_id)DO UPDATE SET decision=excluded.decision,reason=excluded.reason,decided_at=excluded.decided_at",params![asset_id,decision,reason,Utc::now().to_rfc3339()]).map_err(|error|error.to_string())? as i64;
+    Ok(BatchResult { affected })
 }
 #[tauri::command]
 fn list_albums(state: State<AppState>) -> Result<Vec<Album>, String> {
@@ -990,6 +1033,127 @@ fn update_capture_date(
         }
     }
     tx.commit().map_err(|e| e.to_string())?;
+    Ok(BatchResult { affected })
+}
+#[tauri::command]
+fn update_user_state(
+    request: UserStateUpdate,
+    state: State<AppState>,
+) -> Result<BatchResult, String> {
+    let ids = checked_ids(request.asset_ids)?;
+    if let Some(rating) = request.rating {
+        if !(0..=5).contains(&rating) {
+            return Err("A avaliação deve estar entre 0 e 5".into());
+        }
+    }
+    if request
+        .description
+        .as_ref()
+        .is_some_and(|value| value.chars().count() > 2000)
+    {
+        return Err("A descrição deve ter no máximo 2.000 caracteres".into());
+    }
+    let cfg = current(&state)?;
+    let mut conn = db(&cfg)?;
+    let tx = conn.transaction().map_err(|error| error.to_string())?;
+    let now = Utc::now().to_rfc3339();
+    let mut affected = 0;
+    for asset in ids {
+        let exists: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM assets WHERE id=?1)",
+                [&asset],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if !exists {
+            continue;
+        }
+        let old: (bool,i64,bool,String) = tx.query_row("SELECT favorite,rating,review_later,description FROM asset_user_state WHERE asset_id=?1",[&asset],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).optional().map_err(|error|error.to_string())?.unwrap_or((false,0,false,String::new()));
+        let next = (
+            request.favorite.unwrap_or(old.0),
+            request.rating.unwrap_or(old.1),
+            request.review_later.unwrap_or(old.2),
+            request.description.clone().unwrap_or(old.3.clone()),
+        );
+        tx.execute("INSERT INTO asset_user_state(asset_id,favorite,rating,review_later,description,updated_at)VALUES(?1,?2,?3,?4,?5,?6)ON CONFLICT(asset_id)DO UPDATE SET favorite=excluded.favorite,rating=excluded.rating,review_later=excluded.review_later,description=excluded.description,updated_at=excluded.updated_at",params![asset,next.0,next.1,next.2,next.3,now]).map_err(|error|error.to_string())?;
+        tx.execute("INSERT INTO asset_edits(asset_id,field,old_value,new_value,edited_at)VALUES(?1,'user_state',?2,?3,?4)",params![asset,serde_json::to_string(&old).unwrap_or_default(),serde_json::to_string(&next).unwrap_or_default(),now]).map_err(|error|error.to_string())?;
+        affected += 1;
+    }
+    tx.commit().map_err(|error| error.to_string())?;
+    Ok(BatchResult { affected })
+}
+
+#[tauri::command]
+fn list_saved_views(state: State<AppState>) -> Result<Vec<SavedView>, String> {
+    let conn = db(&current(&state)?)?;
+    let mut statement=conn.prepare("SELECT id,name,filters_json,smart_album,created_at,updated_at FROM saved_views ORDER BY smart_album DESC,name").map_err(|error|error.to_string())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, bool>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+            ))
+        })
+        .map_err(|error| error.to_string())?
+        .map(|row| {
+            let (id, name, json, smart_album, created_at, updated_at) =
+                row.map_err(|error| error.to_string())?;
+            let filters = serde_json::from_str(&json).map_err(|error| error.to_string())?;
+            Ok(SavedView {
+                id,
+                name,
+                filters,
+                smart_album,
+                created_at,
+                updated_at,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(rows)
+}
+
+#[tauri::command]
+fn save_gallery_view(
+    name: String,
+    filters: GalleryFilters,
+    smart_album: bool,
+    state: State<AppState>,
+) -> Result<SavedView, String> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 100 {
+        return Err("Nome de visão inválido".into());
+    }
+    let conn = db(&current(&state)?)?;
+    let id = Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
+    let json = serde_json::to_string(&filters).map_err(|error| error.to_string())?;
+    conn.execute("INSERT INTO saved_views(id,name,filters_json,smart_album,created_at,updated_at)VALUES(?1,?2,?3,?4,?5,?5)ON CONFLICT(name)DO UPDATE SET filters_json=excluded.filters_json,smart_album=excluded.smart_album,updated_at=excluded.updated_at",params![id,name,json,smart_album,now]).map_err(|error|error.to_string())?;
+    let actual_id = conn
+        .query_row("SELECT id FROM saved_views WHERE name=?1", [name], |row| {
+            row.get(0)
+        })
+        .map_err(|error| error.to_string())?;
+    Ok(SavedView {
+        id: actual_id,
+        name: name.into(),
+        filters,
+        smart_album,
+        created_at: now.clone(),
+        updated_at: now,
+    })
+}
+
+#[tauri::command]
+fn delete_saved_view(id: String, state: State<AppState>) -> Result<BatchResult, String> {
+    let conn = db(&current(&state)?)?;
+    let affected = conn
+        .execute("DELETE FROM saved_views WHERE id=?1", [id])
+        .map_err(|error| error.to_string())? as i64;
     Ok(BatchResult { affected })
 }
 #[tauri::command]
@@ -1316,12 +1480,17 @@ pub fn run() {
             list_assets,
             search_gallery,
             list_duplicates,
+            update_duplicate_decision,
             list_albums,
             list_jobs,
             create_album,
             add_assets_to_album,
             apply_tag,
             update_capture_date,
+            update_user_state,
+            list_saved_views,
+            save_gallery_view,
+            delete_saved_view,
             list_events,
             analyze_source,
             consolidate_import,

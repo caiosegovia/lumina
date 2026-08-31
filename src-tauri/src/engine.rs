@@ -299,11 +299,7 @@ fn system_time(meta: &fs::Metadata) -> String {
         .unwrap_or_else(Utc::now)
         .to_rfc3339()
 }
-fn capture_metadata(
-    path: &Path,
-    fallback: &str,
-    cancel: &crate::process::CancellationToken,
-) -> (
+type CaptureMetadata = (
     String,
     String,
     Option<i64>,
@@ -312,7 +308,12 @@ fn capture_metadata(
     Option<String>,
     Option<f64>,
     Option<f64>,
-) {
+);
+fn capture_metadata(
+    path: &Path,
+    fallback: &str,
+    cancel: &crate::process::CancellationToken,
+) -> CaptureMetadata {
     let output = crate::process::run(
         crate::process::ProcessSpec::new("ExifTool", "exiftool")
             .args([
@@ -606,7 +607,6 @@ pub fn analyze_with_job_cancel(
     let mut scan_total = 0i64;
     let mut scan_bytes = 0i64;
     let mut validation_ms = 0i64;
-    let hashing_ms: i64;
     let mut media_paths = Vec::new();
     let mut size_counts: HashMap<u64, usize> = HashMap::new();
     let inventory_started = Instant::now();
@@ -693,7 +693,7 @@ pub fn analyze_with_job_cancel(
     let hashing_started = Instant::now();
     let (mut hash_cache, hash_workers, storage_profile) =
         hash_files_adaptive(uncached, &catalog_path, &job, uncached_bytes, cancel);
-    hashing_ms = hashing_started.elapsed().as_millis() as i64;
+    let hashing_ms = hashing_started.elapsed().as_millis() as i64;
     conn = catalog::open(&catalog_path).map_err(|e| e.to_string())?;
     conn.execute("INSERT INTO job_metrics(job_id,stage,duration_ms,items,bytes,recorded_at)VALUES(?1,'hashing_workers',?2,?3,?4,?5)ON CONFLICT(job_id,stage)DO UPDATE SET duration_ms=excluded.duration_ms,items=excluded.items,bytes=excluded.bytes,recorded_at=excluded.recorded_at",params![job,hashing_ms,hash_workers as i64,uncached_bytes.min(i64::MAX as u64)as i64,Utc::now().to_rfc3339()]).ok();
     conn.execute("INSERT INTO job_metrics(job_id,stage,duration_ms,items,bytes,recorded_at)VALUES(?1,?2,0,?3,?4,?5)ON CONFLICT(job_id,stage)DO UPDATE SET items=excluded.items,bytes=excluded.bytes,recorded_at=excluded.recorded_at",params![job,format!("storage_profile:{storage_profile}"),hash_workers as i64,uncached_bytes.min(i64::MAX as u64)as i64,Utc::now().to_rfc3339()]).ok();

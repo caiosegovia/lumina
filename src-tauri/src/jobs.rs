@@ -303,10 +303,10 @@ impl JobManager {
             name,
             job: job.clone(),
         };
-        match self.reserve(&job) {
-            Ok(()) => self.spawn_analysis(pending)?,
-            Err(_) => (), // O catálogo mantém o job em queued até o slot ficar livre.
+        if self.reserve(&job).is_ok() {
+            self.spawn_analysis(pending)?;
         }
+        // O catálogo mantém o job em queued até o slot ficar livre.
         Ok(job)
     }
     pub fn start_consolidation(&self, cfg: LibraryConfig, job: String) -> Result<(), String> {
@@ -497,30 +497,27 @@ impl JobManager {
 pub fn emit_progress(app: tauri::AppHandle, cfg: LibraryConfig, job: String) {
     let _ = std::thread::Builder::new()
         .name(format!("lumina-events-{job}"))
-        .spawn(move || loop {
-            match engine::job_progress(&cfg, &job) {
-                Ok(snapshot) => {
-                    let terminal = matches!(
-                        snapshot.state.as_str(),
-                        "ready"
-                            | "batch_pending"
-                            | "protection_pending"
-                            | "waiting_space"
-                            | "waiting_backup_space"
-                            | "completed"
-                            | "backup_error"
-                            | "failed"
-                            | "canceled"
-                            | "interrupted"
-                    );
-                    let _ = app.emit("job-progress", &snapshot);
-                    if terminal {
-                        break;
-                    }
+        .spawn(move || {
+            while let Ok(snapshot) = engine::job_progress(&cfg, &job) {
+                let terminal = matches!(
+                    snapshot.state.as_str(),
+                    "ready"
+                        | "batch_pending"
+                        | "protection_pending"
+                        | "waiting_space"
+                        | "waiting_backup_space"
+                        | "completed"
+                        | "backup_error"
+                        | "failed"
+                        | "canceled"
+                        | "interrupted"
+                );
+                let _ = app.emit("job-progress", &snapshot);
+                if terminal {
+                    break;
                 }
-                Err(_) => break,
+                std::thread::sleep(std::time::Duration::from_millis(500));
             }
-            std::thread::sleep(std::time::Duration::from_millis(500));
         });
 }
 

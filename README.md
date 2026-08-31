@@ -1,6 +1,6 @@
 # Lumina
 
-Versão atual: **0.12.0**. Consulte [RELEASE-0.12.md](RELEASE-0.12.md) para escopo, validação, benchmark e roteiro de teste.
+Versão em desenvolvimento: **0.13.0**. Consulte [SPEC-0.13.md](SPEC-0.13.md) para os critérios do ciclo e [RELEASE-0.12.md](RELEASE-0.12.md) para a última versão estável.
 
 Lumina é um aplicativo desktop local para inventariar, consolidar, deduplicar e proteger grandes acervos de fotos e vídeos espalhados por discos, cartões e pastas.
 
