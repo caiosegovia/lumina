@@ -73,6 +73,7 @@ describe("fluxo principal do aplicativo", () => {
 
     await user.click(screen.getByRole("button", { name: "Proteção" }));
     expect(await screen.findByText("Proteção e armazenamento")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Exportar diagnóstico" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /Verificar agora/ }));
     expect(await screen.findByText("Verificação iniciada em segundo plano. Acompanhe, pause ou cancele em Atividade.")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Limpar cache" }));

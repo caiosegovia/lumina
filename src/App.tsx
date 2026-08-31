@@ -1044,6 +1044,14 @@ function Protection() {
         </div>
         <div className="activity-actions">
           <button
+            onClick={async () => {
+              const report = await api.exportDiagnostics();
+              setResult("Diagnóstico seguro exportado em " + report.path);
+            }}
+          >
+            Exportar diagnóstico
+          </button>
+          <button
             onClick={async () =>
               setResult(
                 `${await api.clearCache()} miniaturas removidas do cache`,

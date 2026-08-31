@@ -30,6 +30,10 @@ jobs:
         run: npm test
       - name: Build frontend
         run: npm run build
+      - name: Audit frontend dependencies
+        run: npm audit --audit-level=moderate
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
       - name: Test Rust core
         run: cargo test --manifest-path src-tauri/Cargo.toml
       - name: Verify bundled media tools

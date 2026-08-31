@@ -1196,6 +1196,10 @@ fn export_job_report(
     events::export(&current(&state)?, &job_id, &format)
 }
 #[tauri::command]
+fn export_diagnostics(state: State<AppState>) -> Result<ReportExport, String> {
+    events::export_diagnostics(&current(&state)?)
+}
+#[tauri::command]
 fn get_thumbnail(
     asset_id: String,
     state: State<AppState>,
@@ -1341,6 +1345,7 @@ pub fn run() {
             retry_failed_items,
             get_job_events,
             export_job_report,
+            export_diagnostics,
             get_thumbnail,
             rebuild_thumbnail_cache,
             audit_thumbnail_cache,
