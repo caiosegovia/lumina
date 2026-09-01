@@ -721,6 +721,20 @@ function Sources({ onImport }: { onImport: () => void }) {
 function Duplicates() {
   const [items, setItems] = useState<DuplicateGroup[]>([]);
   const [notice, setNotice] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  async function loadDuplicates() {
+    setLoading(true);
+    setError("");
+    try {
+      setItems(await api.duplicates());
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setLoading(false);
+    }
+  }
 
   async function decide(
     group: DuplicateGroup,
@@ -736,7 +750,7 @@ function Duplicates() {
     setNotice(message);
   }
   useEffect(() => {
-    api.duplicates().then(setItems);
+    loadDuplicates();
   }, []);
   return (
     <>
@@ -745,8 +759,24 @@ function Duplicates() {
           <h2>Duplicatas exatas</h2>
           <p>Mesmo conteúdo agrupado; nada é excluído.</p>
         </div>
+        <button onClick={loadDuplicates} disabled={loading}>
+          <RefreshCw className={loading ? "spin" : ""} />
+          Atualizar
+        </button>
       </div>
-      {notice&&<p className="safe-note" role="status">{notice}</p>}
+      {notice && <p className="safe-note" role="status">{notice}</p>}
+      {error && <div className="error-box">Não foi possível consultar duplicatas: {error}</div>}
+      {!loading && !error && items.length === 0 && (
+        <div className="empty-duplicates">
+          <Copy />
+          <h3>Nenhuma duplicata catalogada</h3>
+          <p>
+            Um grupo aparece aqui depois que o mesmo conteúdo é encontrado em duas ou mais
+            origens importadas. Fotos parecidas não são tratadas como duplicatas exatas.
+          </p>
+          <small>Importe ou analise as demais fontes e volte para atualizar esta tela.</small>
+        </div>
+      )}
       <div className="duplicate-list">
         {items.map((g) => (
           <article key={g.hash}>
@@ -1169,14 +1199,27 @@ function Protection() {
             <strong>{thumbnailHealth?.valid ?? 0}</strong> válidas ·{" "}
             <strong>{(thumbnailHealth?.missing ?? 0) + (thumbnailHealth?.stale ?? 0) + (thumbnailHealth?.corrupt ?? 0)}</strong> para reparar
           </p>
+          {repairing && (
+            <div className="thumbnail-repair-progress" role="progressbar" aria-label="Reparo de miniaturas em andamento">
+              <span>Validando e reconstruindo o cache…</span>
+              <i />
+              <small>Você pode continuar usando o aplicativo.</small>
+            </div>
+          )}
           <button
             disabled={repairing || !thumbnailHealth || thumbnailHealth.valid === thumbnailHealth.total}
             onClick={async () => {
               setRepairing(true);
+              setResult("Reparo de miniaturas em andamento. A galeria continua disponível.");
               try {
                 const audit = await api.auditThumbnails(true);
-                setThumbnailHealth(audit);
-                setResult(`${audit.regenerated} miniaturas recuperadas; ${audit.failed} falhas.`);
+                const finalHealth = await api.auditThumbnails(false);
+                setThumbnailHealth(finalHealth);
+                setResult(
+                  `Reparo concluído: ${finalHealth.valid} de ${finalHealth.total} miniaturas válidas · ${audit.regenerated} recuperadas · ${audit.failed} falhas.`,
+                );
+              } catch (cause) {
+                setResult(`Falha no reparo: ${cause instanceof Error ? cause.message : String(cause)}`);
               } finally {
                 setRepairing(false);
               }

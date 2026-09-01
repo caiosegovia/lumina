@@ -1,5 +1,7 @@
 # Lumina 0.13 — pacote de organização e confiança
 
+Atualização de homologação 0.13.1: feedback explícito no reparo de miniaturas, navegação anterior/próxima no preview e estado vazio informativo na tela de duplicatas.
+
 ## Entrega consolidada
 
 - recuperação de miniaturas automática, idempotente e sem modal de retomada;

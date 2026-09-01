@@ -4,7 +4,9 @@ import {
   AlertTriangle,
   CalendarDays,
   Check,
+  ChevronLeft,
   ChevronDown,
+  ChevronRight,
   Copy,
   Grid3X3,
   HardDrive,
@@ -409,6 +411,13 @@ export default function Gallery() {
       {preview && (
         <Preview
           asset={preview}
+          position={assets.findIndex((item) => item.id === preview.id)}
+          total={assets.length}
+          navigate={(offset) => {
+            const index = assets.findIndex((item) => item.id === preview.id);
+            const next = assets[index + offset];
+            if (next) setPreview(next);
+          }}
           close={() => setPreview(undefined)}
           changed={(next) => {
             setPreview(next);
@@ -779,13 +788,33 @@ function Preview({
   asset,
   close,
   changed,
+  navigate,
+  position,
+  total,
 }: {
   asset: MediaAsset;
   close: () => void;
   changed: (asset: MediaAsset) => void;
+  navigate: (offset: -1 | 1) => void;
+  position: number;
+  total: number;
 }) {
   const [description, setDescription] = useState(asset.description);
   const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setDescription(asset.description);
+  }, [asset.id, asset.description]);
+
+  useEffect(() => {
+    const keyboard = (event: KeyboardEvent) => {
+      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
+      if (event.key === "ArrowLeft") navigate(-1);
+      if (event.key === "ArrowRight") navigate(1);
+    };
+    window.addEventListener("keydown", keyboard);
+    return () => window.removeEventListener("keydown", keyboard);
+  }, [navigate]);
 
   async function update(state: Partial<Pick<MediaAsset, "favorite" | "rating" | "reviewLater" | "description">>) {
     setSaving(true);
@@ -807,6 +836,23 @@ function Preview({
         <X />
       </button>
       <MediaThumb asset={asset} className="drawer-preview" />
+      <div className="preview-navigation">
+        <button
+          aria-label="Mídia anterior"
+          disabled={position <= 0}
+          onClick={() => navigate(-1)}
+        >
+          <ChevronLeft />
+        </button>
+        <span>{position + 1} de {total}</span>
+        <button
+          aria-label="Próxima mídia"
+          disabled={position < 0 || position >= total - 1}
+          onClick={() => navigate(1)}
+        >
+          <ChevronRight />
+        </button>
+      </div>
       <h2>{asset.filename}</h2>
       <p>{new Date(asset.capturedAt).toLocaleString("pt-BR")}</p>
       <div className="asset-personal-actions" aria-label="Organização pessoal">
