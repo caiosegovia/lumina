@@ -171,7 +171,7 @@ fn opts(conn: &Connection, sql: &str) -> Result<Vec<FilterOption>, String> {
     Ok(r)
 }
 fn options(c: &Connection) -> Result<GalleryFilterOptions, String> {
-    Ok(GalleryFilterOptions{cameras:opts(c,"SELECT camera,camera,COUNT(*) FROM assets WHERE camera IS NOT NULL AND camera!='' GROUP BY camera ORDER BY COUNT(*) DESC,camera")?,sources:opts(c,"SELECT s.id,s.name,COUNT(DISTINCT o.asset_id) FROM sources s JOIN occurrences o ON o.source_id=s.id GROUP BY s.id ORDER BY COUNT(DISTINCT o.asset_id) DESC,s.name")?,extensions:opts(c,"SELECT LOWER(extension),UPPER(extension),COUNT(*) FROM assets GROUP BY LOWER(extension) ORDER BY COUNT(*) DESC,extension")?,tags:opts(c,"SELECT t.id,t.name,COUNT(at.asset_id) FROM tags t JOIN asset_tags at ON at.tag_id=t.id GROUP BY t.id ORDER BY COUNT(at.asset_id) DESC,t.name")?,albums:opts(c,"SELECT al.id,al.name,COUNT(aa.asset_id) FROM albums al JOIN album_assets aa ON aa.album_id=al.id GROUP BY al.id ORDER BY COUNT(aa.asset_id) DESC,al.name")?})
+    Ok(GalleryFilterOptions{cameras:opts(c,"SELECT camera,camera,COUNT(*) FROM assets WHERE camera IS NOT NULL AND camera!='' GROUP BY camera ORDER BY COUNT(*) DESC,camera")?,sources:opts(c,"SELECT s.id,s.name,COUNT(DISTINCT o.asset_id) FROM sources s JOIN active_occurrences o ON o.source_id=s.id GROUP BY s.id ORDER BY COUNT(DISTINCT o.asset_id) DESC,s.name")?,extensions:opts(c,"SELECT LOWER(extension),UPPER(extension),COUNT(*) FROM assets GROUP BY LOWER(extension) ORDER BY COUNT(*) DESC,extension")?,tags:opts(c,"SELECT t.id,t.name,COUNT(at.asset_id) FROM tags t JOIN asset_tags at ON at.tag_id=t.id GROUP BY t.id ORDER BY COUNT(at.asset_id) DESC,t.name")?,albums:opts(c,"SELECT al.id,al.name,COUNT(aa.asset_id) FROM albums al JOIN album_assets aa ON aa.album_id=al.id GROUP BY al.id ORDER BY COUNT(aa.asset_id) DESC,al.name")?})
 }
 
 fn page_relations(
@@ -189,7 +189,7 @@ fn page_relations(
         .collect::<Vec<_>>()
         .join(",");
     let sql = match relation {
-        "sources" => format!("SELECT o.asset_id,s.name FROM occurrences o JOIN sources s ON s.id=o.source_id WHERE o.asset_id IN({placeholders}) GROUP BY o.asset_id,s.name ORDER BY o.asset_id,s.name"),
+        "sources" => format!("SELECT o.asset_id,s.name FROM active_occurrences o JOIN sources s ON s.id=o.source_id WHERE o.asset_id IN({placeholders}) GROUP BY o.asset_id,s.name ORDER BY o.asset_id,s.name"),
         "tags" => format!("SELECT at.asset_id,t.name FROM asset_tags at JOIN tags t ON t.id=at.tag_id WHERE at.asset_id IN({placeholders}) ORDER BY at.asset_id,t.name"),
         _ => return Err("Relação de galeria inválida".into()),
     };
@@ -212,7 +212,7 @@ pub fn search(conn: &Connection, r: &GalleryRequest) -> Result<GalleryResult, St
     let (mut clauses, mut values) = conditions(&r.filters);
     let base = where_sql(&clauses);
     let (t, years, filter_options) = if r.cursor.is_none() {
-        let q=format!("SELECT COUNT(*),COALESCE(SUM(a.bytes),0),COALESCE(SUM(a.media_type='photo'),0),COALESCE(SUM(a.media_type='video'),0),COALESCE(SUM(a.media_type='raw'),0),COALESCE(SUM(a.protection_state='replica_verified'),0),COALESCE(SUM(a.latitude IS NOT NULL AND a.longitude IS NOT NULL),0),COALESCE(SUM((SELECT COUNT(*) FROM occurrences od WHERE od.asset_id=a.id)>1),0) FROM assets a WHERE {base}");
+        let q=format!("SELECT COUNT(*),COALESCE(SUM(a.bytes),0),COALESCE(SUM(a.media_type='photo'),0),COALESCE(SUM(a.media_type='video'),0),COALESCE(SUM(a.media_type='raw'),0),COALESCE(SUM(a.protection_state='replica_verified'),0),COALESCE(SUM(a.latitude IS NOT NULL AND a.longitude IS NOT NULL),0),COALESCE(SUM((SELECT COUNT(*) FROM active_occurrences od WHERE od.asset_id=a.id)>1),0) FROM assets a WHERE {base}");
         let totals = conn
             .query_row(&q, params_from_iter(values.iter()), |x| {
                 Ok((
@@ -263,7 +263,7 @@ pub fn search(conn: &Connection, r: &GalleryRequest) -> Result<GalleryResult, St
         ));
     }
     let limit = r.limit.unwrap_or(100).clamp(1, 200) as usize;
-    let q=format!("SELECT a.id,a.filename,a.media_type,a.extension,a.captured_at,a.date_source,a.bytes,a.width,a.height,a.duration,a.camera,a.latitude,a.longitude,a.master_path,a.hash,a.protection_state,(SELECT COUNT(*) FROM occurrences o WHERE o.asset_id=a.id),COALESCE((SELECT favorite FROM asset_user_state us WHERE us.asset_id=a.id),0),COALESCE((SELECT rating FROM asset_user_state us WHERE us.asset_id=a.id),0),COALESCE((SELECT review_later FROM asset_user_state us WHERE us.asset_id=a.id),0),COALESCE((SELECT description FROM asset_user_state us WHERE us.asset_id=a.id),'') FROM assets a WHERE {} ORDER BY a.captured_at DESC,a.id DESC LIMIT {}",where_sql(&clauses),limit+1);
+    let q=format!("SELECT a.id,a.filename,a.media_type,a.extension,a.captured_at,a.date_source,a.bytes,a.width,a.height,a.duration,a.camera,a.latitude,a.longitude,a.master_path,a.hash,a.protection_state,(SELECT COUNT(*) FROM active_occurrences o WHERE o.asset_id=a.id),COALESCE((SELECT favorite FROM asset_user_state us WHERE us.asset_id=a.id),0),COALESCE((SELECT rating FROM asset_user_state us WHERE us.asset_id=a.id),0),COALESCE((SELECT review_later FROM asset_user_state us WHERE us.asset_id=a.id),0),COALESCE((SELECT description FROM asset_user_state us WHERE us.asset_id=a.id),'') FROM assets a WHERE {} ORDER BY a.captured_at DESC,a.id DESC LIMIT {}",where_sql(&clauses),limit+1);
     let mut s = conn.prepare(&q).map_err(|e| e.to_string())?;
     let mut rows = s
         .query_map(params_from_iter(values.iter()), |x| {

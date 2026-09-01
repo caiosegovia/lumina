@@ -12,6 +12,7 @@ mod pipeline;
 mod process;
 mod resource;
 mod storage;
+mod sync;
 mod volume;
 
 use chrono::Utc;
@@ -351,7 +352,7 @@ fn compute_dashboard(cfg: &LibraryConfig) -> Result<DashboardStats, String> {
     let total_started = std::time::Instant::now();
     let conn = db(cfg)?;
     let row=conn.query_row("SELECT COUNT(*),COALESCE(SUM(media_type!='video'),0),COALESCE(SUM(media_type='video'),0),COALESCE(SUM(bytes),0),COALESCE(SUM(protection_state='replica_verified'),0),COALESCE(SUM(protection_state IN('source_only','consolidated','stale')),0),COALESCE(SUM(protection_state='error'),0) FROM assets",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).map_err(|e|e.to_string())?;
-    let duplicate_groups=conn.query_row("SELECT COUNT(*) FROM(SELECT asset_id FROM occurrences GROUP BY asset_id HAVING COUNT(*)>1)",[],|r|r.get(0)).unwrap_or(0);
+    let duplicate_groups=conn.query_row("SELECT COUNT(*) FROM(SELECT asset_id FROM active_occurrences GROUP BY asset_id HAVING COUNT(*)>1)",[],|r|r.get(0)).unwrap_or(0);
     let offline = conn
         .query_row(
             "SELECT COUNT(*) FROM sources WHERE available=0 AND path NOT LIKE 'lumina://%'",
@@ -405,7 +406,7 @@ fn compute_dashboard(cfg: &LibraryConfig) -> Result<DashboardStats, String> {
             |r| r.get(0),
         )
         .unwrap_or(0);
-    let duplicate_bytes:i64=conn.query_row("SELECT COALESCE(SUM(a.bytes*(x.copies-1)),0)FROM assets a JOIN(SELECT asset_id,COUNT(*) copies FROM occurrences GROUP BY asset_id HAVING copies>1)x ON x.asset_id=a.id",[],|r|r.get(0)).unwrap_or(0);
+    let duplicate_bytes:i64=conn.query_row("SELECT COALESCE(SUM(a.bytes*(x.copies-1)),0)FROM assets a JOIN(SELECT asset_id,COUNT(*) copies FROM active_occurrences GROUP BY asset_id HAVING copies>1)x ON x.asset_id=a.id",[],|r|r.get(0)).unwrap_or(0);
     let suspicious:i64=conn.query_row("SELECT COUNT(*)FROM assets WHERE date_source='filesystem_modified' OR CAST(substr(captured_at,1,4)AS INTEGER)<1990 OR CAST(substr(captured_at,1,4)AS INTEGER)>CAST(strftime('%Y','now')AS INTEGER)+1",[],|r|r.get(0)).unwrap_or(0);
     let format_mismatches: i64 = conn
         .query_row(
@@ -639,7 +640,7 @@ fn compute_dashboard(cfg: &LibraryConfig) -> Result<DashboardStats, String> {
         pending: row.5,
         duplicate_groups,
         duplicate_bytes,
-        reclaimable_bytes: conn.query_row("SELECT COALESCE(SUM(a.bytes*(x.copies-1)),0) FROM assets a JOIN(SELECT asset_id,COUNT(*) copies FROM occurrences GROUP BY asset_id HAVING copies>1)x ON x.asset_id=a.id WHERE a.protection_state='replica_verified'",[],|row|row.get(0)).unwrap_or(0),
+        reclaimable_bytes: conn.query_row("SELECT COALESCE(SUM(a.bytes*(x.copies-1)),0) FROM assets a JOIN(SELECT asset_id,COUNT(*) copies FROM active_occurrences GROUP BY asset_id HAVING copies>1)x ON x.asset_id=a.id WHERE a.protection_state='replica_verified'",[],|row|row.get(0)).unwrap_or(0),
         errors: row.6,
         offline_sources: offline,
         oldest,
@@ -709,6 +710,14 @@ fn list_sources(state: State<AppState>) -> Result<Vec<Source>, String> {
             }
         })
         .collect())
+}
+#[tauri::command]
+fn start_source_sync(
+    source_id: String,
+    state: State<AppState>,
+    manager: State<jobs::JobManager>,
+) -> Result<String, String> {
+    manager.start_source_sync(current(&state)?, source_id)
 }
 #[tauri::command]
 fn list_assets(query: String, state: State<AppState>) -> Result<Vec<MediaAsset>, String> {
@@ -787,7 +796,7 @@ async fn search_gallery(
 fn list_duplicates(state: State<AppState>) -> Result<Vec<DuplicateGroup>, String> {
     let cfg = current(&state)?;
     let conn = db(&cfg)?;
-    let mut stmt=conn.prepare("SELECT a.id,a.hash,a.filename,a.bytes,a.protection_state,(SELECT COUNT(*) FROM occurrences o WHERE o.asset_id=a.id),(SELECT decision FROM duplicate_decisions d WHERE d.asset_id=a.id) FROM assets a WHERE(SELECT COUNT(*) FROM occurrences o WHERE o.asset_id=a.id)>1 ORDER BY a.captured_at DESC").map_err(|e|e.to_string())?;
+    let mut stmt=conn.prepare("SELECT a.id,a.hash,a.filename,a.bytes,a.protection_state,(SELECT COUNT(*) FROM active_occurrences o WHERE o.asset_id=a.id),(SELECT decision FROM duplicate_decisions d WHERE d.asset_id=a.id) FROM assets a WHERE(SELECT COUNT(*) FROM active_occurrences o WHERE o.asset_id=a.id)>1 ORDER BY a.captured_at DESC").map_err(|e|e.to_string())?;
     let rows = stmt
         .query_map([], |r| {
             Ok((
@@ -847,7 +856,7 @@ fn update_duplicate_decision(
     if decision == "remove_candidates" {
         let eligible: bool = conn
             .query_row(
-                "SELECT protection_state='replica_verified' AND (SELECT COUNT(*) FROM occurrences WHERE asset_id=assets.id)>1 FROM assets WHERE id=?1",
+                "SELECT protection_state='replica_verified' AND (SELECT COUNT(*) FROM active_occurrences WHERE asset_id=assets.id)>1 FROM assets WHERE id=?1",
                 [&asset_id],
                 |row| row.get(0),
             )
@@ -1477,6 +1486,7 @@ pub fn run() {
             get_dashboard,
             refresh_dashboard,
             list_sources,
+            start_source_sync,
             list_assets,
             search_gallery,
             list_duplicates,

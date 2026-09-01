@@ -52,6 +52,7 @@ pub fn open(path: &Path) -> Result<Connection> {
         ("failed_count", "INTEGER NOT NULL DEFAULT 0"),
         ("started_at", "TEXT"),
         ("finished_at", "TEXT"),
+        ("job_kind", "TEXT NOT NULL DEFAULT 'import'"),
     ] {
         let exists = db
             .prepare("PRAGMA table_info(jobs)")?
@@ -73,6 +74,11 @@ pub fn open(path: &Path) -> Result<Connection> {
     )?;
     let needs_v12 = db.query_row(
         "SELECT NOT EXISTS(SELECT 1 FROM schema_migrations WHERE version=12)",
+        [],
+        |row| row.get::<_, bool>(0),
+    )?;
+    let needs_v13 = db.query_row(
+        "SELECT NOT EXISTS(SELECT 1 FROM schema_migrations WHERE version=13)",
         [],
         |row| row.get::<_, bool>(0),
     )?;
@@ -258,6 +264,53 @@ pub fn open(path: &Path) -> Result<Connection> {
           END;
           INSERT INTO schema_migrations(version,applied_at)VALUES(12,datetime('now'));
           UPDATE dashboard_snapshots SET invalidated_at=datetime('now') WHERE id=1;")?;
+    }
+    if needs_v13 {
+        db.execute_batch(
+            "BEGIN IMMEDIATE;
+             CREATE TABLE source_inventory(
+               source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+               path TEXT NOT NULL,filename TEXT NOT NULL,extension TEXT NOT NULL,
+               bytes INTEGER NOT NULL,modified_at TEXT NOT NULL,hash TEXT,asset_id TEXT REFERENCES assets(id),
+               state TEXT NOT NULL CHECK(state IN('present','new','duplicate','changed','missing','error')),
+               last_seen_at TEXT NOT NULL,missing_since TEXT,last_error TEXT,
+               PRIMARY KEY(source_id,path));
+             CREATE INDEX idx_source_inventory_state ON source_inventory(source_id,state,last_seen_at);
+             CREATE INDEX idx_source_inventory_hash ON source_inventory(hash) WHERE hash IS NOT NULL;
+             CREATE TABLE occurrence_presence(
+               occurrence_id TEXT PRIMARY KEY REFERENCES occurrences(id) ON DELETE CASCADE,
+               state TEXT NOT NULL CHECK(state IN('present','missing')),
+               last_seen_at TEXT NOT NULL,missing_since TEXT);
+             CREATE INDEX idx_occurrence_presence_state ON occurrence_presence(state,occurrence_id);
+             CREATE VIEW active_occurrences AS
+               SELECT o.* FROM occurrences o LEFT JOIN occurrence_presence p ON p.occurrence_id=o.id
+               WHERE COALESCE(p.state,'present')='present';
+             CREATE TABLE source_sync_settings(
+               source_id TEXT PRIMARY KEY REFERENCES sources(id) ON DELETE CASCADE,
+               enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN(0,1)),
+               run_on_start INTEGER NOT NULL DEFAULT 0 CHECK(run_on_start IN(0,1)),
+               last_started_at TEXT,last_completed_at TEXT,last_state TEXT NOT NULL DEFAULT 'never',last_error TEXT);
+             CREATE TABLE review_dismissals(
+               asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+               reason TEXT NOT NULL,dismissed_at TEXT NOT NULL,
+               PRIMARY KEY(asset_id,reason));
+             CREATE TABLE catalog_actions(
+               id TEXT PRIMARY KEY,kind TEXT NOT NULL,payload TEXT NOT NULL,undo_payload TEXT,
+               state TEXT NOT NULL CHECK(state IN('applied','undone','failed')),
+               created_at TEXT NOT NULL,undone_at TEXT);
+             CREATE TABLE cleanup_plans(
+               id TEXT PRIMARY KEY,state TEXT NOT NULL CHECK(state IN('draft','validated','exported','superseded')),
+               summary_json TEXT NOT NULL,created_at TEXT NOT NULL,validated_at TEXT);
+             CREATE TABLE cleanup_plan_items(
+               plan_id TEXT NOT NULL REFERENCES cleanup_plans(id) ON DELETE CASCADE,
+               occurrence_id TEXT NOT NULL REFERENCES occurrences(id) ON DELETE CASCADE,
+               asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+               bytes INTEGER NOT NULL,eligibility TEXT NOT NULL,reason TEXT NOT NULL,
+               PRIMARY KEY(plan_id,occurrence_id));
+             INSERT INTO source_sync_settings(source_id) SELECT id FROM sources WHERE path NOT LIKE 'lumina://%';
+             INSERT INTO schema_migrations(version,applied_at)VALUES(13,datetime('now'));
+             COMMIT;",
+        )?;
     }
     if needs_v11 {
         db.execute_batch("DROP TRIGGER IF EXISTS dashboard_asset_shape_invalidate; DROP TRIGGER IF EXISTS dashboard_asset_shape_rollup;

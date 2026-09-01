@@ -32,6 +32,8 @@ Objetivo: ajudar a decidir, sem transformar estimativas em exclusão automática
 - Oferecer simulação, relatório e plano de recuperação antes de executar.
 - Manter fontes somente leitura por padrão; qualquer exceção será um modo separado e deliberado.
 
+O ciclo foi ampliado para a beta de revisão e descoberta descrita em [SPEC-0.14-BETA.md](SPEC-0.14-BETA.md): sincronização incremental, Central de Revisão, visualizador avançado, álbuns inteligentes e saúde operacional fazem parte do mesmo gate de produto.
+
 ## Exploração — 0.15+: descoberta e portabilidade
 
 - Similaridade visual local e explicável.

@@ -676,9 +676,33 @@ function Stat({
 }
 function Sources({ onImport }: { onImport: () => void }) {
   const [items, setItems] = useState<Source[]>([]);
+  const [syncing, setSyncing] = useState<Record<string, JobProgress>>({});
+  const [notice, setNotice] = useState("");
   useEffect(() => {
     api.sources().then(setItems);
   }, []);
+  async function synchronize(source: Source) {
+    setNotice("");
+    try {
+      const jobId = await api.startSourceSync(source.id);
+      while (true) {
+        const progress = await api.jobProgress(jobId);
+        setSyncing((current) => ({ ...current, [source.id]: progress }));
+        if (["completed", "failed", "canceled"].includes(progress.state)) {
+          if (progress.state === "completed") {
+            setNotice(`${source.name} atualizada: ${progress.imported} novas · ${progress.duplicates} duplicatas · ${progress.excluded} ausentes.`);
+            setItems(await api.sources());
+          } else {
+            setNotice(`A sincronização de ${source.name} terminou como ${progress.state}.`);
+          }
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+    } catch (cause) {
+      setNotice(cause instanceof Error ? cause.message : String(cause));
+    }
+  }
   return (
     <>
       <div className="section-heading">
@@ -691,8 +715,12 @@ function Sources({ onImport }: { onImport: () => void }) {
           Adicionar fonte
         </button>
       </div>
+      {notice && <div className="notice" role="status">{notice}</div>}
       <div className="source-list">
-        {items.map((s) => (
+        {items.map((s) => {
+          const progress = syncing[s.id];
+          const active = progress && !["completed", "failed", "canceled"].includes(progress.state);
+          return (
           <article key={s.id}>
             <HardDrive />
             <div className="source-main">
@@ -712,8 +740,13 @@ function Sources({ onImport }: { onImport: () => void }) {
             <span className="badge">
               {s.available ? "Conectada" : "Offline"}
             </span>
+            <button disabled={!s.available || active} onClick={() => synchronize(s)}>
+              <RefreshCw className={active ? "spin" : ""} />
+              {active ? `${Math.round(progress.overallPercent)}%` : "Atualizar"}
+            </button>
           </article>
-        ))}
+          );
+        })}
       </div>
     </>
   );

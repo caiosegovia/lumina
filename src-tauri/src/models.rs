@@ -161,6 +161,20 @@ pub struct Source {
     pub last_scan: Option<String>,
     pub asset_count: i64,
 }
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceSyncSummary {
+    pub job_id: String,
+    pub source_id: String,
+    pub discovered: i64,
+    pub present: i64,
+    pub new_files: i64,
+    pub duplicates: i64,
+    pub changed: i64,
+    pub missing: i64,
+    pub failed: i64,
+    pub processed_bytes: i64,
+}
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaAsset {

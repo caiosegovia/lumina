@@ -2001,7 +2001,7 @@ pub fn grouped_tags(conn: &rusqlite::Connection, asset: &str) -> Vec<String> {
     result
 }
 pub fn duplicate_occurrences(conn: &rusqlite::Connection, asset: &str) -> Vec<Occurrence> {
-    let mut s=match conn.prepare("SELECT s.name,o.path FROM occurrences o JOIN sources s ON s.id=o.source_id WHERE o.asset_id=?1"){Ok(v)=>v,Err(_)=>return vec![]};
+    let mut s=match conn.prepare("SELECT s.name,o.path FROM active_occurrences o JOIN sources s ON s.id=o.source_id WHERE o.asset_id=?1"){Ok(v)=>v,Err(_)=>return vec![]};
     let result = s
         .query_map([asset], |r| {
             Ok(Occurrence {

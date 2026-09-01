@@ -309,6 +309,39 @@ impl JobManager {
         // O catálogo mantém o job em queued até o slot ficar livre.
         Ok(job)
     }
+    pub fn start_source_sync(
+        &self,
+        cfg: LibraryConfig,
+        source_id: String,
+    ) -> Result<String, String> {
+        if self.has_active() {
+            return Err("Aguarde o trabalho atual terminar antes de sincronizar".into());
+        }
+        let job = crate::sync::queue(&cfg, &source_id)?;
+        self.reserve(&job)?;
+        let cancel = self.token(&job)?;
+        let manager = self.clone();
+        let worker = job.clone();
+        std::thread::Builder::new()
+            .name(format!("lumina-source-sync-{job}"))
+            .spawn(move || {
+                if let Err(error) = crate::sync::run(&cfg, &worker, &cancel) {
+                    if error == "JOB_CANCELED" {
+                        manager.mark_canceled(&cfg, &worker);
+                    } else {
+                        if let Ok(conn) = catalog::open(
+                            &Path::new(&cfg.master_path).join(".lumina/catalog.sqlite"),
+                        ) {
+                            let _ = conn.execute("UPDATE source_sync_settings SET last_state='failed',last_error=?2 WHERE source_id=(SELECT source_id FROM jobs WHERE id=?1)",params![worker,error]);
+                        }
+                        manager.mark_failed(&cfg, &worker, &error);
+                    }
+                }
+                manager.release(&worker);
+            })
+            .map_err(|error| error.to_string())?;
+        Ok(job)
+    }
     pub fn start_consolidation(&self, cfg: LibraryConfig, job: String) -> Result<(), String> {
         self.reserve(&job)?;
         let cancel = self.token(&job)?;
