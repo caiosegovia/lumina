@@ -4,6 +4,7 @@ import {
   Activity,
   Album as AlbumIcon,
   Archive,
+  ClipboardCheck,
   CheckCircle2,
   ChevronRight,
   Cloud,
@@ -39,11 +40,13 @@ import type {
   Source,
   StoragePlan,
   ThumbnailAudit,
+  ReviewSummary,
   View,
 } from "./types";
 const nav = [
   { id: "dashboard", label: "Visão geral", icon: LayoutDashboard },
   { id: "library", label: "Biblioteca", icon: Images },
+  { id: "review", label: "Revisão", icon: ClipboardCheck },
   { id: "sources", label: "Fontes", icon: HardDrive },
   { id: "duplicates", label: "Duplicatas", icon: Copy },
   { id: "albums", label: "Álbuns", icon: AlbumIcon },
@@ -365,6 +368,7 @@ function Content({
   openJob: (x: string) => void;
 }) {
   if (view === "library") return <Gallery />;
+  if (view === "review") return <ReviewCenter navigate={navigate} />;
   if (view === "sources") return <Sources onImport={onImport} />;
   if (view === "duplicates") return <Duplicates />;
   if (view === "albums") return <Albums />;
@@ -372,6 +376,26 @@ function Content({
     return <ActivityCenter jobs={jobs} openJob={openJob} />;
   if (view === "protection") return <Protection />;
   return <Dashboard onImport={onImport} navigate={navigate} />;
+}
+function ReviewCenter({ navigate }: { navigate: (view: View) => void }) {
+  const [summary, setSummary] = useState<ReviewSummary>();
+  useEffect(() => { api.reviewSummary().then(setSummary); }, []);
+  const open = (filters: Parameters<typeof openGalleryWithFilters>[0]) => {
+    openGalleryWithFilters(filters);
+    navigate("library");
+  };
+  const cards = [
+    {label:"Revisar depois",value:summary?.reviewLater??0,detail:"Itens separados por você",action:()=>open({reviewLater:true})},
+    {label:"Datas suspeitas",value:summary?.suspiciousDates??0,detail:"Datas obtidas do arquivo ou fora do intervalo esperado",action:()=>open({dateSuspicious:true})},
+    {label:"Previews pendentes",value:summary?.missingPreviews??0,detail:"Miniaturas ausentes ou com falha",action:()=>navigate("protection")},
+    {label:"Metadados incompletos",value:summary?.incompleteMetadata??0,detail:"Informações técnicas ainda não enriquecidas",action:()=>navigate("activity")},
+    {label:"Proteção pendente",value:summary?.pendingProtection??0,detail:"Mídias sem réplica verificada",action:()=>navigate("protection")},
+    {label:"Duplicatas sem decisão",value:summary?.undecidedDuplicates??0,detail:"Grupos exatos aguardando revisão",action:()=>navigate("duplicates")},
+  ];
+  return <>
+    <div className="section-heading"><div><h2>Central de revisão</h2><p>Tudo que merece uma decisão humana, reunido por prioridade.</p></div><button onClick={()=>api.reviewSummary().then(setSummary)}><RefreshCw/>Atualizar</button></div>
+    <div className="review-grid">{cards.map(card=><button key={card.label} onClick={card.action}><span>{card.label}</span><strong>{card.value.toLocaleString("pt-BR")}</strong><small>{card.detail}</small><ChevronRight/></button>)}</div>
+  </>;
 }
 function ReportTools() {
   const [job, setJob] = useState(""),

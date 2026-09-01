@@ -175,6 +175,16 @@ pub struct SourceSyncSummary {
     pub failed: i64,
     pub processed_bytes: i64,
 }
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewSummary {
+    pub review_later: i64,
+    pub suspicious_dates: i64,
+    pub missing_previews: i64,
+    pub incomplete_metadata: i64,
+    pub pending_protection: i64,
+    pub undecided_duplicates: i64,
+}
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaAsset {

@@ -11,6 +11,7 @@ mod models;
 mod pipeline;
 mod process;
 mod resource;
+mod review;
 mod storage;
 mod sync;
 mod volume;
@@ -718,6 +719,10 @@ fn start_source_sync(
     manager: State<jobs::JobManager>,
 ) -> Result<String, String> {
     manager.start_source_sync(current(&state)?, source_id)
+}
+#[tauri::command]
+fn get_review_summary(state: State<AppState>) -> Result<ReviewSummary, String> {
+    review::summary(&current(&state)?)
 }
 #[tauri::command]
 fn list_assets(query: String, state: State<AppState>) -> Result<Vec<MediaAsset>, String> {
@@ -1487,6 +1492,7 @@ pub fn run() {
             refresh_dashboard,
             list_sources,
             start_source_sync,
+            get_review_summary,
             list_assets,
             search_gallery,
             list_duplicates,
