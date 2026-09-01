@@ -29,6 +29,7 @@ import "./gallery.css";
 import { formatBytes, formatDate } from "./format";
 import type {
   Album,
+  CleanupPlan,
   DashboardStats,
   DuplicateGroup,
   ImportEvent,
@@ -36,8 +37,11 @@ import type {
   JobOverview,
   JobProgress,
   LibraryConfig,
+  LibraryHealth,
   RecoverableJob,
   Source,
+  SavedView,
+  TagInfo,
   StoragePlan,
   ThumbnailAudit,
   ReviewSummary,
@@ -371,7 +375,7 @@ function Content({
   if (view === "review") return <ReviewCenter navigate={navigate} />;
   if (view === "sources") return <Sources onImport={onImport} />;
   if (view === "duplicates") return <Duplicates />;
-  if (view === "albums") return <Albums />;
+  if (view === "albums") return <Albums navigate={navigate} />;
   if (view === "activity")
     return <ActivityCenter jobs={jobs} openJob={openJob} />;
   if (view === "protection") return <Protection />;
@@ -379,6 +383,7 @@ function Content({
 }
 function ReviewCenter({ navigate }: { navigate: (view: View) => void }) {
   const [summary, setSummary] = useState<ReviewSummary>();
+  const [notice,setNotice]=useState("");
   useEffect(() => { api.reviewSummary().then(setSummary); }, []);
   const open = (filters: Parameters<typeof openGalleryWithFilters>[0]) => {
     openGalleryWithFilters(filters);
@@ -393,7 +398,8 @@ function ReviewCenter({ navigate }: { navigate: (view: View) => void }) {
     {label:"Duplicatas sem decisão",value:summary?.undecidedDuplicates??0,detail:"Grupos exatos aguardando revisão",action:()=>navigate("duplicates")},
   ];
   return <>
-    <div className="section-heading"><div><h2>Central de revisão</h2><p>Tudo que merece uma decisão humana, reunido por prioridade.</p></div><button onClick={()=>api.reviewSummary().then(setSummary)}><RefreshCw/>Atualizar</button></div>
+    <div className="section-heading"><div><h2>Central de revisão</h2><p>Tudo que merece uma decisão humana, reunido por prioridade.</p></div><div className="activity-actions"><button onClick={async()=>{const result=await api.undoLastEdit();setNotice(result.affected?"Última alteração desfeita.":"Nenhuma alteração para desfazer.");setSummary(await api.reviewSummary())}}>Desfazer última alteração</button><button onClick={()=>api.reviewSummary().then(setSummary)}><RefreshCw/>Atualizar</button></div></div>
+    {notice&&<div className="notice" role="status">{notice}</div>}
     <div className="review-grid">{cards.map(card=><button key={card.label} onClick={card.action}><span>{card.label}</span><strong>{card.value.toLocaleString("pt-BR")}</strong><small>{card.detail}</small><ChevronRight/></button>)}</div>
   </>;
 }
@@ -780,6 +786,7 @@ function Duplicates() {
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [plan, setPlan] = useState<CleanupPlan>();
 
   async function loadDuplicates() {
     setLoading(true);
@@ -823,6 +830,11 @@ function Duplicates() {
       </div>
       {notice && <p className="safe-note" role="status">{notice}</p>}
       {error && <div className="error-box">Não foi possível consultar duplicatas: {error}</div>}
+      <section className="cleanup-planner">
+        <div><h3>Plano de limpeza seguro</h3><p>Simule candidatas e espaço potencial. Esta beta não remove arquivos.</p></div>
+        <button className="primary" onClick={async()=>setPlan(await api.createCleanupPlan())}>Gerar plano</button>
+        {plan&&<><div className="cleanup-summary"><span><strong>{plan.groups}</strong> grupos</span><span><strong>{plan.candidates}</strong> candidatas elegíveis</span><span><strong>{formatBytes(plan.bytes)}</strong> potencial</span><span><strong>{plan.blocked}</strong> bloqueadas</span></div><button onClick={async()=>{const report=await api.exportCleanupPlan(plan.id);setNotice(`Relatório exportado em ${report.path}`)}}>Exportar relatório do plano</button></>}
+      </section>
       {!loading && !error && items.length === 0 && (
         <div className="empty-duplicates">
           <Copy />
@@ -837,9 +849,7 @@ function Duplicates() {
       <div className="duplicate-list">
         {items.map((g) => (
           <article key={g.hash}>
-            <div className="duplicate-preview">
-              <Copy />
-            </div>
+            <DuplicateThumb assetId={g.assetId} filename={g.filename} />
             <div className="duplicate-main">
               <h3>{g.filename}</h3>
               <p>{formatBytes(g.bytes)}</p>
@@ -897,13 +907,18 @@ function Duplicates() {
     </>
   );
 }
-function Albums() {
+function DuplicateThumb({assetId,filename}:{assetId:string;filename:string}){const[src,setSrc]=useState<string|null>();useEffect(()=>{let live=true;api.thumbnail(assetId).then(value=>live&&setSrc(value));return()=>{live=false}},[assetId]);return <div className="duplicate-preview">{src?<img src={src} alt={`Prévia de ${filename}`}/>:<Copy/>}</div>}
+function Albums({navigate}:{navigate:(view:View)=>void}) {
   const [items, setItems] = useState<Album[]>([]),
+    [smart, setSmart] = useState<SavedView[]>([]),
+    [tags, setTags] = useState<TagInfo[]>([]),
     [name, setName] = useState(""),
     [creating, setCreating] = useState(false);
   const load = () => api.albums().then(setItems);
   useEffect(() => {
     load();
+    api.savedViews().then(views=>setSmart(views.filter(view=>view.smartAlbum)));
+    api.tags().then(setTags);
   }, []);
   return (
     <>
@@ -939,6 +954,13 @@ function Albums() {
         </div>
       )}
       <div className="album-grid">
+        {smart.map((view) => (
+          <article key={view.id} className="smart-album" onClick={()=>{openGalleryWithFilters(view.filters);navigate("library")}}>
+            <div><Search /></div>
+            <h3>{view.name}</h3>
+            <p>Álbum inteligente · atualizado automaticamente</p>
+          </article>
+        ))}
         {items.map((a) => (
           <article key={a.id}>
             <div>
@@ -949,6 +971,7 @@ function Albums() {
           </article>
         ))}
       </div>
+      <section className="tag-manager"><h3>Tags</h3><p>Renomeie ou remova classificações do catálogo sem alterar as mídias.</p><div>{tags.map(tag=><span key={tag.id}><button onClick={async()=>{const name=prompt("Novo nome da tag",tag.name);if(name){await api.renameTag(tag.id,name);setTags(await api.tags())}}}>{tag.name} · {tag.assetCount}</button><button aria-label={`Excluir tag ${tag.name}`} onClick={async()=>{if(confirm(`Remover a tag ${tag.name} do catálogo?`)){await api.deleteTag(tag.id);setTags(current=>current.filter(item=>item.id!==tag.id))}}}><X/></button></span>)}</div></section>
     </>
   );
 }
@@ -1158,6 +1181,7 @@ function Protection() {
     [master, setMaster] = useState(""),
     [thumbnailHealth, setThumbnailHealth] = useState<ThumbnailAudit>(),
     [repairing, setRepairing] = useState(false),
+    [health,setHealth]=useState<LibraryHealth>(),
     [queue, setQueue] = useState<{
       pending: number;
       failed: number;
@@ -1173,6 +1197,7 @@ function Protection() {
     });
     api.protectionQueue().then(setQueue);
     api.auditThumbnails(false).then(setThumbnailHealth).catch(() => {});
+    api.libraryHealth().then(setHealth).catch(()=>{});
   }, []);
   const choose = async (set: (x: string) => void) => {
     const p = await api.chooseFolder();
@@ -1230,6 +1255,7 @@ function Protection() {
           {result}
         </div>
       )}
+      {health&&<div className="health-grid">{health.checks.map(check=><article key={check.key} className={check.state}><span>{check.label}</span><strong>{check.state==="healthy"?"Saudável":check.state==="warning"?"Atenção":"Erro"}</strong><small>{check.detail}</small></article>)}</div>}
       <div className="protection-flow">
         <article>
           <Database />

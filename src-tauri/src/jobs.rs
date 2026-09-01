@@ -318,6 +318,10 @@ impl JobManager {
             return Err("Aguarde o trabalho atual terminar antes de sincronizar".into());
         }
         let job = crate::sync::queue(&cfg, &source_id)?;
+        self.spawn_source_sync(cfg, job.clone())?;
+        Ok(job)
+    }
+    fn spawn_source_sync(&self, cfg: LibraryConfig, job: String) -> Result<(), String> {
         self.reserve(&job)?;
         let cancel = self.token(&job)?;
         let manager = self.clone();
@@ -340,7 +344,7 @@ impl JobManager {
                 manager.release(&worker);
             })
             .map_err(|error| error.to_string())?;
-        Ok(job)
+        Ok(())
     }
     pub fn start_consolidation(&self, cfg: LibraryConfig, job: String) -> Result<(), String> {
         self.reserve(&job)?;
@@ -430,8 +434,11 @@ impl JobManager {
     pub fn resume(&self, cfg: LibraryConfig, job: String) -> Result<(), String> {
         let conn = catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite"))
             .map_err(|e| e.to_string())?;
-        let (source,name,stage):(String,String,String)=conn.query_row("SELECT j.source_path,s.name,j.stage FROM jobs j JOIN sources s ON s.id=j.source_id WHERE j.id=?1",[&job],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(|e|e.to_string())?;
+        let (source,name,stage,kind):(String,String,String,String)=conn.query_row("SELECT j.source_path,s.name,j.stage,COALESCE(j.job_kind,'import') FROM jobs j JOIN sources s ON s.id=j.source_id WHERE j.id=?1",[&job],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).map_err(|e|e.to_string())?;
         drop(conn);
+        if kind == "source_sync" {
+            return self.spawn_source_sync(cfg, job);
+        }
         if stage == "thumbnail" {
             return self.resume_background(cfg);
         }

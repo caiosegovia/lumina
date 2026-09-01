@@ -13,6 +13,8 @@ import {
   Images,
   List,
   LoaderCircle,
+  Maximize2,
+  Minimize2,
   Rows3,
   Search,
   Star,
@@ -20,6 +22,8 @@ import {
   Save,
   Tags,
   Video,
+  ZoomIn,
+  ZoomOut,
   X,
 } from "lucide-react";
 import { api } from "./api";
@@ -67,6 +71,7 @@ export default function Gallery() {
     [action, setAction] = useState<"tag" | "album" | "date">(),
     [notice, setNotice] = useState(""),
     [savedViews, setSavedViews] = useState<SavedView[]>([]),
+    [selectedView, setSelectedView] = useState(""),
     [refresh, setRefresh] = useState(0);
   const seq = useRef(0),
     width = { compact: 145, normal: 190, large: 260 }[zoom],
@@ -282,7 +287,8 @@ export default function Gallery() {
         {mode === "grid" && (
           <ChoiceMenu icon={<Rows3/>} label="Tamanho da grade" value={zoom} options={[{value:"compact",label:"Compacta"},{value:"normal",label:"Confortável"},{value:"large",label:"Ampla"}]} onChange={v=>saveZoom(v as Zoom)}/>
         )}
-        {savedViews.length > 0 && <select aria-label="Visões salvas" value="" onChange={e=>{const view=savedViews.find(x=>x.id===e.target.value);if(view){setFilters(view.filters);setDraft(view.filters)}}}><option value="">Visões salvas</option>{savedViews.map(view=><option key={view.id} value={view.id}>{view.smartAlbum?"Álbum inteligente · ":""}{view.name}</option>)}</select>}
+        {savedViews.length > 0 && <select aria-label="Visões salvas" value={selectedView} onChange={e=>{setSelectedView(e.target.value);const view=savedViews.find(x=>x.id===e.target.value);if(view){setFilters(view.filters);setDraft(view.filters)}}}><option value="">Visões salvas</option>{savedViews.map(view=><option key={view.id} value={view.id}>{view.smartAlbum?"Álbum inteligente · ":""}{view.name}</option>)}</select>}
+        {selectedView&&<button aria-label="Excluir visão selecionada" onClick={async()=>{await api.deleteSavedView(selectedView);setSavedViews(current=>current.filter(view=>view.id!==selectedView));setSelectedView("");setNotice("Visão removida")}}><X/> Excluir visão</button>}
         <button aria-label="Salvar visão atual" onClick={async()=>{const name=prompt("Nome da visão ou álbum inteligente");if(!name)return;const smartAlbum=confirm("Salvar também como álbum inteligente?");const view=await api.saveView(name,filters,smartAlbum);setSavedViews(v=>[...v.filter(x=>x.id!==view.id&&x.name!==view.name),view]);setNotice("Visão salva")}}><Save/> Salvar visão</button>
         <div className="view-switch">
           <button
@@ -411,6 +417,7 @@ export default function Gallery() {
       {preview && (
         <Preview
           asset={preview}
+          assets={assets}
           position={assets.findIndex((item) => item.id === preview.id)}
           total={assets.length}
           navigate={(offset) => {
@@ -418,6 +425,7 @@ export default function Gallery() {
             const next = assets[index + offset];
             if (next) setPreview(next);
           }}
+          select={setPreview}
           close={() => setPreview(undefined)}
           changed={(next) => {
             setPreview(next);
@@ -786,24 +794,36 @@ export function MediaThumb({
 }
 function Preview({
   asset,
+  assets,
   close,
   changed,
   navigate,
   position,
   total,
+  select,
 }: {
   asset: MediaAsset;
+  assets: MediaAsset[];
   close: () => void;
   changed: (asset: MediaAsset) => void;
   navigate: (offset: -1 | 1) => void;
   position: number;
   total: number;
+  select: (asset: MediaAsset) => void;
 }) {
   const [description, setDescription] = useState(asset.description);
   const [saving, setSaving] = useState(false);
+  const [fullscreen, setFullscreen] = useState(false);
+  const [previewZoom, setPreviewZoom] = useState(1);
+  const [mediaUrl, setMediaUrl] = useState("");
 
   useEffect(() => {
     setDescription(asset.description);
+    setPreviewZoom(1);
+    setMediaUrl("");
+    if (asset.mediaType === "video") {
+      api.mediaUrl(asset.id).then(setMediaUrl).catch(() => setMediaUrl(""));
+    }
   }, [asset.id, asset.description]);
 
   useEffect(() => {
@@ -811,10 +831,11 @@ function Preview({
       if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
       if (event.key === "ArrowLeft") navigate(-1);
       if (event.key === "ArrowRight") navigate(1);
+      if (event.key === "Escape" && fullscreen) setFullscreen(false);
     };
     window.addEventListener("keydown", keyboard);
     return () => window.removeEventListener("keydown", keyboard);
-  }, [navigate]);
+  }, [navigate, fullscreen]);
 
   async function update(state: Partial<Pick<MediaAsset, "favorite" | "rating" | "reviewLater" | "description">>) {
     setSaving(true);
@@ -827,7 +848,7 @@ function Preview({
   }
 
   return (
-    <div className="drawer">
+    <div className={`drawer ${fullscreen ? "fullscreen" : ""}`}>
       <button
         aria-label="Fechar detalhes"
         className="icon-only close"
@@ -835,7 +856,18 @@ function Preview({
       >
         <X />
       </button>
-      <MediaThumb asset={asset} className="drawer-preview" />
+      <div className="preview-stage">
+        {asset.mediaType === "video" && mediaUrl ? (
+          <video className={`drawer-video preview-zoom-${previewZoom}`} src={mediaUrl} controls preload="metadata" />
+        ) : (
+          <MediaThumb asset={asset} className={`drawer-preview preview-zoom-${previewZoom}`} />
+        )}
+        <div className="preview-tools">
+          <button aria-label="Diminuir zoom" disabled={previewZoom === 1} onClick={() => setPreviewZoom((value) => Math.max(1, value - 1))}><ZoomOut /></button>
+          <button aria-label="Aumentar zoom" disabled={previewZoom === 3} onClick={() => setPreviewZoom((value) => Math.min(3, value + 1))}><ZoomIn /></button>
+          <button aria-label={fullscreen ? "Sair da tela cheia" : "Abrir em tela cheia"} onClick={() => setFullscreen((value) => !value)}>{fullscreen ? <Minimize2 /> : <Maximize2 />}</button>
+        </div>
+      </div>
       <div className="preview-navigation">
         <button
           aria-label="Mídia anterior"
@@ -852,6 +884,13 @@ function Preview({
         >
           <ChevronRight />
         </button>
+      </div>
+      <div className="preview-filmstrip" aria-label="Mídias próximas">
+        {assets.slice(Math.max(0, position - 3), Math.min(assets.length, position + 4)).map((item) => (
+          <button key={item.id} className={item.id === asset.id ? "active" : ""} aria-label={`Abrir ${item.filename}`} onClick={() => select(item)}>
+            <MediaThumb asset={item} />
+          </button>
+        ))}
       </div>
       <h2>{asset.filename}</h2>
       <p>{new Date(asset.capturedAt).toLocaleString("pt-BR")}</p>
@@ -873,6 +912,11 @@ function Preview({
           <Bookmark fill={asset.reviewLater ? "currentColor" : "none"} /> Revisar
         </button>
       </div>
+      {asset.reviewLater && (
+        <button className="complete-review" disabled={saving} onClick={async () => { await update({ reviewLater: false }); if (position < total - 1) navigate(1); }}>
+          <Check /> Concluir revisão e avançar
+        </button>
+      )}
       <div className="asset-stars" aria-label="Avaliação">
         {[1, 2, 3, 4, 5].map((rating) => (
           <button

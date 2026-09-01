@@ -185,6 +185,21 @@ pub struct ReviewSummary {
     pub pending_protection: i64,
     pub undecided_duplicates: i64,
 }
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HealthCheck {
+    pub key: String,
+    pub label: String,
+    pub state: String,
+    pub detail: String,
+}
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryHealth {
+    pub overall: String,
+    pub checks: Vec<HealthCheck>,
+    pub generated_at: String,
+}
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaAsset {
@@ -435,6 +450,30 @@ pub struct DuplicateGroup {
     pub occurrences: Vec<Occurrence>,
     pub decision: Option<String>,
 }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanupPlanItem {
+    pub occurrence_id: String,
+    pub asset_id: String,
+    pub filename: String,
+    pub source: String,
+    pub path: String,
+    pub bytes: i64,
+    pub eligibility: String,
+    pub reason: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanupPlan {
+    pub id: String,
+    pub state: String,
+    pub groups: i64,
+    pub candidates: i64,
+    pub bytes: i64,
+    pub blocked: i64,
+    pub items: Vec<CleanupPlanItem>,
+    pub created_at: String,
+}
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Album {
@@ -442,6 +481,13 @@ pub struct Album {
     pub name: String,
     pub asset_count: i64,
     pub cover: Option<String>,
+}
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TagInfo {
+    pub id: String,
+    pub name: String,
+    pub asset_count: i64,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

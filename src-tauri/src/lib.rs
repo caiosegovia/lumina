@@ -1,9 +1,11 @@
 mod backup;
 mod catalog;
+mod duplicates;
 mod engine;
 mod events;
 mod formats;
 mod gallery;
+mod health;
 mod jobs;
 mod library;
 mod media;
@@ -21,6 +23,7 @@ use models::*;
 use rusqlite::{params, OptionalExtension};
 use std::{
     fs,
+    io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::Mutex,
 };
@@ -725,6 +728,41 @@ fn get_review_summary(state: State<AppState>) -> Result<ReviewSummary, String> {
     review::summary(&current(&state)?)
 }
 #[tauri::command]
+fn get_library_health(state: State<AppState>) -> Result<LibraryHealth, String> {
+    health::inspect(&current(&state)?)
+}
+#[tauri::command]
+fn undo_last_edit(state: State<AppState>) -> Result<BatchResult, String> {
+    let mut conn = db(&current(&state)?)?;
+    let edit:Option<(i64,String,String,String)>=conn.query_row("SELECT e.id,e.asset_id,e.field,e.old_value FROM asset_edits e WHERE NOT EXISTS(SELECT 1 FROM undone_asset_edits u WHERE u.edit_id=e.id)ORDER BY e.id DESC LIMIT 1",[],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).optional().map_err(|error|error.to_string())?;
+    let Some((id, asset, field, old)) = edit else {
+        return Ok(BatchResult { affected: 0 });
+    };
+    let tx = conn.transaction().map_err(|error| error.to_string())?;
+    match field.as_str() {
+        "captured_at" => {
+            tx.execute(
+                "UPDATE assets SET captured_at=?2,date_source='user_corrected' WHERE id=?1",
+                params![asset, old],
+            )
+            .map_err(|error| error.to_string())?;
+        }
+        "user_state" => {
+            let value: (bool, i64, bool, String) =
+                serde_json::from_str(&old).map_err(|error| error.to_string())?;
+            tx.execute("INSERT INTO asset_user_state(asset_id,favorite,rating,review_later,description,updated_at)VALUES(?1,?2,?3,?4,?5,?6)ON CONFLICT(asset_id)DO UPDATE SET favorite=excluded.favorite,rating=excluded.rating,review_later=excluded.review_later,description=excluded.description,updated_at=excluded.updated_at",params![asset,value.0,value.1,value.2,value.3,Utc::now().to_rfc3339()]).map_err(|error|error.to_string())?;
+        }
+        _ => return Err("A última alteração ainda não possui reversão automática".into()),
+    }
+    tx.execute(
+        "INSERT INTO undone_asset_edits(edit_id,undone_at)VALUES(?1,?2)",
+        params![id, Utc::now().to_rfc3339()],
+    )
+    .map_err(|error| error.to_string())?;
+    tx.commit().map_err(|error| error.to_string())?;
+    Ok(BatchResult { affected: 1 })
+}
+#[tauri::command]
 fn list_assets(query: String, state: State<AppState>) -> Result<Vec<MediaAsset>, String> {
     let cfg = current(&state)?;
     let conn = db(&cfg)?;
@@ -878,6 +916,14 @@ fn update_duplicate_decision(
     Ok(BatchResult { affected })
 }
 #[tauri::command]
+fn create_cleanup_plan(state: State<AppState>) -> Result<CleanupPlan, String> {
+    duplicates::create_plan(&current(&state)?)
+}
+#[tauri::command]
+fn export_cleanup_plan(plan_id: String, state: State<AppState>) -> Result<ReportExport, String> {
+    duplicates::export_plan(&current(&state)?, &plan_id)
+}
+#[tauri::command]
 fn list_albums(state: State<AppState>) -> Result<Vec<Album>, String> {
     let cfg = current(&state)?;
     let conn = db(&cfg)?;
@@ -1013,6 +1059,47 @@ fn apply_tag(
         affected+=tx.execute("INSERT OR IGNORE INTO asset_tags(asset_id,tag_id)SELECT id,?2 FROM assets WHERE id=?1",params![asset,tag_id]).map_err(|e|e.to_string())? as i64
     }
     tx.commit().map_err(|e| e.to_string())?;
+    Ok(BatchResult { affected })
+}
+#[tauri::command]
+fn list_tags(state: State<AppState>) -> Result<Vec<TagInfo>, String> {
+    let conn = db(&current(&state)?)?;
+    let mut statement=conn.prepare("SELECT t.id,t.name,COUNT(at.asset_id)FROM tags t LEFT JOIN asset_tags at ON at.tag_id=t.id GROUP BY t.id ORDER BY LOWER(t.name)").map_err(|error|error.to_string())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok(TagInfo {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                asset_count: row.get(2)?,
+            })
+        })
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    Ok(rows)
+}
+#[tauri::command]
+fn rename_tag(id: String, name: String, state: State<AppState>) -> Result<BatchResult, String> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 80 {
+        return Err("Nome de tag inválido".into());
+    }
+    let conn = db(&current(&state)?)?;
+    let affected = conn
+        .execute("UPDATE tags SET name=?2 WHERE id=?1", params![id, name])
+        .map_err(|error| error.to_string())? as i64;
+    Ok(BatchResult { affected })
+}
+#[tauri::command]
+fn delete_tag(id: String, state: State<AppState>) -> Result<BatchResult, String> {
+    let mut conn = db(&current(&state)?)?;
+    let tx = conn.transaction().map_err(|error| error.to_string())?;
+    tx.execute("DELETE FROM asset_tags WHERE tag_id=?1", [&id])
+        .map_err(|error| error.to_string())?;
+    let affected = tx
+        .execute("DELETE FROM tags WHERE id=?1", [id])
+        .map_err(|error| error.to_string())? as i64;
+    tx.commit().map_err(|error| error.to_string())?;
     Ok(BatchResult { affected })
 }
 #[tauri::command]
@@ -1399,6 +1486,32 @@ fn get_thumbnail(
         }
     }))
 }
+#[tauri::command]
+fn get_media_url(asset_id: String, state: State<AppState>) -> Result<String, String> {
+    if !valid_thumbnail_asset_id(&asset_id) {
+        return Err("Identificador inválido".into());
+    }
+    let cfg = current(&state)?;
+    let conn = db(&cfg)?;
+    let exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM assets WHERE id=?1)",
+            [&asset_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if !exists {
+        return Err("Mídia não encontrada".into());
+    }
+    #[cfg(windows)]
+    {
+        Ok(format!("http://lumina-media.localhost/{asset_id}"))
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(format!("lumina-media://localhost/{asset_id}"))
+    }
+}
 
 fn valid_thumbnail_asset_id(asset: &str) -> bool {
     !asset.is_empty()
@@ -1475,6 +1588,96 @@ pub fn run() {
                     .unwrap(),
             }
         })
+        .register_uri_scheme_protocol("lumina-media", |context, request| {
+            let asset = request.uri().path().trim_start_matches('/');
+            let response = || -> Result<(Vec<u8>, String, u64, u64, u64), String> {
+                if !valid_thumbnail_asset_id(asset) {
+                    return Err("Identificador inválido".into());
+                }
+                let state = context.app_handle().state::<AppState>();
+                let cfg = state
+                    .library
+                    .lock()
+                    .map_err(|_| "Estado indisponível".to_string())?
+                    .clone()
+                    .ok_or_else(|| "Biblioteca não configurada".to_string())?;
+                let conn = db(&cfg)?;
+                let (stored, extension): (String, String) = conn
+                    .query_row(
+                        "SELECT master_path,LOWER(extension)FROM assets WHERE id=?1",
+                        [asset],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .map_err(|_| "Mídia não encontrada".to_string())?;
+                let canonical = fs::canonicalize(&stored).map_err(|error| error.to_string())?;
+                let master =
+                    fs::canonicalize(&cfg.master_path).map_err(|error| error.to_string())?;
+                if !canonical.starts_with(master) {
+                    return Err("Mídia fora do acervo".into());
+                }
+                let mut file = fs::File::open(canonical).map_err(|error| error.to_string())?;
+                let total = file.metadata().map_err(|error| error.to_string())?.len();
+                let range = request
+                    .headers()
+                    .get("range")
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.strip_prefix("bytes="))
+                    .and_then(|value| value.split_once('-'))
+                    .map(|(start, end)| {
+                        (start.parse::<u64>().unwrap_or(0), end.parse::<u64>().ok())
+                    });
+                let (start, end) = range
+                    .map(|(start, end)| {
+                        (
+                            start,
+                            end.unwrap_or_else(|| {
+                                (start + 4 * 1024 * 1024 - 1).min(total.saturating_sub(1))
+                            }),
+                        )
+                    })
+                    .unwrap_or((0, total.saturating_sub(1)));
+                let end = end.min(total.saturating_sub(1));
+                let length = end.saturating_sub(start) + 1;
+                file.seek(SeekFrom::Start(start))
+                    .map_err(|error| error.to_string())?;
+                let mut bytes = vec![0; length as usize];
+                file.read_exact(&mut bytes)
+                    .map_err(|error| error.to_string())?;
+                let mime = match extension.as_str() {
+                    "mp4" | "m4v" => "video/mp4",
+                    "mov" => "video/quicktime",
+                    "webm" => "video/webm",
+                    "jpg" | "jpeg" => "image/jpeg",
+                    "png" => "image/png",
+                    "gif" => "image/gif",
+                    "webp" => "image/webp",
+                    _ => "application/octet-stream",
+                }
+                .to_string();
+                Ok((bytes, mime, start, end, total))
+            };
+            match response() {
+                Ok((bytes, mime, start, end, total)) => {
+                    let partial = start > 0 || end + 1 < total;
+                    let mut builder = tauri::http::Response::builder()
+                        .status(if partial { 206 } else { 200 })
+                        .header("Content-Type", mime)
+                        .header("Accept-Ranges", "bytes")
+                        .header("Content-Length", bytes.len().to_string())
+                        .header("Cache-Control", "private, max-age=3600");
+                    if partial {
+                        builder =
+                            builder.header("Content-Range", format!("bytes {start}-{end}/{total}"));
+                    }
+                    builder.body(bytes).unwrap()
+                }
+                Err(error) => tauri::http::Response::builder()
+                    .status(404)
+                    .header("Content-Type", "text/plain; charset=utf-8")
+                    .body(error.into_bytes())
+                    .unwrap(),
+            }
+        })
         .plugin(tauri_plugin_dialog::init())
         .manage(manager)
         .manage(AppState {
@@ -1493,15 +1696,22 @@ pub fn run() {
             list_sources,
             start_source_sync,
             get_review_summary,
+            get_library_health,
+            undo_last_edit,
             list_assets,
             search_gallery,
             list_duplicates,
             update_duplicate_decision,
+            create_cleanup_plan,
+            export_cleanup_plan,
             list_albums,
             list_jobs,
             create_album,
             add_assets_to_album,
             apply_tag,
+            list_tags,
+            rename_tag,
+            delete_tag,
             update_capture_date,
             update_user_state,
             list_saved_views,
@@ -1532,6 +1742,7 @@ pub fn run() {
             export_job_report,
             export_diagnostics,
             get_thumbnail,
+            get_media_url,
             rebuild_thumbnail_cache,
             audit_thumbnail_cache,
             clear_thumbnail_cache

@@ -298,6 +298,9 @@ pub fn open(path: &Path) -> Result<Connection> {
                id TEXT PRIMARY KEY,kind TEXT NOT NULL,payload TEXT NOT NULL,undo_payload TEXT,
                state TEXT NOT NULL CHECK(state IN('applied','undone','failed')),
                created_at TEXT NOT NULL,undone_at TEXT);
+             CREATE TABLE undone_asset_edits(
+               edit_id INTEGER PRIMARY KEY REFERENCES asset_edits(id) ON DELETE CASCADE,
+               undone_at TEXT NOT NULL);
              CREATE TABLE cleanup_plans(
                id TEXT PRIMARY KEY,state TEXT NOT NULL CHECK(state IN('draft','validated','exported','superseded')),
                summary_json TEXT NOT NULL,created_at TEXT NOT NULL,validated_at TEXT);
