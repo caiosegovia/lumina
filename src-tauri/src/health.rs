@@ -1,5 +1,6 @@
 use crate::{catalog, models::*};
 use std::path::Path;
+use std::time::Duration;
 
 pub fn inspect(cfg: &LibraryConfig) -> Result<LibraryHealth, String> {
     let conn = catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite"))
@@ -36,7 +37,7 @@ pub fn inspect(cfg: &LibraryConfig) -> Result<LibraryHealth, String> {
             |row| row.get(0),
         )
         .unwrap_or(0);
-    let checks = vec![
+    let mut checks = vec![
         HealthCheck {
             key: "catalog".into(),
             label: "Integridade do catálogo".into(),
@@ -103,6 +104,33 @@ pub fn inspect(cfg: &LibraryConfig) -> Result<LibraryHealth, String> {
             detail: format!("{} falhas que merecem revisão", failed_jobs + sync_errors),
         },
     ];
+    for (key, label, program, argument) in [
+        ("exiftool", "ExifTool", "exiftool", "-ver"),
+        ("ffmpeg", "FFmpeg", "ffmpeg", "-version"),
+        ("ffprobe", "FFprobe", "ffprobe", "-version"),
+    ] {
+        let result = crate::process::run(
+            crate::process::ProcessSpec::new(label, program)
+                .args([argument])
+                .timeout(Duration::from_secs(3)),
+            &crate::process::CancellationToken::default(),
+        );
+        checks.push(HealthCheck {
+            key: key.into(),
+            label: label.into(),
+            state: if result.is_ok() { "healthy" } else { "error" }.into(),
+            detail: match result {
+                Ok(value) => String::from_utf8_lossy(&value.stdout)
+                    .lines()
+                    .next()
+                    .unwrap_or("Disponível")
+                    .chars()
+                    .take(120)
+                    .collect(),
+                Err(error) => error.message,
+            },
+        });
+    }
     Ok(LibraryHealth {
         overall: if checks.iter().any(|check| check.state == "error") {
             "error"

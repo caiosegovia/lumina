@@ -82,6 +82,11 @@ pub fn open(path: &Path) -> Result<Connection> {
         [],
         |row| row.get::<_, bool>(0),
     )?;
+    let needs_v14 = db.query_row(
+        "SELECT NOT EXISTS(SELECT 1 FROM schema_migrations WHERE version=14)",
+        [],
+        |row| row.get::<_, bool>(0),
+    )?;
     db.execute_batch("BEGIN IMMEDIATE;
       CREATE TABLE IF NOT EXISTS job_items(
         id INTEGER PRIMARY KEY AUTOINCREMENT,job_id TEXT NOT NULL REFERENCES jobs(id),source_path TEXT NOT NULL,filename TEXT NOT NULL,extension TEXT NOT NULL,media_type TEXT NOT NULL,
@@ -315,6 +320,15 @@ pub fn open(path: &Path) -> Result<Connection> {
              COMMIT;",
         )?;
     }
+    if needs_v14 {
+        db.execute_batch("BEGIN IMMEDIATE;
+          ALTER TABLE occurrence_decisions RENAME TO occurrence_decisions_v13;
+          CREATE TABLE occurrence_decisions(occurrence_id TEXT PRIMARY KEY REFERENCES occurrences(id) ON DELETE CASCADE,decision TEXT NOT NULL CHECK(decision IN('keep','review','remove_candidate')),reason TEXT,decided_at TEXT NOT NULL);
+          INSERT OR IGNORE INTO occurrence_decisions SELECT CAST(old.occurrence_id AS TEXT),old.decision,old.reason,old.decided_at FROM occurrence_decisions_v13 old JOIN occurrences o ON o.id=CAST(old.occurrence_id AS TEXT);
+          DROP TABLE occurrence_decisions_v13;
+          INSERT INTO schema_migrations(version,applied_at)VALUES(14,datetime('now'));
+          COMMIT;")?;
+    }
     if needs_v11 {
         db.execute_batch("DROP TRIGGER IF EXISTS dashboard_asset_shape_invalidate; DROP TRIGGER IF EXISTS dashboard_asset_shape_rollup;
       CREATE TRIGGER dashboard_asset_shape_rollup AFTER UPDATE OF captured_at,media_type,extension,camera,bytes ON assets BEGIN
@@ -409,7 +423,7 @@ pub fn open(path: &Path) -> Result<Connection> {
             )?;
         }
     }
-    db.pragma_update(None, "user_version", 13)?;
+    db.pragma_update(None, "user_version", 14)?;
     db.execute_batch("PRAGMA optimize;")?;
     db.execute(
         "UPDATE jobs SET state='waiting_space',stage='space_check',finished_at=NULL WHERE state='failed' AND processed_items=0 AND interruption_reason LIKE 'Espaço insuficiente:%'",
@@ -621,6 +635,57 @@ mod tests {
     }
 
     #[test]
+    fn failed_v13_migration_rolls_back_every_new_object() {
+        let root = std::env::temp_dir().join(Uuid::new_v4().to_string());
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("rollback.sqlite");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY,applied_at TEXT NOT NULL);WITH RECURSIVE versions(value)AS(SELECT 1 UNION ALL SELECT value+1 FROM versions WHERE value<12)INSERT INTO schema_migrations SELECT value,datetime('now')FROM versions;CREATE TABLE source_inventory(incompatible TEXT);").unwrap();
+        drop(conn);
+        assert!(open(&path).is_err());
+        let conn = Connection::open(&path).unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*)FROM schema_migrations WHERE version=13",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(conn.query_row("SELECT COUNT(*)FROM sqlite_master WHERE type='table' AND name='source_sync_settings'",[],|row|row.get::<_,i64>(0)).unwrap(),0);
+        drop(conn);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn v13_snapshot_migrates_occurrence_decisions_to_text_keys() {
+        let root = std::env::temp_dir().join(Uuid::new_v4().to_string());
+        fs::create_dir_all(&root).unwrap();
+        let seed = root.join("seed.sqlite");
+        drop(open(&seed).unwrap());
+        let snapshot = root.join("v13.sqlite");
+        fs::copy(&seed, &snapshot).unwrap();
+        let conn = Connection::open(&snapshot).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=OFF;DELETE FROM schema_migrations WHERE version=14;ALTER TABLE occurrence_decisions RENAME TO occurrence_decisions_new;CREATE TABLE occurrence_decisions(occurrence_id INTEGER PRIMARY KEY REFERENCES occurrences(id)ON DELETE CASCADE,decision TEXT NOT NULL CHECK(decision IN('keep','review','remove_candidate')),reason TEXT,decided_at TEXT NOT NULL);DROP TABLE occurrence_decisions_new;PRAGMA user_version=13;").unwrap();
+        drop(conn);
+        let conn = open(&snapshot).unwrap();
+        let key_type:String=conn.query_row("SELECT type FROM pragma_table_info('occurrence_decisions')WHERE name='occurrence_id'",[],|row|row.get(0)).unwrap();
+        assert_eq!(key_type, "TEXT");
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*)FROM schema_migrations WHERE version=14",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        drop(conn);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn catalog_handles_one_hundred_thousand_assets() {
         let root = std::env::temp_dir().join(Uuid::new_v4().to_string());
         fs::create_dir_all(&root).unwrap();
@@ -628,13 +693,13 @@ mod tests {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            13
+            14
         );
         assert_eq!(
             db.query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row
                 .get::<_, i64>(0))
                 .unwrap(),
-            12
+            14
         );
         let technical_columns = db
             .prepare("PRAGMA table_info(asset_technical_metadata)")

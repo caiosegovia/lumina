@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 $workspace=(Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$zip=(Resolve-Path (Join-Path $workspace "artifacts\Lumina-0.14.0-beta.1-portable-windows-x64.zip")).Path
+$zip=(Resolve-Path (Join-Path $workspace "artifacts\Lumina-0.14.0-beta.2-portable-windows-x64.zip")).Path
 $extract=Join-Path $env:TEMP ("Lumina-014-Beta-Smoke-"+[guid]::NewGuid().ToString("N"))
 Expand-Archive $zip $extract
 $manifest=Get-Content (Join-Path $extract "MANIFEST.json") -Raw|ConvertFrom-Json

@@ -184,6 +184,7 @@ pub struct ReviewSummary {
     pub incomplete_metadata: i64,
     pub pending_protection: i64,
     pub undecided_duplicates: i64,
+    pub technical_failures: i64,
 }
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -228,6 +229,29 @@ pub struct MediaAsset {
     pub rating: i64,
     pub review_later: bool,
     pub description: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssetDetails {
+    pub detected_format: Option<String>,
+    pub mime: Option<String>,
+    pub container: Option<String>,
+    pub codec: Option<String>,
+    pub audio_codec: Option<String>,
+    pub frame_rate: Option<f64>,
+    pub bitrate: Option<i64>,
+    pub pixel_format: Option<String>,
+    pub lens: Option<String>,
+    pub iso: Option<i64>,
+    pub aperture: Option<f64>,
+    pub exposure: Option<String>,
+    pub focal_length: Option<f64>,
+    pub orientation: Option<i64>,
+    pub color_profile: Option<String>,
+    pub support_level: Option<String>,
+    pub inventory_state: Option<String>,
+    pub inventory_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -434,8 +458,10 @@ pub struct ImportEvent {
 }
 #[derive(Serialize)]
 pub struct Occurrence {
+    pub id: String,
     pub source: String,
     pub path: String,
+    pub decision: Option<String>,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]

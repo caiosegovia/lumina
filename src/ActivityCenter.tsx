@@ -21,7 +21,8 @@ const stageLabel: Record<string, string> = {
   backing_up: "Finalizando a cópia de proteção", ready: "Análise pronta",
   space_check: "Espaço insuficiente para continuar",
   protection_pending:"Acervo pronto; proteção pendente", backup_space_check:"Aguardando espaço na réplica",
-  completed: "Importação concluída"
+  completed: "Importação concluída",
+  sync_inventory:"Preparando atualização da fonte",sync_reconcile:"Comparando fonte e catálogo"
 };
 
 function elapsed(job: JobOverview) {

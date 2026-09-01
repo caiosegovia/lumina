@@ -733,34 +733,7 @@ fn get_library_health(state: State<AppState>) -> Result<LibraryHealth, String> {
 }
 #[tauri::command]
 fn undo_last_edit(state: State<AppState>) -> Result<BatchResult, String> {
-    let mut conn = db(&current(&state)?)?;
-    let edit:Option<(i64,String,String,String)>=conn.query_row("SELECT e.id,e.asset_id,e.field,e.old_value FROM asset_edits e WHERE NOT EXISTS(SELECT 1 FROM undone_asset_edits u WHERE u.edit_id=e.id)ORDER BY e.id DESC LIMIT 1",[],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).optional().map_err(|error|error.to_string())?;
-    let Some((id, asset, field, old)) = edit else {
-        return Ok(BatchResult { affected: 0 });
-    };
-    let tx = conn.transaction().map_err(|error| error.to_string())?;
-    match field.as_str() {
-        "captured_at" => {
-            tx.execute(
-                "UPDATE assets SET captured_at=?2,date_source='user_corrected' WHERE id=?1",
-                params![asset, old],
-            )
-            .map_err(|error| error.to_string())?;
-        }
-        "user_state" => {
-            let value: (bool, i64, bool, String) =
-                serde_json::from_str(&old).map_err(|error| error.to_string())?;
-            tx.execute("INSERT INTO asset_user_state(asset_id,favorite,rating,review_later,description,updated_at)VALUES(?1,?2,?3,?4,?5,?6)ON CONFLICT(asset_id)DO UPDATE SET favorite=excluded.favorite,rating=excluded.rating,review_later=excluded.review_later,description=excluded.description,updated_at=excluded.updated_at",params![asset,value.0,value.1,value.2,value.3,Utc::now().to_rfc3339()]).map_err(|error|error.to_string())?;
-        }
-        _ => return Err("A última alteração ainda não possui reversão automática".into()),
-    }
-    tx.execute(
-        "INSERT INTO undone_asset_edits(edit_id,undone_at)VALUES(?1,?2)",
-        params![id, Utc::now().to_rfc3339()],
-    )
-    .map_err(|error| error.to_string())?;
-    tx.commit().map_err(|error| error.to_string())?;
-    Ok(BatchResult { affected: 1 })
+    review::undo_last(&current(&state)?)
 }
 #[tauri::command]
 fn list_assets(query: String, state: State<AppState>) -> Result<Vec<MediaAsset>, String> {
@@ -837,47 +810,7 @@ async fn search_gallery(
 }
 #[tauri::command]
 fn list_duplicates(state: State<AppState>) -> Result<Vec<DuplicateGroup>, String> {
-    let cfg = current(&state)?;
-    let conn = db(&cfg)?;
-    let mut stmt=conn.prepare("SELECT a.id,a.hash,a.filename,a.bytes,a.protection_state,(SELECT COUNT(*) FROM active_occurrences o WHERE o.asset_id=a.id),(SELECT decision FROM duplicate_decisions d WHERE d.asset_id=a.id) FROM assets a WHERE(SELECT COUNT(*) FROM active_occurrences o WHERE o.asset_id=a.id)>1 ORDER BY a.captured_at DESC").map_err(|e|e.to_string())?;
-    let rows = stmt
-        .query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, i64>(3)?,
-                r.get::<_, String>(4)?,
-                r.get::<_, i64>(5)?,
-                r.get::<_, Option<String>>(6)?,
-            ))
-        })
-        .map_err(|e| e.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
-    drop(stmt);
-    Ok(rows
-        .into_iter()
-        .map(|r| DuplicateGroup {
-            asset_id: r.0.clone(),
-            hash: r.1,
-            filename: r.2,
-            bytes: r.3,
-            additional_bytes: r.3 * (r.5 - 1),
-            reclaimable_bytes: if r.4 == "replica_verified" {
-                r.3 * (r.5 - 1)
-            } else {
-                0
-            },
-            safety: if r.4 == "replica_verified" {
-                "eligible_for_review".into()
-            } else {
-                "protection_required".into()
-            },
-            occurrences: engine::duplicate_occurrences(&conn, &r.0),
-            decision: r.6,
-        })
-        .collect())
+    duplicates::list(&current(&state)?)
 }
 #[tauri::command]
 fn update_duplicate_decision(
@@ -886,34 +819,15 @@ fn update_duplicate_decision(
     reason: String,
     state: State<AppState>,
 ) -> Result<BatchResult, String> {
-    if !matches!(
-        decision.as_str(),
-        "keep_all" | "review" | "remove_candidates"
-    ) {
-        return Err("Decisão de duplicata inválida".into());
-    }
-    if reason.chars().count() > 500 {
-        return Err("Motivo muito longo".into());
-    }
-    let conn = db(&current(&state)?)?;
-    if decision == "remove_candidates" {
-        let eligible: bool = conn
-            .query_row(
-                "SELECT protection_state='replica_verified' AND (SELECT COUNT(*) FROM active_occurrences WHERE asset_id=assets.id)>1 FROM assets WHERE id=?1",
-                [&asset_id],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|error| error.to_string())?
-            .unwrap_or(false);
-        if !eligible {
-            return Err(
-                "A réplica precisa estar verificada antes de marcar cópias candidatas".into(),
-            );
-        }
-    }
-    let affected=conn.execute("INSERT INTO duplicate_decisions(asset_id,decision,reason,decided_at)SELECT id,?2,?3,?4 FROM assets WHERE id=?1 ON CONFLICT(asset_id)DO UPDATE SET decision=excluded.decision,reason=excluded.reason,decided_at=excluded.decided_at",params![asset_id,decision,reason,Utc::now().to_rfc3339()]).map_err(|error|error.to_string())? as i64;
-    Ok(BatchResult { affected })
+    duplicates::decide_group(&current(&state)?, &asset_id, &decision, &reason)
+}
+#[tauri::command]
+fn update_occurrence_decision(
+    occurrence_id: String,
+    decision: String,
+    state: State<AppState>,
+) -> Result<BatchResult, String> {
+    duplicates::decide_occurrence(&current(&state)?, &occurrence_id, &decision)
 }
 #[tauri::command]
 fn create_cleanup_plan(state: State<AppState>) -> Result<CleanupPlan, String> {
@@ -1002,6 +916,29 @@ fn create_album(name: String, state: State<AppState>) -> Result<Album, String> {
         asset_count: 0,
         cover: None,
     })
+}
+#[tauri::command]
+fn rename_album(id: String, name: String, state: State<AppState>) -> Result<BatchResult, String> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 100 {
+        return Err("Nome de álbum inválido".into());
+    }
+    let affected = db(&current(&state)?)?
+        .execute("UPDATE albums SET name=?2 WHERE id=?1", params![id, name])
+        .map_err(|error| error.to_string())? as i64;
+    Ok(BatchResult { affected })
+}
+#[tauri::command]
+fn delete_album(id: String, state: State<AppState>) -> Result<BatchResult, String> {
+    let mut conn = db(&current(&state)?)?;
+    let tx = conn.transaction().map_err(|error| error.to_string())?;
+    tx.execute("DELETE FROM album_assets WHERE album_id=?1", [&id])
+        .map_err(|error| error.to_string())?;
+    let affected = tx
+        .execute("DELETE FROM albums WHERE id=?1", [id])
+        .map_err(|error| error.to_string())? as i64;
+    tx.commit().map_err(|error| error.to_string())?;
+    Ok(BatchResult { affected })
 }
 #[tauri::command]
 fn add_assets_to_album(
@@ -1254,6 +1191,24 @@ fn delete_saved_view(id: String, state: State<AppState>) -> Result<BatchResult, 
     let conn = db(&current(&state)?)?;
     let affected = conn
         .execute("DELETE FROM saved_views WHERE id=?1", [id])
+        .map_err(|error| error.to_string())? as i64;
+    Ok(BatchResult { affected })
+}
+#[tauri::command]
+fn rename_saved_view(
+    id: String,
+    name: String,
+    state: State<AppState>,
+) -> Result<BatchResult, String> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 100 {
+        return Err("Nome de visão inválido".into());
+    }
+    let affected = db(&current(&state)?)?
+        .execute(
+            "UPDATE saved_views SET name=?2,updated_at=?3 WHERE id=?1",
+            params![id, name, Utc::now().to_rfc3339()],
+        )
         .map_err(|error| error.to_string())? as i64;
     Ok(BatchResult { affected })
 }
@@ -1513,6 +1468,15 @@ fn get_media_url(asset_id: String, state: State<AppState>) -> Result<String, Str
     }
 }
 
+#[tauri::command]
+fn get_asset_details(asset_id: String, state: State<AppState>) -> Result<AssetDetails, String> {
+    if !valid_thumbnail_asset_id(&asset_id) {
+        return Err("Identificador inválido".into());
+    }
+    let conn = db(&current(&state)?)?;
+    conn.query_row("SELECT t.detected_format,t.mime,t.container,t.codec,t.audio_codec,t.frame_rate,t.bitrate,t.pixel_format,t.lens,t.iso,t.aperture,t.exposure,t.focal_length,t.orientation,t.color_profile,t.support_level,t.inventory_state,t.inventory_error FROM assets a LEFT JOIN asset_technical_metadata t ON t.asset_id=a.id WHERE a.id=?1",[asset_id],|row|Ok(AssetDetails{detected_format:row.get(0)?,mime:row.get(1)?,container:row.get(2)?,codec:row.get(3)?,audio_codec:row.get(4)?,frame_rate:row.get(5)?,bitrate:row.get(6)?,pixel_format:row.get(7)?,lens:row.get(8)?,iso:row.get(9)?,aperture:row.get(10)?,exposure:row.get(11)?,focal_length:row.get(12)?,orientation:row.get(13)?,color_profile:row.get(14)?,support_level:row.get(15)?,inventory_state:row.get(16)?,inventory_error:row.get(17)?})).map_err(|_|"Mídia não encontrada".to_string())
+}
+
 fn valid_thumbnail_asset_id(asset: &str) -> bool {
     !asset.is_empty()
         && asset
@@ -1702,11 +1666,14 @@ pub fn run() {
             search_gallery,
             list_duplicates,
             update_duplicate_decision,
+            update_occurrence_decision,
             create_cleanup_plan,
             export_cleanup_plan,
             list_albums,
             list_jobs,
             create_album,
+            rename_album,
+            delete_album,
             add_assets_to_album,
             apply_tag,
             list_tags,
@@ -1717,6 +1684,7 @@ pub fn run() {
             list_saved_views,
             save_gallery_view,
             delete_saved_view,
+            rename_saved_view,
             list_events,
             analyze_source,
             consolidate_import,
@@ -1743,6 +1711,7 @@ pub fn run() {
             export_diagnostics,
             get_thumbnail,
             get_media_url,
+            get_asset_details,
             rebuild_thumbnail_cache,
             audit_thumbnail_cache,
             clear_thumbnail_cache

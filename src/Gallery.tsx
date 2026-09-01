@@ -28,7 +28,7 @@ import {
 } from "lucide-react";
 import { api } from "./api";
 import { formatBytes } from "./format";
-import type { Album, GalleryFilters, GalleryResult, MediaAsset, SavedView } from "./types";
+import type { Album, AssetDetails, GalleryFilters, GalleryResult, MediaAsset, SavedView } from "./types";
 const thumbs = new Map<string, string | null>(),
   empty: GalleryFilters = { query: "" };
 type Mode = "grid" | "list";
@@ -289,6 +289,7 @@ export default function Gallery() {
         )}
         {savedViews.length > 0 && <select aria-label="Visões salvas" value={selectedView} onChange={e=>{setSelectedView(e.target.value);const view=savedViews.find(x=>x.id===e.target.value);if(view){setFilters(view.filters);setDraft(view.filters)}}}><option value="">Visões salvas</option>{savedViews.map(view=><option key={view.id} value={view.id}>{view.smartAlbum?"Álbum inteligente · ":""}{view.name}</option>)}</select>}
         {selectedView&&<button aria-label="Excluir visão selecionada" onClick={async()=>{await api.deleteSavedView(selectedView);setSavedViews(current=>current.filter(view=>view.id!==selectedView));setSelectedView("");setNotice("Visão removida")}}><X/> Excluir visão</button>}
+        {selectedView&&<button aria-label="Renomear visão selecionada" onClick={async()=>{const current=savedViews.find(view=>view.id===selectedView);const name=prompt("Novo nome da visão",current?.name);if(name){await api.renameSavedView(selectedView,name);setSavedViews(views=>views.map(view=>view.id===selectedView?{...view,name}:view));setNotice("Visão renomeada")}}}>Renomear</button>}
         <button aria-label="Salvar visão atual" onClick={async()=>{const name=prompt("Nome da visão ou álbum inteligente");if(!name)return;const smartAlbum=confirm("Salvar também como álbum inteligente?");const view=await api.saveView(name,filters,smartAlbum);setSavedViews(v=>[...v.filter(x=>x.id!==view.id&&x.name!==view.name),view]);setNotice("Visão salva")}}><Save/> Salvar visão</button>
         <div className="view-switch">
           <button
@@ -816,14 +817,20 @@ function Preview({
   const [fullscreen, setFullscreen] = useState(false);
   const [previewZoom, setPreviewZoom] = useState(1);
   const [mediaUrl, setMediaUrl] = useState("");
+  const [details, setDetails] = useState<AssetDetails>();
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const drag = useRef<{ x: number; y: number; left: number; top: number }>();
 
   useEffect(() => {
     setDescription(asset.description);
     setPreviewZoom(1);
+    setPan({ x: 0, y: 0 });
     setMediaUrl("");
-    if (asset.mediaType === "video") {
+    setDetails(undefined);
+    if (asset.mediaType !== "raw") {
       api.mediaUrl(asset.id).then(setMediaUrl).catch(() => setMediaUrl(""));
     }
+    api.assetDetails(asset.id).then(setDetails).catch(() => setDetails(undefined));
   }, [asset.id, asset.description]);
 
   useEffect(() => {
@@ -856,11 +863,13 @@ function Preview({
       >
         <X />
       </button>
-      <div className="preview-stage">
+      <div className={`preview-stage ${previewZoom > 1 ? "pannable" : ""}`} onPointerDown={(event)=>{if(previewZoom===1)return;event.currentTarget.setPointerCapture(event.pointerId);drag.current={x:event.clientX,y:event.clientY,left:pan.x,top:pan.y}}} onPointerMove={(event)=>{if(!drag.current)return;setPan({x:drag.current.left+event.clientX-drag.current.x,y:drag.current.top+event.clientY-drag.current.y})}} onPointerUp={(event)=>{drag.current=undefined;event.currentTarget.releasePointerCapture(event.pointerId)}}>
         {asset.mediaType === "video" && mediaUrl ? (
-          <video className={`drawer-video preview-zoom-${previewZoom}`} src={mediaUrl} controls preload="metadata" />
+          <video key={asset.id} className="drawer-video" src={mediaUrl} controls preload="metadata" />
+        ) : asset.mediaType === "photo" && mediaUrl ? (
+          <img key={asset.id} className="drawer-photo" src={mediaUrl} alt={`Prévia de ${asset.filename}`} draggable={false} style={{transform:`translate(${pan.x}px,${pan.y}px) scale(${previewZoom})`}} />
         ) : (
-          <MediaThumb asset={asset} className={`drawer-preview preview-zoom-${previewZoom}`} />
+          <MediaThumb key={asset.id} asset={asset} className={`drawer-preview preview-zoom-${previewZoom}`} />
         )}
         <div className="preview-tools">
           <button aria-label="Diminuir zoom" disabled={previewZoom === 1} onClick={() => setPreviewZoom((value) => Math.max(1, value - 1))}><ZoomOut /></button>
@@ -886,6 +895,7 @@ function Preview({
         </button>
       </div>
       <div className="preview-filmstrip" aria-label="Mídias próximas">
+        <span>Próximas mídias</span>
         {assets.slice(Math.max(0, position - 3), Math.min(assets.length, position + 4)).map((item) => (
           <button key={item.id} className={item.id === asset.id ? "active" : ""} aria-label={`Abrir ${item.filename}`} onClick={() => select(item)}>
             <MediaThumb asset={item} />
@@ -948,13 +958,29 @@ function Preview({
         </p>
       )}
       <hr />
+      <p className="eyebrow">CAPTURA</p>
+      <Info label="Câmera" value={asset.camera || "Não disponível"} />
+      <Info label="Lente" value={details?.lens || "Não disponível"} />
+      <Info label="Exposição" value={formatExposure(details?.exposure)} />
+      <Info label="Abertura" value={details?.aperture ? `f/${details.aperture}` : "Não disponível"} />
+      <Info label="ISO" value={details?.iso?.toString() || "Não disponível"} />
+      <Info label="Distância focal" value={details?.focalLength ? `${details.focalLength} mm` : "Não disponível"} />
+      <Info label="Data obtida de" value={asset.dateSource} />
+      <hr />
+      <p className="eyebrow">ARQUIVO E MÍDIA</p>
       <Info
         label="Tipo"
-        value={`${asset.mediaType} · ${asset.extension.toUpperCase()}`}
+        value={`${asset.mediaType} · ${(details?.detectedFormat || asset.extension).toUpperCase()}`}
       />
+      <Info label="MIME" value={details?.mime || mimeFromExtension(asset.extension)} />
       <Info label="Tamanho" value={formatBytes(asset.bytes)} />
-      <Info label="Câmera" value={asset.camera || "—"} />
-      <Info label="Data obtida de" value={asset.dateSource} />
+      <Info label="Dimensões" value={asset.width && asset.height ? `${asset.width} × ${asset.height} px` : "Não disponível"} />
+      <Info label="Resolução" value={asset.width&&asset.height?`${(asset.width*asset.height/1_000_000).toFixed(1)} MP`:"Não disponível"}/>
+      {asset.duration!=null&&<Info label="Duração" value={formatDuration(asset.duration)} />}
+      {asset.mediaType==="video"&&<><Info label="Contêiner" value={details?.container || "Não disponível"}/><Info label="Codec de vídeo" value={details?.codec || "Não disponível"}/><Info label="Quadros por segundo" value={details?.frameRate ? `${details.frameRate.toFixed(2)} fps` : "Não disponível"}/><Info label="Codec de áudio" value={details?.audioCodec || "Não disponível"}/><Info label="Taxa de bits" value={details?.bitrate ? `${(details.bitrate/1_000_000).toFixed(2)} Mb/s` : "Não disponível"}/></>}
+      <Info label="Perfil de cor" value={details?.colorProfile || "Não disponível"} />
+      <Info label="Orientação" value={details?.orientation?.toString() || "Não disponível"} />
+      {details?.inventoryError&&<p className="notice warning"><AlertTriangle/>Metadados incompletos: {details.inventoryError}</p>}
       <hr />
       <p className="eyebrow">LOCALIZAÇÕES</p>
       <div className="location good">
@@ -990,3 +1016,6 @@ function Info({ label, value }: { label: string; value: string }) {
     </div>
   );
 }
+function formatDuration(seconds:number){const rounded=Math.round(seconds);return `${Math.floor(rounded/60)}:${String(rounded%60).padStart(2,"0")}`}
+function formatExposure(value?:string){if(!value)return "Não disponível";const number=Number(value);if(Number.isFinite(number)&&number>0&&number<1)return `1/${Math.round(1/number)} s`;return `${value}${value.includes("s")?"":" s"}`}
+function mimeFromExtension(extension:string){return ({jpg:"image/jpeg",jpeg:"image/jpeg",png:"image/png",gif:"image/gif",webp:"image/webp",tif:"image/tiff",tiff:"image/tiff",heic:"image/heic",heif:"image/heif",avif:"image/avif",mp4:"video/mp4",m4v:"video/mp4",mov:"video/quicktime",webm:"video/webm",mkv:"video/x-matroska",avi:"video/x-msvideo"} as Record<string,string>)[extension.toLowerCase()]||"application/octet-stream"}

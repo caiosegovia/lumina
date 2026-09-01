@@ -266,4 +266,24 @@ mod tests {
         drop(conn);
         fs::remove_dir_all(root).unwrap();
     }
+    #[test]
+    fn offline_source_fails_before_a_job_is_created() {
+        let (root, cfg, source_id) = fixture();
+        let source = Path::new(&cfg.master_path).parent().unwrap().join("source");
+        fs::remove_dir_all(&source).unwrap();
+        let error = queue(&cfg, &source_id).unwrap_err();
+        assert!(error.contains("offline"));
+        let conn = catalog::open(&catalog_path(&cfg)).unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*)FROM jobs WHERE job_kind='source_sync'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+        drop(conn);
+        fs::remove_dir_all(root).unwrap();
+    }
 }

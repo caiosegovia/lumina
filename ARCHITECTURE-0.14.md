@@ -23,4 +23,4 @@ catalog + jobs + media + storage/process
 
 ## Estratégia de entrega
 
-Cada bloco entra na mesma branch beta com testes próprios. A versão só recebe o sufixo `beta.1` e é indicada para o dispositivo oficial quando todos os gates da especificação estiverem verdes.
+Cada bloco entra na mesma branch beta com testes próprios. Uma versão só recebe sufixo beta e é indicada para o dispositivo oficial quando todos os gates da especificação estiverem verdes.

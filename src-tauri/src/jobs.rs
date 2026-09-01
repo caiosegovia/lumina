@@ -652,6 +652,55 @@ mod tests {
     }
 
     #[test]
+    fn interrupted_source_sync_resumes_from_its_durable_job() {
+        let root = std::env::temp_dir().join(format!("lumina-sync-resume-{}", Uuid::new_v4()));
+        let master = root.join("master");
+        let backup = root.join("backup");
+        let source = root.join("source");
+        fs::create_dir_all(master.join(".lumina")).unwrap();
+        fs::create_dir_all(&backup).unwrap();
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("photo.jpg"), b"resume").unwrap();
+        let cfg = LibraryConfig {
+            id: "l".into(),
+            name: "t".into(),
+            master_path: master.to_string_lossy().into(),
+            backup_path: backup.to_string_lossy().into(),
+            created_at: Utc::now().to_rfc3339(),
+        };
+        let conn = catalog::open(&master.join(".lumina/catalog.sqlite")).unwrap();
+        conn.execute("INSERT INTO sources(id,name,path,volume_label,mount_path)VALUES('s','Fonte','key','v',?1)",[source.to_string_lossy().as_ref()]).unwrap();
+        drop(conn);
+        let job = crate::sync::queue(&cfg, "s").unwrap();
+        let conn = catalog::open(&master.join(".lumina/catalog.sqlite")).unwrap();
+        conn.execute("UPDATE jobs SET state='interrupted' WHERE id=?1", [&job])
+            .unwrap();
+        drop(conn);
+        let manager = JobManager::new();
+        manager.resume(cfg.clone(), job.clone()).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let conn = catalog::open(&master.join(".lumina/catalog.sqlite")).unwrap();
+            let state: String = conn
+                .query_row("SELECT state FROM jobs WHERE id=?1", [&job], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            drop(conn);
+            if state == "completed" {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "sincronização não retomou: {state}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(source.join("photo.jpg").is_file());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn thumbnail_maintenance_recovers_silently_and_deduplicates_legacy_work() {
         let root = std::env::temp_dir().join(format!("lumina-thumbs-restart-{}", Uuid::new_v4()));
         let master = root.join("master");

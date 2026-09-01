@@ -296,6 +296,8 @@ const stageText = (stage: string, state?: string) =>
               thumbnail: "Preparando a galeria",
               backup: "Criando a cópia de proteção",
               backing_up: "Finalizando a cópia de proteção",
+              sync_inventory: "Preparando atualização da fonte",
+              sync_reconcile: "Comparando fonte e catálogo",
               completed: "Trabalho concluído",
             } as Record<string, string>
           )[stage] || "Processando suas mídias";
@@ -394,11 +396,12 @@ function ReviewCenter({ navigate }: { navigate: (view: View) => void }) {
     {label:"Datas suspeitas",value:summary?.suspiciousDates??0,detail:"Datas obtidas do arquivo ou fora do intervalo esperado",action:()=>open({dateSuspicious:true})},
     {label:"Previews pendentes",value:summary?.missingPreviews??0,detail:"Miniaturas ausentes ou com falha",action:()=>navigate("protection")},
     {label:"Metadados incompletos",value:summary?.incompleteMetadata??0,detail:"Informações técnicas ainda não enriquecidas",action:()=>navigate("activity")},
+    {label:"Falhas técnicas",value:summary?.technicalFailures??0,detail:"Previews ou metadados que precisam de uma nova tentativa",action:()=>navigate("activity")},
     {label:"Proteção pendente",value:summary?.pendingProtection??0,detail:"Mídias sem réplica verificada",action:()=>navigate("protection")},
     {label:"Duplicatas sem decisão",value:summary?.undecidedDuplicates??0,detail:"Grupos exatos aguardando revisão",action:()=>navigate("duplicates")},
   ];
   return <>
-    <div className="section-heading"><div><h2>Central de revisão</h2><p>Tudo que merece uma decisão humana, reunido por prioridade.</p></div><div className="activity-actions"><button onClick={async()=>{const result=await api.undoLastEdit();setNotice(result.affected?"Última alteração desfeita.":"Nenhuma alteração para desfazer.");setSummary(await api.reviewSummary())}}>Desfazer última alteração</button><button onClick={()=>api.reviewSummary().then(setSummary)}><RefreshCw/>Atualizar</button></div></div>
+    <div className="section-heading"><div><h2>Central de revisão</h2><p>Tudo que merece uma decisão humana, reunido por prioridade.</p></div><div className="activity-actions"><button onClick={async()=>{const result=await api.rebuildCache();setNotice(`${result.generated} previews reparados · ${result.failed} falhas`);setSummary(await api.reviewSummary())}}>Reparar previews</button><button onClick={async()=>{await api.startFormatEnrichment();setNotice("Complementação de metadados iniciada em segundo plano. Acompanhe em Atividade.")}}>Completar metadados</button><button onClick={async()=>{const result=await api.undoLastEdit();setNotice(result.affected?"Última alteração desfeita.":"Nenhuma alteração para desfazer.");setSummary(await api.reviewSummary())}}>Desfazer última alteração</button><button onClick={()=>api.reviewSummary().then(setSummary)}><RefreshCw/>Atualizar</button></div></div>
     {notice&&<div className="notice" role="status">{notice}</div>}
     <div className="review-grid">{cards.map(card=><button key={card.label} onClick={card.action}><span>{card.label}</span><strong>{card.value.toLocaleString("pt-BR")}</strong><small>{card.detail}</small><ChevronRight/></button>)}</div>
   </>;
@@ -708,6 +711,7 @@ function Sources({ onImport }: { onImport: () => void }) {
   const [items, setItems] = useState<Source[]>([]);
   const [syncing, setSyncing] = useState<Record<string, JobProgress>>({});
   const [notice, setNotice] = useState("");
+  const [syncingAll,setSyncingAll]=useState(false);
   useEffect(() => {
     api.sources().then(setItems);
   }, []);
@@ -740,10 +744,7 @@ function Sources({ onImport }: { onImport: () => void }) {
           <h2>De onde vêm suas mídias</h2>
           <p>Fontes continuam inventariadas quando offline.</p>
         </div>
-        <button className="primary" onClick={onImport}>
-          <Plus />
-          Adicionar fonte
-        </button>
+        <div className="activity-actions"><button disabled={syncingAll||!items.some(source=>source.available)} onClick={async()=>{setSyncingAll(true);for(const source of items.filter(item=>item.available)){await synchronize(source)}setSyncingAll(false);setNotice("Todas as fontes conectadas foram atualizadas.")}}><RefreshCw className={syncingAll?"spin":""}/>{syncingAll?"Atualizando fontes":"Atualizar conectadas"}</button><button className="primary" onClick={onImport}><Plus />Adicionar fonte</button></div>
       </div>
       {notice && <div className="notice" role="status">{notice}</div>}
       <div className="source-list">
@@ -854,13 +855,15 @@ function Duplicates() {
               <h3>{g.filename}</h3>
               <p>{formatBytes(g.bytes)}</p>
               <p>{formatBytes(g.additionalBytes)} em ocorrências adicionais · {g.safety==="eligible_for_review"?`${formatBytes(g.reclaimableBytes)} aptos para futura revisão`:"proteja o acervo antes de decidir"}</p>
-              <div>
+              <div className="occurrence-comparison" aria-label={`Comparação de ${g.filename}`}>
                 {g.occurrences.map((o, i) => (
-                  <span key={i}>
-                    <HardDrive />
-                    {o.source}
-                    <small>{o.path}</small>
-                  </span>
+                  <section key={o.id}>
+                    <DuplicateThumb assetId={g.assetId} filename={`${g.filename} em ${o.source}`} />
+                    <strong><HardDrive />{i===0?"Referência":"Ocorrência adicional"}</strong>
+                    <span>{o.source}<small>{o.path}</small></span>
+                    <small>{g.safety==="eligible_for_review"?"Réplica verificada":"Proteção pendente"}</small>
+                    <div><button className={o.decision==="keep"?"active":""} onClick={async()=>{await api.updateOccurrenceDecision(o.id,"keep");setItems(current=>current.map(group=>group.assetId===g.assetId?{...group,occurrences:group.occurrences.map(item=>item.id===o.id?{...item,decision:"keep"}:item)}:group))}}>Manter</button><button className={o.decision==="review"?"active":""} onClick={async()=>{await api.updateOccurrenceDecision(o.id,"review");setItems(current=>current.map(group=>group.assetId===g.assetId?{...group,occurrences:group.occurrences.map(item=>item.id===o.id?{...item,decision:"review"}:item)}:group))}}>Revisar</button><button disabled={i===0||g.safety!=="eligible_for_review"} className={o.decision==="remove_candidate"?"active":""} onClick={async()=>{await api.updateOccurrenceDecision(o.id,"remove_candidate");setItems(current=>current.map(group=>group.assetId===g.assetId?{...group,occurrences:group.occurrences.map(item=>item.id===o.id?{...item,decision:"remove_candidate"}:item)}:group))}}>Candidata</button></div>
+                  </section>
                 ))}
               </div>
               <div className="duplicate-actions">
@@ -959,15 +962,17 @@ function Albums({navigate}:{navigate:(view:View)=>void}) {
             <div><Search /></div>
             <h3>{view.name}</h3>
             <p>Álbum inteligente · atualizado automaticamente</p>
+            <div className="album-actions"><button onClick={async event=>{event.stopPropagation();const name=prompt("Novo nome",view.name);if(name){await api.renameSavedView(view.id,name);setSmart(await api.savedViews().then(views=>views.filter(item=>item.smartAlbum)))}}}>Renomear</button><button onClick={async event=>{event.stopPropagation();if(confirm(`Excluir ${view.name}?`)){await api.deleteSavedView(view.id);setSmart(current=>current.filter(item=>item.id!==view.id))}}}>Excluir</button></div>
           </article>
         ))}
         {items.map((a) => (
-          <article key={a.id}>
+          <article key={a.id} className="smart-album" onClick={()=>{openGalleryWithFilters({albumId:a.id});navigate("library")}}>
             <div>
               <AlbumIcon />
             </div>
             <h3>{a.name}</h3>
             <p>{a.assetCount} itens</p>
+            <div className="album-actions"><button onClick={async event=>{event.stopPropagation();const name=prompt("Novo nome",a.name);if(name){await api.renameAlbum(a.id,name);load()}}}>Renomear</button><button onClick={async event=>{event.stopPropagation();if(confirm(`Excluir ${a.name}? As mídias permanecerão no acervo.`)){await api.deleteAlbum(a.id);load()}}}>Excluir</button></div>
           </article>
         ))}
       </div>

@@ -1,6 +1,6 @@
-# Lumina 0.14.0-beta.1
+# Lumina 0.14.0-beta.2
 
-O pacote MSI usa a versão técnica `0.14.0-1`, equivalente a esta beta, por exigência do formato Windows Installer.
+O pacote MSI usa a versão técnica `0.14.0-2`, equivalente a esta beta, por exigência do formato Windows Installer.
 
 Beta funcional para homologação no dispositivo oficial. Fontes permanecem somente leitura e o plano de duplicatas nunca exclui arquivos.
 
@@ -8,10 +8,11 @@ Beta funcional para homologação no dispositivo oficial. Fontes permanecem some
 
 - Sincronização incremental e retomável de fontes, com ocorrências presentes/ausentes e reuso de evidências.
 - Central de Revisão com contagens reais, filtros, ações rápidas, avanço e desfazer última edição.
-- Visualizador com navegação por teclado, filmstrip, tela cheia, zoom e reprodução de vídeo por streaming local com suporte a Range.
-- Duplicatas com prévia visual, decisões persistentes, elegibilidade por proteção, simulação e relatório JSON.
-- Visões salvas/álbuns inteligentes, tags gerenciáveis e organização em lote.
-- Saúde operacional de catálogo, discos, fontes, miniaturas, proteção e trabalhos.
+- Visualizador com troca sincronizada do arquivo real, filmstrip identificado, tela cheia, zoom, pan e reprodução de vídeo por streaming local com suporte a Range.
+- Metadados detalhados de captura, arquivo, imagem, vídeo, localização, origem e proteção.
+- Duplicatas com comparação lado a lado, decisões persistentes por grupo e ocorrência, elegibilidade por proteção, simulação e relatório JSON.
+- CRUD de visões salvas, álbuns inteligentes, álbuns manuais e tags, além de organização em lote.
+- Saúde operacional de catálogo, discos, fontes, miniaturas, proteção, trabalhos, ExifTool, FFmpeg e FFprobe.
 
 ## Segurança e limites
 
