@@ -51,9 +51,59 @@ Essa evolução será especificada e prototipada depois da homologação da beta
 
 Situação em `0.15.0-beta.1`:
 
-- Implementados: workspace dividido, inspetor embutido, segmentação fixa, lista operacional responsiva e sequência recolhível.
-- Em validação: convivência grade/lista, preservação do contexto, comportamento em diferentes larguras e regressões do visualizador.
-- Próximo incremento: ordenação, densidade da lista, seleção por intervalo, metadados recolhíveis e comparação lado a lado.
+- Homologados: workspace dividido, inspetor embutido, segmentação fixa, lista operacional responsiva, sequência recolhível e comportamento com grande quantidade de arquivos.
+
+## Próximas entregas — ciclo 0.15
+
+### Beta.2 — produtividade da galeria
+
+- Ordenação persistente no backend, com paginação por cursor coerente para data, nome e tamanho.
+- Densidade confortável e compacta específica para a lista.
+- Seleção por intervalo, selecionar itens carregados e ações em lote mais claras.
+- Cabeçalhos acionáveis com direção de ordenação e descrição acessível.
+- Preservação de posição, seleção e item inspecionado durante as mudanças de representação.
+
+Critérios de saída:
+
+- Nenhuma ordenação é simulada apenas sobre a página já carregada.
+- Grade e lista retornam exatamente a mesma ordem e conjunto.
+- Operações em lote informam escopo, resultado e possibilidade de desfazer.
+- Testes cobrem troca de modo, paginação, seleção por intervalo e catálogos grandes.
+
+### Beta.3 — inspeção e comparação
+
+- Organizar metadados em seções recolhíveis: captura, arquivo, mídia, localização e catálogo.
+- Copiar valores e abrir a localização do arquivo com ação explícita.
+- Comparação lado a lado acionável a partir da galeria e integrada às duplicatas.
+- Sincronizar zoom, navegação e metadados das duas mídias quando fizer sentido.
+- Refinar feedback de preview imediato, geração HD e indisponibilidade.
+
+Critérios de saída:
+
+- Navegação nunca exibe preview ou metadados da mídia anterior.
+- Comparação não infere duplicidade nem permite remoção automática.
+- Valores ausentes são explicados e seções mantêm sua preferência.
+
+### Beta.4 — trabalho invisível e confiabilidade
+
+- Priorizar miniaturas do viewport e aplicar prefetch curto na direção da navegação.
+- Consolidar trabalhos duplicados e retomar manutenção reconstruível sem modal.
+- Controles de impacto para CPU, disco e bateria durante processamento em segundo plano.
+- Histórico local de sincronização, reparo e falhas acionáveis.
+- Diagnóstico exportável sanitizado e roteiro de recuperação validado.
+
+Critérios de saída:
+
+- Abrir o aplicativo nunca exige decisão sobre cache reconstruível.
+- A interação continua prioritária sob carga.
+- Reinício, fonte offline, pouco espaço e falha de ferramenta passam no aplicativo empacotado.
+
+### Fechamento 0.15
+
+- Regressão completa da biblioteca, benchmark de grande volume e validação no dispositivo oficial.
+- Revisão de acessibilidade em 100%, 125% e 150% de escala do Windows.
+- Atualização da baseline visual com capturas aprovadas.
+- MSI, instalador, portátil, hashes, documentação e release publicados juntos.
 
 ## Exploração — 0.15+: descoberta e portabilidade
 

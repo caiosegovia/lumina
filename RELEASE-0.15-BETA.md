@@ -2,6 +2,8 @@
 
 Primeira candidata do novo workspace da galeria.
 
+Status: **homologada em 2026-09-02**, inclusive em teste com grande quantidade de arquivos.
+
 Consulte [DESIGN-0.15-GALLERY.md](DESIGN-0.15-GALLERY.md) para comparar a implementação com a anatomia e os estados esperados.
 
 ## Entregas desta candidata

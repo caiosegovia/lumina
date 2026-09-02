@@ -27,4 +27,6 @@ Data: 2026-09-02. Ambiente: Windows x64.
 | `Lumina_0.15.0-1_x64_en-US.msi` | `07a034ca46e8ebb743960c79f2095168c87f4e6f5a0161c8b24b9444dc4bd4ad` |
 | `Lumina_0.15.0-1_x64-setup.exe` | `9374bbc8279b68504799f92148646b1233b8d55b643d9c9cc6140a5bdb2716b8` |
 
-Esta candidata está tecnicamente liberada para homologação visual e funcional. A promoção para `main` depende do aceite do novo workspace da galeria.
+## Homologação do responsável pelo produto
+
+Em 2026-09-02, a candidata foi testada com uma grande quantidade de arquivos e aprovada quanto ao comportamento, estabilidade e direção do novo workspace. O aceite autoriza a integração à `main`; os incrementos seguintes permanecem evoluções do produto, não bloqueadores desta versão.
