@@ -36,6 +36,19 @@ O ciclo foi ampliado para a beta de revisão e descoberta descrita em [SPEC-0.14
 
 A beta.4 acrescenta o fechamento do ciclo de homologação: preview HD progressivo, EXIF sob demanda, observabilidade de crashes, estados explícitos de duplicatas, progresso real de reparos e redesign do sistema de interação.
 
+## Próxima evolução de UX — galeria unificada
+
+Feedback registrado após a beta.4:
+
+- Redesenhar a visualização em lista para oferecer hierarquia, densidade e leitura de metadados compatíveis com a grade.
+- Substituir a dependência da barra lateral por uma faixa fixa de segmentação dentro da galeria.
+- Fazer a segmentação conviver com grade e lista, preservando a maior área possível para as mídias.
+- Manter filtros, agregadores, busca, ordenação, seleção e contagens no mesmo contexto em ambas as visualizações.
+- Preservar posição, seleção e filtros ao alternar entre grade e lista.
+- Tratar responsividade, navegação por teclado, foco, estados vazios e grandes catálogos como critérios de aceite do redesign.
+
+Essa evolução será especificada e prototipada depois da homologação da beta.4; ela não altera o escopo binário desta candidata.
+
 ## Exploração — 0.15+: descoberta e portabilidade
 
 - Similaridade visual local e explicável.

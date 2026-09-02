@@ -43,3 +43,11 @@ O pacote MSI usa a versão técnica `0.14.0-4`, equivalente à beta.4. Esta é a
 5. Em **Proteção**, confira a nova Saúde e execute o reparo observando o progresso numérico.
 6. Reinicie o aplicativo e confirme persistência de favoritos, tags, álbuns e decisões.
 7. Exporte o diagnóstico e confirme que nenhuma fonte ou mídia foi modificada.
+
+## Feedback visual registrado para o próximo ciclo
+
+- Atualizar a visualização em lista da galeria.
+- Avaliar uma faixa fixa de segmentação integrada à galeria no lugar da barra lateral.
+- Garantir convivência consistente dessa faixa com miniaturas, listagem, filtros e seleção.
+
+Esses itens são evolução posterior à beta.4 e, portanto, devem ser avaliados como direcionamento de produto, não como comportamento esperado deste executável.
