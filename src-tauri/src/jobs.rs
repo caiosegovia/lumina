@@ -28,7 +28,7 @@ struct Inner {
     library: Mutex<Option<LibraryConfig>>,
     thumbnail_worker_active: AtomicBool,
     thumbnail_dispatcher_active: AtomicBool,
-    thumbnail_requests: Mutex<VecDeque<(LibraryConfig, String)>>,
+    thumbnail_requests: Mutex<VecDeque<(LibraryConfig, String, i64)>>,
 }
 #[derive(Clone)]
 struct PendingAnalysis {
@@ -51,12 +51,25 @@ impl JobManager {
             }),
         }
     }
-    pub fn request_thumbnail(&self, cfg: LibraryConfig, asset: String) -> Result<(), String> {
-        self.inner
+    pub fn request_thumbnail(
+        &self,
+        cfg: LibraryConfig,
+        asset: String,
+        priority: i64,
+    ) -> Result<(), String> {
+        let mut requests = self
+            .inner
             .thumbnail_requests
             .lock()
-            .map_err(|_| "Fila de miniaturas indisponível".to_string())?
-            .push_back((cfg, asset));
+            .map_err(|_| "Fila de miniaturas indisponível".to_string())?;
+        if let Some(existing) = requests.iter_mut().find(|(_, queued, _)| queued == &asset) {
+            existing.2 = existing.2.max(priority);
+        } else if priority >= 150 {
+            requests.push_front((cfg, asset, priority));
+        } else {
+            requests.push_back((cfg, asset, priority));
+        }
+        drop(requests);
         if self
             .inner
             .thumbnail_dispatcher_active
@@ -75,7 +88,7 @@ impl JobManager {
                     .lock()
                     .ok()
                     .and_then(|mut queue| queue.pop_front());
-                let Some((cfg, asset)) = request else {
+                let Some((cfg, asset, priority)) = request else {
                     manager
                         .inner
                         .thumbnail_dispatcher_active
@@ -97,7 +110,7 @@ impl JobManager {
                     }
                     break;
                 };
-                if crate::media::enqueue_thumbnail(&cfg, &asset, 100).is_ok() {
+                if crate::media::enqueue_thumbnail(&cfg, &asset, priority).is_ok() {
                     let _ = manager.start_thumbnail_worker(cfg);
                 }
             })

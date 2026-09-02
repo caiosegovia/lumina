@@ -26,6 +26,14 @@ pub struct DashboardStats {
     pub offline_sources: i64,
     pub oldest: Option<String>,
     pub newest: Option<String>,
+    #[serde(default)]
+    pub oldest_photo: Option<String>,
+    #[serde(default)]
+    pub newest_photo: Option<String>,
+    #[serde(default)]
+    pub oldest_video: Option<String>,
+    #[serde(default)]
+    pub newest_video: Option<String>,
     pub master_available_bytes: u64,
     pub backup_available_bytes: u64,
     pub types: Vec<DashboardBreakdown>,
@@ -41,6 +49,8 @@ pub struct DashboardStats {
     pub cameras: Vec<DashboardBreakdown>,
     pub insights: Vec<DashboardInsight>,
     pub latest_benchmark: Option<DashboardBenchmark>,
+    #[serde(default)]
+    pub recent_benchmarks: Vec<DashboardBenchmark>,
     pub snapshot_generated_at: String,
     pub stale: bool,
     pub timings: Vec<DashboardTiming>,
@@ -305,6 +315,7 @@ pub struct GalleryRequest {
     pub filters: GalleryFilters,
     pub cursor: Option<String>,
     pub limit: Option<u32>,
+    pub sort: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

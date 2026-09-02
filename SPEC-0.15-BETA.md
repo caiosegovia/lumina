@@ -25,11 +25,13 @@ A baseline visual normativa deste ciclo está em [DESIGN-0.15-GALLERY.md](DESIGN
 - Estados vazios, carregamento e erro compreensíveis.
 - Build, testes, Clippy, auditoria e smoke do aplicativo empacotado antes da homologação.
 
-## Próximos incrementos do ciclo
+## Escopo consolidado da beta.2
 
-- Ordenação persistente e cabeçalhos interativos.
+- Ordenação persistente no backend, com cursor coerente.
 - Densidade específica para a lista.
 - Seleção por intervalo e seleção do resultado carregado.
 - Painel de metadados organizado por seções recolhíveis.
 - Comparação lado a lado acionável a partir da galeria.
 - Processamento de miniaturas priorizado pelo viewport e totalmente silencioso.
+
+Todos os temas restantes do ciclo 0.15 são entregues juntos na `0.15.0-beta.2`; não existem betas intermediárias de funcionalidade previstas antes da homologação deste pacote.

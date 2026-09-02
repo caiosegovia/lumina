@@ -28,12 +28,13 @@ import {
 } from "lucide-react";
 import { api } from "./api";
 import { formatBytes } from "./format";
-import type { Album, AssetDetails, GalleryFilters, GalleryResult, MediaAsset, SavedView } from "./types";
+import type { Album, AssetDetails, GalleryFilters, GalleryResult, GallerySort, MediaAsset, SavedView } from "./types";
 const thumbs = new Map<string, string | null>(),
   empty: GalleryFilters = { query: "" };
 type Mode = "grid" | "list";
 type Group = "day" | "month" | "year";
 type Zoom = "compact" | "normal" | "large";
+type ListDensity = "compact" | "comfortable";
 const session: {
   filters: GalleryFilters;
   result?: GalleryResult;
@@ -67,16 +68,21 @@ export default function Gallery() {
   const [mode, setMode0] = useState<Mode>(() => saved("lumina-view", "grid")),
     [group, setGroup0] = useState<Group>(() => saved("lumina-group", "month")),
     [zoom, setZoom0] = useState<Zoom>(() => saved("lumina-zoom", "normal")),
+    [sort, setSort0] = useState<GallerySort>(() => saved("lumina-sort", "captured_desc")),
+    [listDensity, setListDensity0] = useState<ListDensity>(() => saved("lumina-list-density", "comfortable")),
     [selection, setSelection] = useState<Set<string>>(new Set()),
     [action, setAction] = useState<"tag" | "album" | "date">(),
+    [comparing, setComparing] = useState(false),
     [notice, setNotice] = useState(""),
+    [undoAvailable, setUndoAvailable] = useState(false),
     [savedViews, setSavedViews] = useState<SavedView[]>([]),
     [selectedView, setSelectedView] = useState(""),
     [refresh, setRefresh] = useState(0);
   const seq = useRef(0),
+    lastSelected = useRef<string>(),
     width = { compact: 145, normal: 190, large: 260 }[zoom],
     [columns, setColumns] = useState(4),
-    signature = JSON.stringify(filters) + refresh;
+    signature = JSON.stringify(filters) + sort + refresh;
   const saveMode = (x: Mode) => {
       localStorage.setItem("lumina-view", x);
       setMode0(x);
@@ -88,6 +94,14 @@ export default function Gallery() {
     saveZoom = (x: Zoom) => {
       localStorage.setItem("lumina-zoom", x);
       setZoom0(x);
+    },
+    saveSort = (x: GallerySort) => {
+      localStorage.setItem("lumina-sort", x);
+      setSort0(x);
+    },
+    saveListDensity = (x: ListDensity) => {
+      localStorage.setItem("lumina-list-density", x);
+      setListDensity0(x);
     };
   const load = useCallback(
     async (cursor?: string) => {
@@ -95,7 +109,7 @@ export default function Gallery() {
       setLoading(true);
       setError("");
       try {
-        const page = await api.gallery(filters, cursor, 100);
+        const page = await api.gallery(filters, cursor, 100, sort);
         if (id !== seq.current) return;
         setResult((previous) =>
           cursor && previous
@@ -192,7 +206,7 @@ export default function Gallery() {
         rows[i]?.kind === "header"
           ? 48
           : mode === "list"
-            ? 70
+            ? listDensity === "compact" ? 58 : 84
             : { compact: 175, normal: 225, large: 295 }[zoom],
       overscan: 5,
       getItemKey: (i) => rows[i]?.key || i,
@@ -209,10 +223,22 @@ export default function Gallery() {
     loading,
     load,
   ]);
-  const toggle = (id: string) =>
+  useEffect(() => {
+    const visibleIds = visible.flatMap(item => { const row=rows[item.index]; return row?.kind === "items" ? row.items.map(asset=>asset.id) : [] });
+    if (visibleIds.length) void api.prefetchThumbnails(visibleIds, 180);
+    const end = visible.at(-1)?.index ?? 0;
+    const nearbyIds = rows.slice(end+1,end+7).flatMap(row=>row.kind === "items" ? row.items.map(asset=>asset.id) : []);
+    if (nearbyIds.length) void api.prefetchThumbnails(nearbyIds, 60);
+  }, [visible.map(item=>item.index).join(), rows]);
+  const toggle = (id: string, range = false) =>
       setSelection((old) => {
         const n = new Set(old);
-        n.has(id) ? n.delete(id) : n.add(id);
+        if (range && lastSelected.current) {
+          const start = assets.findIndex(asset => asset.id === lastSelected.current);
+          const end = assets.findIndex(asset => asset.id === id);
+          if (start >= 0 && end >= 0) assets.slice(Math.min(start,end),Math.max(start,end)+1).forEach(asset => n.add(asset.id));
+        } else n.has(id) ? n.delete(id) : n.add(id);
+        lastSelected.current = id;
         return n;
       }),
     active = Object.entries(filters).filter(
@@ -276,8 +302,12 @@ export default function Gallery() {
           />
         </div>
         <ChoiceMenu icon={<CalendarDays/>} label="Agrupar" value={group} options={[{value:"day",label:"Por dia"},{value:"month",label:"Por mês"},{value:"year",label:"Por ano"}]} onChange={v=>saveGroup(v as Group)}/>
+        <ChoiceMenu icon={<Rows3/>} label="Ordenar" value={sort} options={[{value:"captured_desc",label:"Mais recentes"},{value:"captured_asc",label:"Mais antigas"},{value:"name_asc",label:"Nome A–Z"},{value:"name_desc",label:"Nome Z–A"},{value:"size_desc",label:"Maiores arquivos"},{value:"size_asc",label:"Menores arquivos"}]} onChange={v=>saveSort(v as GallerySort)}/>
         {mode === "grid" && (
           <ChoiceMenu icon={<Rows3/>} label="Tamanho da grade" value={zoom} options={[{value:"compact",label:"Compacta"},{value:"normal",label:"Confortável"},{value:"large",label:"Ampla"}]} onChange={v=>saveZoom(v as Zoom)}/>
+        )}
+        {mode === "list" && (
+          <ChoiceMenu icon={<Rows3/>} label="Densidade da lista" value={listDensity} options={[{value:"comfortable",label:"Confortável"},{value:"compact",label:"Compacta"}]} onChange={v=>saveListDensity(v as ListDensity)}/>
         )}
         {savedViews.length > 0 && <select aria-label="Visões salvas" value={selectedView} onChange={e=>{setSelectedView(e.target.value);const view=savedViews.find(x=>x.id===e.target.value);if(view){setFilters(view.filters);setDraft(view.filters)}}}><option value="">Visões salvas</option>{savedViews.map(view=><option key={view.id} value={view.id}>{view.smartAlbum?"Álbum inteligente · ":""}{view.name}</option>)}</select>}
         {selectedView&&<button aria-label="Excluir visão selecionada" onClick={async()=>{await api.deleteSavedView(selectedView);setSavedViews(current=>current.filter(view=>view.id!==selectedView));setSelectedView("");setNotice("Visão removida")}}><X/> Excluir visão</button>}
@@ -325,17 +355,20 @@ export default function Gallery() {
       {notice && (
         <p className="safe-note" role="status">
           {notice}
+          {undoAvailable && <button onClick={async()=>{const result=await api.undoLastEdit();setNotice(result.affected?"Última alteração desfeita":"Não havia alteração para desfazer");setUndoAvailable(false);setRefresh(value=>value+1)}}>Desfazer</button>}
         </p>
       )}
       {selection.size > 0 && (
         <div className="bulk-bar">
           <strong>{selection.size} selecionadas</strong>
+          <button onClick={() => setSelection(new Set(assets.map(asset=>asset.id)))}>Selecionar carregadas ({assets.length})</button>
           <button onClick={() => setAction("tag")}>Aplicar tag</button>
           <button onClick={() => setAction("album")}>Adicionar ao álbum</button>
           <button onClick={() => setAction("date")}>Corrigir data</button>
           <button onClick={async()=>{const r=await api.updateUserState({assetIds:[...selection],favorite:true});setNotice(r.affected+" favoritas");setSelection(new Set());setRefresh(v=>v+1)}}><Star/> Favoritar</button>
           <button onClick={async()=>{const r=await api.updateUserState({assetIds:[...selection],reviewLater:true});setNotice(r.affected+" marcadas para revisar");setSelection(new Set());setRefresh(v=>v+1)}}><Bookmark/> Revisar depois</button>
-          <button onClick={() => setSelection(new Set())}>Limpar</button>
+          {selection.size === 2 && <button className="primary" onClick={() => setComparing(true)}>Comparar</button>}
+          <button onClick={() => {setSelection(new Set());lastSelected.current=undefined}}>Limpar</button>
         </div>
       )}
       {error && (
@@ -358,7 +391,7 @@ export default function Gallery() {
           </div>
         )}
         <div
-          className={`virtual-gallery ${mode}`}
+          className={`virtual-gallery ${mode} ${mode === "list" ? `density-${listDensity}` : ""}`}
           style={{ height: virtual.getTotalSize(), position: "relative" }}
         >
           {visible.map((v) => {
@@ -392,7 +425,7 @@ export default function Gallery() {
                       asset={a}
                       mode={mode}
                       checked={selection.has(a.id)}
-                      toggle={() => toggle(a.id)}
+                       toggle={(range) => toggle(a.id, range)}
                       open={() =>
                         selection.size ? toggle(a.id) : setPreview(a)
                       }
@@ -419,7 +452,6 @@ export default function Gallery() {
       {preview && (
         <Preview
           asset={preview}
-          assets={assets}
           position={assets.findIndex((item) => item.id === preview.id)}
           total={assets.length}
           navigate={(offset) => {
@@ -427,7 +459,6 @@ export default function Gallery() {
             const next = assets[index + offset];
             if (next) setPreview(next);
           }}
-          select={setPreview}
           close={() => setPreview(undefined)}
           changed={(next) => {
             setPreview(next);
@@ -446,11 +477,15 @@ export default function Gallery() {
           close={() => setAction(undefined)}
           done={(x) => {
             setNotice(x);
+            setUndoAvailable(true);
             setSelection(new Set());
             setAction(undefined);
             setRefresh((v) => v + 1);
           }}
         />
+      )}
+      {comparing && (
+        <Comparison assets={assets.filter(asset=>selection.has(asset.id)).slice(0,2)} close={()=>setComparing(false)}/>
       )}
     </div>
   );
@@ -466,13 +501,14 @@ function Item({
   asset: MediaAsset;
   mode: Mode;
   checked: boolean;
-  toggle: () => void;
+  toggle: (range?: boolean) => void;
   open: () => void;
 }) {
   if (mode === "list") {
     return (
       <div className={`media-card selectable list-row ${checked ? "selected" : ""}`}>
-        <button className="selection-check" aria-label={`Selecionar ${asset.filename}`} aria-pressed={checked} onClick={toggle}>{checked && <Check />}</button>
+        {checked && <span className="selected-highlight"><Check /> Selecionado</span>}
+        <button className="selection-check" aria-label={`Selecionar ${asset.filename}`} aria-pressed={checked} onClick={event=>toggle(event.shiftKey)}>{checked && <Check />}</button>
         <button className="media-main" aria-label={`Abrir detalhes de ${asset.filename}`} onClick={open}>
           <div className="list-media-cell">
             <MediaThumb asset={asset} />
@@ -489,11 +525,12 @@ function Item({
   }
   return (
     <div className={`media-card selectable ${checked ? "selected" : ""}`}>
+      {checked && <span className="selected-highlight"><Check /> Selecionado</span>}
       <button
         className="selection-check"
         aria-label={`Selecionar ${asset.filename}`}
         aria-pressed={checked}
-        onClick={toggle}
+        onClick={event=>toggle(event.shiftKey)}
       >
         {checked && <Check />}
       </button>
@@ -519,6 +556,22 @@ function Item({
       </button>
     </div>
   );
+}
+function Comparison({assets,close}:{assets:MediaAsset[];close:()=>void}){
+  const [zoom,setZoom]=useState(1);
+  useEffect(()=>{const key=(event:KeyboardEvent)=>{if(event.key==="Escape")close()};addEventListener("keydown",key);return()=>removeEventListener("keydown",key)},[close]);
+  return <div className="comparison-backdrop" role="dialog" aria-modal="true" aria-label="Comparar mídias">
+    <section className="comparison-shell">
+      <header><div><p className="eyebrow">COMPARAÇÃO</p><h2>Lado a lado</h2><p>A comparação é visual e não altera decisões de duplicidade.</p></div><div className="comparison-tools"><button disabled={zoom===1} onClick={()=>setZoom(value=>Math.max(1,value-1))}><ZoomOut/> Reduzir</button><button disabled={zoom===3} onClick={()=>setZoom(value=>Math.min(3,value+1))}><ZoomIn/> Ampliar</button><button className="icon-only" aria-label="Fechar comparação" onClick={close}><X/></button></div></header>
+      <div className="comparison-grid">{assets.map(asset=><ComparisonPane key={asset.id} asset={asset} zoom={zoom}/>)}</div>
+    </section>
+  </div>
+}
+function ComparisonPane({asset,zoom}:{asset:MediaAsset;zoom:number}){
+  const [url,setUrl]=useState("");
+  const [details,setDetails]=useState<AssetDetails>();
+  useEffect(()=>{let live=true;const media=asset.mediaType==="video"?api.mediaUrl(asset.id):api.photoPreview(asset.id);media.then(value=>live&&setUrl(value)).catch(()=>live&&setUrl(""));api.assetDetails(asset.id).then(value=>live&&setDetails(value)).catch(()=>live&&setDetails(undefined));return()=>{live=false}},[asset.id,asset.mediaType]);
+  return <article className="comparison-pane"><div className="comparison-media">{url?(asset.mediaType==="video"?<video src={url} controls preload="metadata"/>:<img src={url} alt={`Comparação de ${asset.filename}`} style={{transform:`scale(${zoom})`}}/>):<MediaThumb asset={asset}/>}</div><h3>{asset.filename}</h3><p>{new Date(asset.capturedAt).toLocaleString("pt-BR")}</p><div className="asset-pills"><span>{asset.extension.toUpperCase()}</span><span>{formatBytes(asset.bytes)}</span><span className={asset.protectionState==="replica_verified"?"success":"warning"}>{asset.protectionState==="replica_verified"?"Protegida":"Proteção pendente"}</span></div><dl><div><dt>Dimensões</dt><dd>{asset.width&&asset.height?`${asset.width} × ${asset.height}`:"Não disponível"}</dd></div><div><dt>Câmera</dt><dd>{details?.camera||asset.camera||"Não informada"}</dd></div><div><dt>Lente</dt><dd>{details?.lens||"Não informada"}</dd></div><div><dt>Captura</dt><dd>{details?.iso?`ISO ${details.iso}`:"ISO —"} · {details?.aperture?`f/${details.aperture}`:"f/—"}</dd></div><div><dt>Origens</dt><dd>{asset.sourceNames.length}</dd></div><div><dt>SHA-256</dt><dd><code>{asset.hash.slice(0,16)}…</code></dd></div></dl></article>
 }
 function Bulk({
   action,
@@ -802,22 +855,18 @@ export function MediaThumb({
 }
 function Preview({
   asset,
-  assets,
   close,
   changed,
   navigate,
   position,
   total,
-  select,
 }: {
   asset: MediaAsset;
-  assets: MediaAsset[];
   close: () => void;
   changed: (asset: MediaAsset) => void;
   navigate: (offset: -1 | 1) => void;
   position: number;
   total: number;
-  select: (asset: MediaAsset) => void;
 }) {
   const [description, setDescription] = useState(asset.description);
   const [saving, setSaving] = useState(false);
@@ -828,7 +877,6 @@ function Preview({
   const [qualityState, setQualityState] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [details, setDetails] = useState<AssetDetails>();
   const [detailsLoading, setDetailsLoading] = useState(false);
-  const [filmstripOpen, setFilmstripOpen] = useState(() => localStorage.getItem("lumina-filmstrip") !== "closed");
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const drag = useRef<{ x: number; y: number; left: number; top: number }>();
 
@@ -913,16 +961,6 @@ function Preview({
           <ChevronRight />
         </button>
       </div>
-      <div className={`preview-filmstrip ${filmstripOpen ? "open" : "collapsed"}`} aria-label="Mídias próximas">
-        <button className="filmstrip-toggle" aria-expanded={filmstripOpen} onClick={() => setFilmstripOpen(value => { localStorage.setItem("lumina-filmstrip", value ? "closed" : "open"); return !value; })}>
-          <span><Images /> Sequência</span><small>{Math.max(0, position)} anteriores · {Math.max(0, total-position-1)} próximas</small><ChevronDown />
-        </button>
-        {filmstripOpen && <div className="filmstrip-items">{assets.slice(Math.max(0, position - 3), Math.min(assets.length, position + 4)).map((item) => (
-          <button key={item.id} className={item.id === asset.id ? "active" : ""} aria-label={`Abrir ${item.filename}`} onClick={() => select(item)}>
-            <MediaThumb asset={item} />
-          </button>
-        ))}</div>}
-      </div>
       <h2>{asset.filename}</h2>
       <p>{new Date(asset.capturedAt).toLocaleString("pt-BR")}</p>
       <div className="asset-pills" aria-label="Atributos da mídia">
@@ -985,8 +1023,7 @@ function Preview({
           <AlertTriangle /> Data a revisar
         </p>
       )}
-      <hr />
-      <p className="eyebrow">CAPTURA</p>
+      <MetadataSection id="capture" title="Captura" openByDefault>
       {detailsLoading && <p className="metadata-state"><LoaderCircle className="spin"/> Lendo metadados do arquivo…</p>}
       <Info label="Câmera" value={details?.camera || asset.camera || "Não informado no arquivo"} />
       <Info label="Lente" value={details?.lens || "Não disponível"} />
@@ -994,24 +1031,20 @@ function Preview({
       <Info label="Abertura" value={details?.aperture ? `f/${details.aperture}` : "Não disponível"} />
       <Info label="ISO" value={details?.iso?.toString() || "Não disponível"} />
       <Info label="Distância focal" value={details?.focalLength ? `${details.focalLength} mm` : "Não disponível"} />
-      <Info label="Data obtida de" value={asset.dateSource} />
-      <hr />
-      <p className="eyebrow">ARQUIVO E MÍDIA</p>
+      </MetadataSection>
+      <MetadataSection id="file" title="Arquivo e mídia" openByDefault>
       <Info
         label="Tipo"
         value={`${asset.mediaType} · ${(details?.detectedFormat || asset.extension).toUpperCase()}`}
       />
-      <Info label="MIME" value={details?.mime || mimeFromExtension(asset.extension)} />
       <Info label="Tamanho" value={formatBytes(asset.bytes)} />
       <Info label="Dimensões" value={asset.width && asset.height ? `${asset.width} × ${asset.height} px` : "Não disponível"} />
       <Info label="Resolução" value={asset.width&&asset.height?`${(asset.width*asset.height/1_000_000).toFixed(1)} MP`:"Não disponível"}/>
       {asset.duration!=null&&<Info label="Duração" value={formatDuration(asset.duration)} />}
       {asset.mediaType==="video"&&<><Info label="Contêiner" value={details?.container || "Não disponível"}/><Info label="Codec de vídeo" value={details?.codec || "Não disponível"}/><Info label="Quadros por segundo" value={details?.frameRate ? `${details.frameRate.toFixed(2)} fps` : "Não disponível"}/><Info label="Codec de áudio" value={details?.audioCodec || "Não disponível"}/><Info label="Taxa de bits" value={details?.bitrate ? `${(details.bitrate/1_000_000).toFixed(2)} Mb/s` : "Não disponível"}/></>}
-      <Info label="Perfil de cor" value={details?.colorProfile || "Não disponível"} />
-      <Info label="Orientação" value={details?.orientation?.toString() || "Não disponível"} />
       {details?.inventoryError&&<p className="notice warning"><AlertTriangle/>Metadados incompletos: {details.inventoryError}</p>}
-      <hr />
-      <p className="eyebrow">LOCALIZAÇÕES</p>
+      </MetadataSection>
+      <MetadataSection id="locations" title="Localizações" openByDefault>
       <div className="location good">
         <HardDrive />
         <div>
@@ -1028,14 +1061,23 @@ function Preview({
           </div>
         </div>
       ))}
-      <hr />
+      <button className="reveal-file" onClick={async()=>{try{await api.revealAsset(asset.id)}catch(error){void api.recordClientError("reveal_error",String(error))}}}><HardDrive/> Abrir localização no Explorador</button>
+      </MetadataSection>
+      <MetadataSection id="catalog" title="Catálogo">
       <p className="hash">
         SHA-256
         <br />
         <code>{asset.hash}</code>
       </p>
+      <button className="copy-value" onClick={()=>navigator.clipboard.writeText(asset.hash)}><Copy/> Copiar SHA-256</button>
+      </MetadataSection>
     </aside>
   );
+}
+function MetadataSection({id,title,openByDefault=false,children}:{id:string;title:string;openByDefault?:boolean;children:React.ReactNode}){
+  const key=`lumina-metadata-${id}`;
+  const [open,setOpen]=useState(()=>localStorage.getItem(key)?.toString()==="open"||(localStorage.getItem(key)===null&&openByDefault));
+  return <details className="metadata-section" open={open} onToggle={event=>{const value=event.currentTarget.open;setOpen(value);localStorage.setItem(key,value?"open":"closed")}}><summary><span>{title}</span><ChevronDown/></summary><div>{children}</div></details>
 }
 function Info({ label, value }: { label: string; value: string }) {
   return (
@@ -1047,4 +1089,3 @@ function Info({ label, value }: { label: string; value: string }) {
 }
 function formatDuration(seconds:number){const rounded=Math.round(seconds);return `${Math.floor(rounded/60)}:${String(rounded%60).padStart(2,"0")}`}
 function formatExposure(value?:string){if(!value)return "Não disponível";const number=Number(value);if(Number.isFinite(number)&&number>0&&number<1)return `1/${Math.round(1/number)} s`;return `${value}${value.includes("s")?"":" s"}`}
-function mimeFromExtension(extension:string){return ({jpg:"image/jpeg",jpeg:"image/jpeg",png:"image/png",gif:"image/gif",webp:"image/webp",tif:"image/tiff",tiff:"image/tiff",heic:"image/heic",heif:"image/heif",avif:"image/avif",mp4:"video/mp4",m4v:"video/mp4",mov:"video/quicktime",webm:"video/webm",mkv:"video/x-matroska",avi:"video/x-msvideo"} as Record<string,string>)[extension.toLowerCase()]||"application/octet-stream"}

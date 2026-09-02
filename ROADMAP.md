@@ -105,6 +105,10 @@ Critérios de saída:
 - Atualização da baseline visual com capturas aprovadas.
 - MSI, instalador, portátil, hashes, documentação e release publicados juntos.
 
+Situação da candidata consolidada `0.15.0-beta.2`: os temas Beta.2, Beta.3 e Beta.4 acima foram reunidos em um único pacote por decisão do responsável pelo produto. Os itens permanecem separados neste documento como trilhas de aceite, não como releases independentes.
+
+Refinamento incorporado à mesma candidata, sem reiniciar o ciclo: visão geral orientada a memórias; datas extremas de fotos e vídeos; capacidade e proteção consolidadas; composição fotos/vídeos; inventário técnico separado e normalizado; insights em cards; comparação de desempenho entre jobs; seleção mais evidente; preview sem faixa inferior; metadados focados nas decisões do usuário.
+
 ## Exploração — 0.15+: descoberta e portabilidade
 
 - Similaridade visual local e explicável.

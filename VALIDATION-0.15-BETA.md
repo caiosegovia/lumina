@@ -1,32 +1,33 @@
-# Evidências de validação — Lumina 0.15.0-beta.1
+# Evidências de validação — Lumina 0.15.0-beta.2
 
 Data: 2026-09-02. Ambiente: Windows x64.
 
-## Gates aprovados
+## Contratos automatizados novos
 
-- Frontend: 19/19 testes aprovados.
-- Backend: 98 testes aprovados, 0 falhas e 2 testes opcionais ignorados.
+- Ordenação e paginação: cursores sem sobreposição para captura asc/desc e nome asc/desc.
+- Prioridade: solicitação repetida mantém um único trabalho e eleva sua prioridade.
+- Interface: ordenação enviada ao backend e persistida.
+- Interface: densidade da lista persistida.
+- Interface: viewport enviado em lote limitado com prioridade interativa.
+- Interface: comparação disponível somente para duas mídias.
+- Interface: seções de metadados e abertura de localização acionáveis.
+- Interface: seleção possui destaque textual e visual em grade e lista.
+- Interface: inspetor não apresenta faixa inferior e omite metadados sem valor de decisão.
+- Visão geral: capacidade e proteção consolidadas, composição fotos/vídeos e comparação entre jobs.
+- Catálogo: primeira/última captura calculadas separadamente para fotos e vídeos.
+
+## Gates da candidata
+
+- Frontend: 24/24 testes aprovados.
+- Backend: 99 testes aprovados, 0 falhas e 2 opcionais ignorados.
 - TypeScript e Vite: build de produção aprovado.
-- Clippy: `--all-targets -- -D warnings` aprovado.
-- Dependências npm: 0 vulnerabilidades conhecidas.
-- Smoke portátil: 567 entradas verificadas, frontend responsivo e encerramento limpo.
-- Memória no smoke documental: 28.459.008 bytes.
-
-## Contratos novos cobertos
-
-- A lista apresenta colunas operacionais estáveis.
-- O inspetor pertence ao workspace e não cobre a galeria em telas amplas.
-- A sequência é explicada, recolhível e tem preferência persistente.
-- Grade, lista, virtualização, preview HD, EXIF e ações em lote permanecem cobertos pela regressão.
+- Ordenação e cursor exercitados em integração com SQLite real.
+- Catálogos de 100 mil itens, processamento de 2 mil arquivos e consultas concorrentes com miniaturas aprovados.
+- A beta.1 homologada permanece disponível como rollback durante essa validação.
 
 ## Artefatos
 
-| Artefato | SHA-256 |
-|---|---|
-| `Lumina-0.15.0-beta.1-portable-windows-x64.zip` | `45db7d3b6bdb97153d1478c0eb0dcef9ee07c3a6247ed25365a63c690906ae4a` |
-| `Lumina_0.15.0-1_x64_en-US.msi` | `07a034ca46e8ebb743960c79f2095168c87f4e6f5a0161c8b24b9444dc4bd4ad` |
-| `Lumina_0.15.0-1_x64-setup.exe` | `9374bbc8279b68504799f92148646b1233b8d55b643d9c9cc6140a5bdb2716b8` |
-
-## Homologação do responsável pelo produto
-
-Em 2026-09-02, a candidata foi testada com uma grande quantidade de arquivos e aprovada quanto ao comportamento, estabilidade e direção do novo workspace. O aceite autoriza a integração à `main`; os incrementos seguintes permanecem evoluções do produto, não bloqueadores desta versão.
+- Smoke portátil: manifesto com 567 entradas validado, frontend pronto, encerramento limpo e 30.769.152 bytes de working set no teste.
+- `Lumina-0.15.0-beta.2-portable-windows-x64.zip` — SHA-256 `93733a4463c58709cc8f99cfb3b1e6dd7faa3a210633544f598740ae8d40f530`
+- `Lumina_0.15.0-2_x64_en-US.msi` — SHA-256 `94ec8a6075ed95cdabae48d49c927b51cafaf98aaee3f2cf8da3a3de249e29a0`
+- `Lumina_0.15.0-2_x64-setup.exe` — SHA-256 `1ee1c40cfdd9a7dce557761d8ef4e1fbb2b187037cef39a0a49de961a3b4ddae`

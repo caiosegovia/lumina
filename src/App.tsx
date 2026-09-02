@@ -462,6 +462,18 @@ const duration = (ms: number) =>
   ms < 60000
     ? `${Math.round(ms / 1000)}s`
     : `${Math.floor(ms / 60000)}min ${Math.round((ms % 60000) / 1000)}s`;
+const normalizeEquipment = (value: string) => {
+  const clean = value.trim().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
+  const aliases: [RegExp, string][] = [
+    [/^dji\s*(fc\d+|mavic.*|mini.*|air.*|phantom.*)$/i, "DJI $1"],
+    [/^iphone\s*/i, "Apple iPhone "],
+    [/^sm\s+/i, "Samsung SM-"],
+    [/^gopro\s*/i, "GoPro "],
+  ];
+  return aliases
+    .reduce((name, [pattern, replacement]) => pattern.test(name) ? name.replace(pattern, replacement) : name, clean)
+    .replace(/\b(dji|gopro)\b/gi, word => word.toUpperCase());
+};
 const monthRange = (key: string) => {
   const [year, month] = key.split("-").map(Number);
   return {
@@ -480,9 +492,15 @@ function Dashboard({ onImport,navigate }: { onImport: () => void;navigate:(view:
   }, []);
   if (!s) return <LoaderCircle className="spin" />;
   const coverage = (s.protected / Math.max(1, s.totalAssets)) * 100,
-    maxType = Math.max(1, ...s.types.map((x) => x.bytes)),storage=s.storage,technical=s.technical,
+    storage=s.storage,
     recentMonths=[...s.months.slice(0,12)].reverse(),maxMonth=Math.max(1,...recentMonths.map(value=>value.bytes)),
     latestMonth=recentMonths.at(-1),previousMonth=recentMonths.at(-2),monthDelta=latestMonth&&previousMonth?((latestMonth.bytes-previousMonth.bytes)/Math.max(1,previousMonth.bytes))*100:undefined;
+  const composition=[
+    {key:"photo",label:"Fotos",items:s.photos,bytes:s.types.filter(x=>x.key!=="video").reduce((total,x)=>total+x.bytes,0)},
+    {key:"video",label:"Vídeos",items:s.videos,bytes:s.types.find(x=>x.key==="video")?.bytes||0},
+  ],compositionTotal=Math.max(1,composition.reduce((total,item)=>total+item.items,0)),photoPercent=composition[0].items/compositionTotal*100;
+  const equipment=Object.values(s.cameras.reduce<Record<string,DashboardStats["cameras"][number]>>((all,item)=>{const key=normalizeEquipment(item.key);const current=all[key]||{key,items:0,bytes:0};current.items+=item.items;current.bytes+=item.bytes;all[key]=current;return all},{})).sort((a,b)=>b.bytes-a.bytes);
+  const benchmarks=s.recentBenchmarks?.length?s.recentBenchmarks:(s.latestBenchmark?[s.latestBenchmark]:[]),maxBenchmark=Math.max(1,...benchmarks.map(item=>item.analysisMs+item.hashingMs+item.copyMs+item.thumbnailsMs));
   return (
     <>
       <div className="hero dashboard-hero">
@@ -505,94 +523,32 @@ function Dashboard({ onImport,navigate }: { onImport: () => void;navigate:(view:
           <button className="primary" onClick={onImport}><Plus /> Importar mídia</button>
         </div>
       </div>
-      <div className="dashboard-big">
-        <Stat
-          label="Biblioteca"
-          value={s.totalAssets}
-          detail={`${s.types.map((x) => `${x.items} ${typeLabel(x.key)}`).join(" · ")}`}
-        />
-        <Stat
-          label="Armazenamento usado"
-          value={formatBytes(s.bytes)}
-          detail={`${formatBytes(s.masterAvailableBytes)} livres no acervo`}
-        />
-        <Stat
-          label="Proteção verificada"
-          value={`${Math.round(coverage)}%`}
-          detail={`${s.pending} pendentes · ${s.errors} erros`}
-        />
-        <Stat
-          label="Período"
-          value={
-            s.years.length
-              ? `${s.years.length} ${s.years.length === 1 ? "ano" : "anos"}`
-              : "—"
-          }
-          detail={
-            s.oldest && s.newest
-              ? `${new Date(s.oldest).getFullYear()}–${new Date(s.newest).getFullYear()}`
-              : "Sem datas"
-          }
-        />
-      </div>
       {storage&&<section className="storage-intelligence">
-        <div className="storage-heading"><div><p className="eyebrow">CAPACIDADE E PROTEÇÃO</p><h3>Onde sua biblioteca está e quanto ainda cabe</h3></div><button onClick={()=>navigate("protection")}>Gerenciar proteção <ChevronRight/></button></div>
+        <div className="storage-heading"><div><p className="eyebrow">CAPACIDADE E PROTEÇÃO</p><h3>Onde suas memórias estão e quanto ainda cabe</h3></div><button onClick={()=>navigate("protection")}>Gerenciar proteção <ChevronRight/></button></div>
+        <div className="memory-overview">
+          <span className="memory-total"><small>Memórias preservadas</small><b>{s.totalAssets.toLocaleString("pt-BR")}</b><em>{s.photos.toLocaleString("pt-BR")} fotos · {s.videos.toLocaleString("pt-BR")} vídeos</em></span>
+          <span><small>Primeira e última foto</small><b>{s.oldestPhoto?formatDate(s.oldestPhoto):"—"}</b><em>{s.newestPhoto?`até ${formatDate(s.newestPhoto)}`:"Sem fotos datadas"}</em></span>
+          <span><small>Primeiro e último vídeo</small><b>{s.oldestVideo?formatDate(s.oldestVideo):"—"}</b><em>{s.newestVideo?`até ${formatDate(s.newestVideo)}`:"Sem vídeos datados"}</em></span>
+          <span><small>Proteção verificada</small><b>{Math.round(coverage)}%</b><em>{s.pending.toLocaleString("pt-BR")} pendentes · {s.errors} erros</em></span>
+        </div>
         <div className="storage-volumes">
           <StorageVolume title="Acervo principal" used={storage.masterUsedBytes} total={storage.masterTotalBytes} managed={storage.libraryBytes} detail={`${storage.estimatedAdditionalItems.toLocaleString("pt-BR")} mídias adicionais pela média atual`}/>
           <StorageVolume title="Réplica local" used={storage.backupUsedBytes} total={storage.backupTotalBytes} managed={Math.max(0,s.bytes-storage.pendingBackupBytes)} detail={storage.backupAvailable?`${formatBytes(Math.max(0,storage.projectedBackupFreeBytes))} livres após réplica e reserva`:"Destino indisponível"}/>
         </div>
-        <div className="storage-facts"><span><small>Administrado pelo Lumina</small><b>{formatBytes(storage.libraryBytes)}</b></span><span><small>Pendente de proteção</small><b>{formatBytes(storage.pendingBackupBytes)}</b></span><span><small>Cache e temporários</small><b>{formatBytes(storage.cacheBytes+storage.temporaryBytes)}</b></span><span><small>Tamanho médio / p90</small><b>{formatBytes(storage.averageAssetBytes)} / {formatBytes(storage.p90AssetBytes)}</b></span></div>
-      </section>}
-      {technical&&<section className="technical-health">
-        <div><p className="eyebrow">QUALIDADE DO INVENTÁRIO</p><h3>Detalhes que tornam a biblioteca pesquisável</h3></div>
-        <div className="technical-score"><strong>{Math.round(technical.metadataComplete/Math.max(1,s.totalAssets)*100)}%</strong><span>inventário profundo</span></div>
-        <div className="technical-meter"><i style={{width:`${technical.thumbnailsReady/Math.max(1,s.totalAssets)*100}%`}}/><span>{technical.thumbnailsReady.toLocaleString("pt-BR")} previews prontos · {technical.thumbnailsPending.toLocaleString("pt-BR")} pendentes · {technical.thumbnailsFailed} falhas</span></div>
-        <div className="technical-facts"><span><b>{technical.codecKnown}</b><small>vídeos com codec</small></span><span><b>{technical.codecMissing}</b><small>codecs pendentes</small></span><span><b>{technical.reviewItems}</b><small>itens para revisão</small></span><span><b>{technical.mismatches}</b><small>extensões divergentes</small></span></div>
+        <div className="storage-facts"><span><small>Administrado pelo Lumina</small><b>{formatBytes(storage.libraryBytes)}</b></span><span><small>Pendente de proteção</small><b>{formatBytes(storage.pendingBackupBytes)}</b></span><span><small>Cache e temporários</small><b>{formatBytes(storage.cacheBytes+storage.temporaryBytes)}</b></span><span><small>Tamanho médio de arquivo</small><b>{formatBytes(storage.averageAssetBytes)}</b></span></div>
       </section>}
       <div className="dashboard-layout">
         <article className="panel composition">
           <p className="eyebrow">COMPOSIÇÃO</p>
-          <h3>O que ocupa sua biblioteca</h3>
-          {s.types.map((x) => (
-            <button className="composition-row" key={x.key} onClick={()=>openLibrary({mediaType:x.key})}>
-              <span>
-                <b>{typeLabel(x.key)}</b>
-                <small>{x.items.toLocaleString("pt-BR")} itens</small>
-              </span>
-              <i>
-                <em style={{ width: `${(x.bytes / maxType) * 100}%` }} />
-              </i>
-              <strong>{formatBytes(x.bytes)}</strong>
-            </button>
-          ))}
+          <h3>Fotos e vídeos</h3>
+          <div className="composition-chart" style={{background:`conic-gradient(var(--green) 0 ${photoPercent}%,#d8a735 ${photoPercent}% 100%)`}}><span><b>{compositionTotal.toLocaleString("pt-BR")}</b><small>arquivos</small></span></div>
+          <div className="composition-legend">{composition.map((x,index)=><button key={x.key} onClick={()=>openLibrary({mediaType:x.key})}><i className={index?"video":"photo"}/><span><b>{x.label}</b><small>{x.items.toLocaleString("pt-BR")} · {formatBytes(x.bytes)}</small></span><strong>{Math.round(x.items/compositionTotal*100)}%</strong></button>)}</div>
         </article>
         <article className="panel growth-panel">
           <p className="eyebrow">RITMO DO ACERVO</p>
           <h3>Volume capturado nos últimos 12 meses ativos</h3>
           <div className="growth-summary"><strong>{latestMonth?formatBytes(latestMonth.bytes):"—"}</strong><span>{latestMonth?.key||"Sem período"}{monthDelta!==undefined&&` · ${monthDelta>=0?"+":""}${Math.round(monthDelta)}% ante o mês ativo anterior`}</span></div>
           <div className="growth-bars">{recentMonths.map(value=><button key={value.key} title={`${value.key}: ${value.items.toLocaleString("pt-BR")} itens · ${formatBytes(value.bytes)}`} onClick={()=>openLibrary(monthRange(value.key))}><i style={{height:`${Math.max(5,value.bytes/maxMonth*100)}%`}}/><small>{value.key.slice(5)}</small></button>)}</div>
-        </article>
-        <article className="panel protection-card">
-          <p className="eyebrow">PROTEÇÃO E ESPAÇO</p>
-          <h3>
-            {s.protected.toLocaleString("pt-BR")} de{" "}
-            {s.totalAssets.toLocaleString("pt-BR")} protegidas
-          </h3>
-          <div className="progress">
-            <i style={{ width: `${coverage}%` }} />
-          </div>
-          <dl>
-            <div>
-              <dt>Acervo livre</dt>
-              <dd>{formatBytes(s.masterAvailableBytes)}</dd>
-            </div>
-            <div>
-              <dt>Backup livre</dt>
-              <dd>{formatBytes(s.backupAvailableBytes)}</dd>
-            </div>
-          </dl>
-          {!!s.protectionYears?.length&&<small>Mais protegido por período: {s.protectionYears.slice(0,3).map(value=>`${value.key} (${value.items.toLocaleString("pt-BR")})`).join(" · ")}</small>}
-          {!!s.protectionSources?.length&&<small>Origens protegidas: {s.protectionSources.slice(0,2).map(value=>`${value.key} (${value.items.toLocaleString("pt-BR")})`).join(" · ")}</small>}
         </article>
         <article className="panel timeline-panel">
           <p className="eyebrow">LINHA DO TEMPO</p>
@@ -616,11 +572,12 @@ function Dashboard({ onImport,navigate }: { onImport: () => void;navigate:(view:
           </div>
         </article>
         <article className="panel ranking-panel">
-          <p className="eyebrow">FORMATOS E EQUIPAMENTOS</p>
+          <p className="eyebrow">INVENTÁRIO TÉCNICO</p>
           <h3>Inventário técnico</h3>
+          <h4>Formatos de arquivo</h4>
           {s.formats.slice(0,6).map(x=><button key={x.key} onClick={()=>openLibrary({extension:x.key})}><span><b>{x.label}</b><small>{x.family} · suporte {x.support}</small></span><strong>{x.items.toLocaleString("pt-BR")} · {formatBytes(x.bytes)}</strong></button>)}
-          <h4>Principais câmeras</h4>
-          {s.cameras.slice(0,4).map(x=><button className="dashboard-rank" key={x.key} onClick={()=>openLibrary({camera:x.key})}><span>{x.key}</span><b>{x.items.toLocaleString("pt-BR")}</b><small>{formatBytes(x.bytes)}</small></button>)}
+          <h4>Equipamentos normalizados</h4>
+          {equipment.slice(0,5).map(x=><button className="dashboard-rank" key={x.key} onClick={()=>openLibrary({camera:x.key})}><span>{x.key}</span><b>{x.items.toLocaleString("pt-BR")}</b><small>{formatBytes(x.bytes)}</small></button>)}
           {!!s.codecs?.length&&<><h4>Codecs de vídeo</h4>{s.codecs.slice(0,4).map(x=><div className="dashboard-rank" key={x.key}><span>{x.key}</span><b>{x.items.toLocaleString("pt-BR")}</b><small>{formatBytes(x.bytes)}</small></div>)}</>}
           <button onClick={()=>api.startFormatEnrichment().then(id=>setInventoryMessage(`Inventário iniciado · ${id.slice(0,8)}`)).catch(error=>setInventoryMessage(String(error)))}>Atualizar inventário técnico</button>
           {inventoryMessage&&<small className="inventory-message">{inventoryMessage}</small>}
@@ -659,33 +616,12 @@ function Dashboard({ onImport,navigate }: { onImport: () => void;navigate:(view:
             <p className="all-good">Nenhuma pendência encontrada.</p>
           )}
         </article>
-        {s.latestBenchmark && (
+        {!!benchmarks.length && (
           <article className="panel benchmark-panel">
-            <p className="eyebrow">ÚLTIMO PROCESSAMENTO</p>
-            <h3>Desempenho medido</h3>
-            <div>
-              <span>
-                Análise<strong>{duration(s.latestBenchmark.analysisMs)}</strong>
-              </span>
-              <span>
-                Leitura profunda
-                <strong>{duration(s.latestBenchmark.hashingMs)}</strong>
-              </span>
-              <span>
-                Cópia verificada
-                <strong>{duration(s.latestBenchmark.copyMs)}</strong>
-              </span>
-              <span>
-                Hash adiado
-                <strong>
-                  {s.latestBenchmark.deferredHashItems.toLocaleString("pt-BR")}
-                </strong>
-              </span>
-            </div>
-            <p>
-              {formatBytes(s.latestBenchmark.hashedBytes)} exigiram leitura
-              antecipada · {s.latestBenchmark.cacheHits} resultados reutilizados
-            </p>
+            <p className="eyebrow">DESEMPENHO MEDIDO</p>
+            <h3>Comparativo dos últimos processamentos</h3>
+            <div className="benchmark-chart">{benchmarks.map((job,index)=>{const stages=[job.analysisMs,job.hashingMs,job.copyMs,job.thumbnailsMs],total=stages.reduce((sum,value)=>sum+value,0);return <div className="benchmark-row" key={job.jobId}><span><b>{index===0?"Mais recente":`Anterior ${index}`}</b><small>{job.items.toLocaleString("pt-BR")} itens · {formatBytes(job.bytes)}</small></span><div className="benchmark-stack" style={{width:`${Math.max(8,total/maxBenchmark*100)}%`}}>{stages.map((value,stage)=><i key={stage} className={`stage-${stage}`} style={{width:`${total?value/total*100:0}%`}}/>)}</div><strong>{duration(total)}</strong></div>})}</div>
+            <div className="benchmark-legend"><span><i className="stage-0"/>Análise</span><span><i className="stage-1"/>Leitura</span><span><i className="stage-2"/>Cópia</span><span><i className="stage-3"/>Previews</span></div>
           </article>
         )}
         <details className="panel dashboard-diagnostics">

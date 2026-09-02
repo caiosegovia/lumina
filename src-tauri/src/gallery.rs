@@ -8,8 +8,19 @@ use std::collections::HashMap;
 
 #[derive(Serialize, Deserialize)]
 struct Cursor {
-    captured_at: String,
+    value: String,
     id: String,
+}
+
+fn ordering(sort: Option<&str>) -> (&'static str, &'static str, bool) {
+    match sort {
+        Some("captured_asc") => ("a.captured_at", "ASC", false),
+        Some("name_asc") => ("LOWER(a.filename)", "ASC", false),
+        Some("name_desc") => ("LOWER(a.filename)", "DESC", false),
+        Some("size_asc") => ("a.bytes", "ASC", true),
+        Some("size_desc") => ("a.bytes", "DESC", true),
+        _ => ("a.captured_at", "DESC", false),
+    }
 }
 fn add(c: &mut Vec<String>, v: &mut Vec<Value>, sql: &str, value: Value) {
     v.push(value);
@@ -210,6 +221,7 @@ fn page_relations(
 
 pub fn search(conn: &Connection, r: &GalleryRequest) -> Result<GalleryResult, String> {
     let (mut clauses, mut values) = conditions(&r.filters);
+    let (sort_expression, direction, numeric_sort) = ordering(r.sort.as_deref());
     let base = where_sql(&clauses);
     let (t, years, filter_options) = if r.cursor.is_none() {
         let q=format!("SELECT COUNT(*),COALESCE(SUM(a.bytes),0),COALESCE(SUM(a.media_type='photo'),0),COALESCE(SUM(a.media_type='video'),0),COALESCE(SUM(a.media_type='raw'),0),COALESCE(SUM(a.protection_state='replica_verified'),0),COALESCE(SUM(a.latitude IS NOT NULL AND a.longitude IS NOT NULL),0),COALESCE(SUM((SELECT COUNT(*) FROM active_occurrences od WHERE od.asset_id=a.id)>1),0),COALESCE(SUM(COALESCE((SELECT favorite FROM asset_user_state us WHERE us.asset_id=a.id),0)),0),COALESCE(SUM(COALESCE((SELECT inventory_state!='complete' FROM asset_technical_metadata tm WHERE tm.asset_id=a.id),1)),0),COALESCE(SUM(a.protection_state!='replica_verified'),0) FROM assets a WHERE {base}");
@@ -257,16 +269,25 @@ pub fn search(conn: &Connection, r: &GalleryRequest) -> Result<GalleryResult, St
             .map_err(|_| "Cursor inválido".to_string())?;
         let cur: Cursor =
             serde_json::from_slice(&raw).map_err(|_| "Cursor inválido".to_string())?;
-        values.push(Value::Text(cur.captured_at));
+        values.push(if numeric_sort {
+            Value::Integer(
+                cur.value
+                    .parse()
+                    .map_err(|_| "Cursor inválido".to_string())?,
+            )
+        } else {
+            Value::Text(cur.value)
+        });
         let n = values.len();
         values.push(Value::Text(cur.id));
+        let comparator = if direction == "ASC" { ">" } else { "<" };
         clauses.push(format!(
-            "(a.captured_at<?{n} OR (a.captured_at=?{n} AND a.id<?{}))",
-            n + 1
+            "({sort_expression}{comparator}?{n} OR ({sort_expression}=?{n} AND a.id{comparator}?{}))",
+            n + 1,
         ));
     }
     let limit = r.limit.unwrap_or(100).clamp(1, 200) as usize;
-    let q=format!("SELECT a.id,a.filename,a.media_type,a.extension,a.captured_at,a.date_source,a.bytes,a.width,a.height,a.duration,a.camera,a.latitude,a.longitude,a.master_path,a.hash,a.protection_state,(SELECT COUNT(*) FROM active_occurrences o WHERE o.asset_id=a.id),COALESCE((SELECT favorite FROM asset_user_state us WHERE us.asset_id=a.id),0),COALESCE((SELECT rating FROM asset_user_state us WHERE us.asset_id=a.id),0),COALESCE((SELECT review_later FROM asset_user_state us WHERE us.asset_id=a.id),0),COALESCE((SELECT description FROM asset_user_state us WHERE us.asset_id=a.id),'') FROM assets a WHERE {} ORDER BY a.captured_at DESC,a.id DESC LIMIT {}",where_sql(&clauses),limit+1);
+    let q=format!("SELECT a.id,a.filename,a.media_type,a.extension,a.captured_at,a.date_source,a.bytes,a.width,a.height,a.duration,a.camera,a.latitude,a.longitude,a.master_path,a.hash,a.protection_state,(SELECT COUNT(*) FROM active_occurrences o WHERE o.asset_id=a.id),COALESCE((SELECT favorite FROM asset_user_state us WHERE us.asset_id=a.id),0),COALESCE((SELECT rating FROM asset_user_state us WHERE us.asset_id=a.id),0),COALESCE((SELECT review_later FROM asset_user_state us WHERE us.asset_id=a.id),0),COALESCE((SELECT description FROM asset_user_state us WHERE us.asset_id=a.id),'') FROM assets a WHERE {} ORDER BY {sort_expression} {direction},a.id {direction} LIMIT {}",where_sql(&clauses),limit+1);
     let mut s = conn.prepare(&q).map_err(|e| e.to_string())?;
     let mut rows = s
         .query_map(params_from_iter(values.iter()), |x| {
@@ -306,7 +327,11 @@ pub fn search(conn: &Connection, r: &GalleryRequest) -> Result<GalleryResult, St
         rows.last().map(|x| {
             URL_SAFE_NO_PAD.encode(
                 serde_json::to_vec(&Cursor {
-                    captured_at: x.4.clone(),
+                    value: match r.sort.as_deref() {
+                        Some("name_asc" | "name_desc") => x.1.to_lowercase(),
+                        Some("size_asc" | "size_desc") => x.6.to_string(),
+                        _ => x.4.clone(),
+                    },
                     id: x.0.clone(),
                 })
                 .unwrap(),
@@ -425,6 +450,7 @@ mod tests {
                 },
                 cursor: None,
                 limit: Some(20),
+                sort: None,
             },
         )
         .unwrap();
@@ -452,6 +478,7 @@ mod tests {
                 },
                 cursor: None,
                 limit: Some(20),
+                sort: None,
             },
         )
         .unwrap();
@@ -472,6 +499,7 @@ mod tests {
                 filters: Default::default(),
                 cursor: None,
                 limit: Some(100),
+                sort: None,
             },
         )
         .unwrap();
@@ -496,6 +524,7 @@ mod tests {
                 filters: Default::default(),
                 cursor: None,
                 limit: Some(2),
+                sort: None,
             },
         )
         .unwrap();
@@ -505,6 +534,7 @@ mod tests {
                 filters: Default::default(),
                 cursor: a.next_cursor,
                 limit: Some(2),
+                sort: None,
             },
         )
         .unwrap();
@@ -512,6 +542,46 @@ mod tests {
         assert!(!a.assets.iter().any(|x| x.id == b.assets[0].id));
         drop(d);
         fs::remove_dir_all(r).unwrap()
+    }
+    #[test]
+    fn every_gallery_order_uses_a_coherent_cursor() {
+        let (root, db) = seed();
+        for (sort, expected) in [
+            ("captured_asc", vec!["c", "a", "b"]),
+            ("captured_desc", vec!["b", "a", "c"]),
+            ("name_asc", vec!["a", "b", "c"]),
+            ("name_desc", vec!["c", "b", "a"]),
+        ] {
+            let first = search(
+                &db,
+                &GalleryRequest {
+                    filters: Default::default(),
+                    cursor: None,
+                    limit: Some(2),
+                    sort: Some(sort.into()),
+                },
+            )
+            .unwrap();
+            let second = search(
+                &db,
+                &GalleryRequest {
+                    filters: Default::default(),
+                    cursor: first.next_cursor.clone(),
+                    limit: Some(2),
+                    sort: Some(sort.into()),
+                },
+            )
+            .unwrap();
+            let ids = first
+                .assets
+                .into_iter()
+                .chain(second.assets)
+                .map(|asset| asset.id)
+                .collect::<Vec<_>>();
+            assert_eq!(ids, expected, "ordenação {sort}");
+        }
+        drop(db);
+        fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn timeline_filter_uses_composite_index() {

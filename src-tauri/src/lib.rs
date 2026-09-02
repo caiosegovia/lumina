@@ -295,6 +295,10 @@ fn quick_dashboard(cfg: &LibraryConfig) -> Result<DashboardStats, String> {
             .map(|value| value.key.as_str())
             .max()
             .map(|year| format!("{year}-12-31T23:59:59Z")),
+        oldest_photo: None,
+        newest_photo: None,
+        oldest_video: None,
+        newest_video: None,
         master_available_bytes: 0,
         backup_available_bytes: 0,
         types,
@@ -308,6 +312,7 @@ fn quick_dashboard(cfg: &LibraryConfig) -> Result<DashboardStats, String> {
         cameras: read("camera")?,
         insights: Vec::new(),
         latest_benchmark: None,
+        recent_benchmarks: Vec::new(),
         snapshot_generated_at: Utc::now().to_rfc3339(),
         stale: true,
         timings: vec![DashboardTiming {
@@ -386,6 +391,13 @@ fn compute_dashboard(cfg: &LibraryConfig) -> Result<DashboardStats, String> {
             "SELECT MIN(captured_at),MAX(captured_at)FROM assets",
             [],
             |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|e| e.to_string())?;
+    let (oldest_photo, newest_photo, oldest_video, newest_video): (Option<String>, Option<String>, Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT MIN(CASE WHEN media_type IN('photo','raw') THEN captured_at END),MAX(CASE WHEN media_type IN('photo','raw') THEN captured_at END),MIN(CASE WHEN media_type='video' THEN captured_at END),MAX(CASE WHEN media_type='video' THEN captured_at END) FROM assets",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .map_err(|e| e.to_string())?;
     let sources = {
@@ -517,7 +529,31 @@ fn compute_dashboard(cfg: &LibraryConfig) -> Result<DashboardStats, String> {
             reason: "Cobertura calculada pelo catálogo de miniaturas".into(),
         });
     }
-    let latest_benchmark=conn.query_row("SELECT j.id,j.total_items,j.total_bytes,COALESCE((SELECT duration_ms FROM job_metrics WHERE job_id=j.id AND stage='analysis_total'),0),COALESCE((SELECT duration_ms FROM job_metrics WHERE job_id=j.id AND stage='hashing_total'),0),COALESCE((SELECT duration_ms FROM job_metrics WHERE job_id=j.id AND stage='copy_and_verify'),0),COALESCE((SELECT duration_ms FROM job_metrics WHERE job_id=j.id AND stage='thumbnails'),0),COALESCE((SELECT items FROM job_metrics WHERE job_id=j.id AND stage='hashing_workers'),0),COALESCE((SELECT bytes FROM job_metrics WHERE job_id=j.id AND stage='hashing_workers'),0),COALESCE((SELECT items FROM job_metrics WHERE job_id=j.id AND stage='deferred_hash'),0),COALESCE((SELECT items FROM job_metrics WHERE job_id=j.id AND stage='cache_hits'),0)FROM jobs j WHERE EXISTS(SELECT 1 FROM job_metrics m WHERE m.job_id=j.id AND m.stage='analysis_total')ORDER BY j.created_at DESC LIMIT 1",[],|r|Ok(DashboardBenchmark{job_id:r.get(0)?,items:r.get(1)?,bytes:r.get(2)?,analysis_ms:r.get(3)?,hashing_ms:r.get(4)?,copy_ms:r.get(5)?,thumbnails_ms:r.get(6)?,hash_workers:r.get(7)?,hashed_bytes:r.get(8)?,deferred_hash_items:r.get(9)?,cache_hits:r.get(10)?})).optional().map_err(|e|e.to_string())?;
+    let benchmark_sql="SELECT j.id,j.total_items,j.total_bytes,COALESCE((SELECT duration_ms FROM job_metrics WHERE job_id=j.id AND stage='analysis_total'),0),COALESCE((SELECT duration_ms FROM job_metrics WHERE job_id=j.id AND stage='hashing_total'),0),COALESCE((SELECT duration_ms FROM job_metrics WHERE job_id=j.id AND stage='copy_and_verify'),0),COALESCE((SELECT duration_ms FROM job_metrics WHERE job_id=j.id AND stage='thumbnails'),0),COALESCE((SELECT items FROM job_metrics WHERE job_id=j.id AND stage='hashing_workers'),0),COALESCE((SELECT bytes FROM job_metrics WHERE job_id=j.id AND stage='hashing_workers'),0),COALESCE((SELECT items FROM job_metrics WHERE job_id=j.id AND stage='deferred_hash'),0),COALESCE((SELECT items FROM job_metrics WHERE job_id=j.id AND stage='cache_hits'),0)FROM jobs j WHERE EXISTS(SELECT 1 FROM job_metrics m WHERE m.job_id=j.id AND m.stage='analysis_total')ORDER BY j.created_at DESC LIMIT 5";
+    let recent_benchmarks = {
+        let mut statement = conn.prepare(benchmark_sql).map_err(|e| e.to_string())?;
+        let values = statement
+            .query_map([], |r| {
+                Ok(DashboardBenchmark {
+                    job_id: r.get(0)?,
+                    items: r.get(1)?,
+                    bytes: r.get(2)?,
+                    analysis_ms: r.get(3)?,
+                    hashing_ms: r.get(4)?,
+                    copy_ms: r.get(5)?,
+                    thumbnails_ms: r.get(6)?,
+                    hash_workers: r.get(7)?,
+                    hashed_bytes: r.get(8)?,
+                    deferred_hash_items: r.get(9)?,
+                    cache_hits: r.get(10)?,
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        values
+    };
+    let latest_benchmark = recent_benchmarks.first().cloned();
     let formats = {
         let mut statement=conn.prepare("SELECT LOWER(a.extension),COALESCE(t.family,''),COALESCE(t.support_level,''),COUNT(*),COALESCE(SUM(a.bytes),0) FROM assets a LEFT JOIN asset_technical_metadata t ON t.asset_id=a.id GROUP BY 1,2,3 ORDER BY 5 DESC").map_err(|error|error.to_string())?;
         let rows = statement
@@ -651,6 +687,10 @@ fn compute_dashboard(cfg: &LibraryConfig) -> Result<DashboardStats, String> {
         offline_sources: offline,
         oldest,
         newest,
+        oldest_photo,
+        newest_photo,
+        oldest_video,
+        newest_video,
         master_available_bytes,
         backup_available_bytes,
         types: rollup("type")?,
@@ -664,6 +704,7 @@ fn compute_dashboard(cfg: &LibraryConfig) -> Result<DashboardStats, String> {
         cameras: rollup("camera")?,
         insights,
         latest_benchmark,
+        recent_benchmarks,
         snapshot_generated_at: chrono::Utc::now().to_rfc3339(),
         stale:false,
         timings:vec![
@@ -1438,7 +1479,7 @@ fn get_thumbnail(
     let cfg = current(&state)?;
     let thumbnail = media::thumbnail_file(&cfg, &asset_id)?;
     if thumbnail.is_none() {
-        manager.request_thumbnail(cfg, asset_id.clone())?;
+        manager.request_thumbnail(cfg, asset_id.clone(), 200)?;
     }
     Ok(thumbnail.map(|_| {
         #[cfg(windows)]
@@ -1450,6 +1491,50 @@ fn get_thumbnail(
             format!("lumina-thumb://localhost/{asset_id}")
         }
     }))
+}
+#[tauri::command]
+fn prefetch_thumbnails(
+    asset_ids: Vec<String>,
+    priority: i64,
+    state: State<AppState>,
+    manager: State<jobs::JobManager>,
+) -> Result<i64, String> {
+    let cfg = current(&state)?;
+    let mut accepted = 0;
+    for asset in asset_ids.into_iter().take(80) {
+        if valid_thumbnail_asset_id(&asset) {
+            manager.request_thumbnail(cfg.clone(), asset, priority.clamp(10, 180))?;
+            accepted += 1;
+        }
+    }
+    Ok(accepted)
+}
+
+#[tauri::command]
+fn reveal_asset_in_folder(asset_id: String, state: State<AppState>) -> Result<(), String> {
+    if !valid_thumbnail_asset_id(&asset_id) {
+        return Err("Identificador inválido".into());
+    }
+    let cfg = current(&state)?;
+    let conn = db(&cfg)?;
+    let path: String = conn
+        .query_row(
+            "SELECT master_path FROM assets WHERE id=?1",
+            [&asset_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| "Mídia não encontrada".to_string())?;
+    if !std::path::Path::new(&path).is_file() {
+        return Err("O arquivo não está disponível no acervo mestre".into());
+    }
+    #[cfg(windows)]
+    std::process::Command::new("explorer.exe")
+        .arg(format!("/select,{path}"))
+        .spawn()
+        .map_err(|error| error.to_string())?;
+    #[cfg(not(windows))]
+    return Err("Abrir localização ainda não é suportado neste sistema".into());
+    Ok(())
 }
 #[tauri::command]
 fn get_media_url(asset_id: String, state: State<AppState>) -> Result<String, String> {
@@ -1798,7 +1883,9 @@ pub fn run() {
             export_job_report,
             export_diagnostics,
             get_thumbnail,
+            prefetch_thumbnails,
             get_media_url,
+            reveal_asset_in_folder,
             prepare_photo_preview,
             get_asset_details,
             rebuild_thumbnail_cache,

@@ -1049,8 +1049,18 @@ mod tests {
         assert!(thumbnail_data(&cfg, "pending").unwrap().is_none());
         assert!(!master.join(".lumina/cache/thumbnails/v2").exists());
         enqueue_thumbnail(&cfg, "pending", 100).unwrap();
+        enqueue_thumbnail(&cfg, "pending", 180).unwrap();
         let conn = catalog::open(&master.join(".lumina/catalog.sqlite")).unwrap();
         assert_eq!(conn.query_row("SELECT COUNT(*) FROM work_queue WHERE asset_id='pending' AND kind='thumbnail' AND state='pending'",[],|row|row.get::<_,i64>(0)).unwrap(),1);
+        assert_eq!(
+            conn.query_row(
+                "SELECT priority FROM work_queue WHERE asset_id='pending' AND kind='thumbnail'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            180
+        );
         drop(conn);
         fs::remove_dir_all(root).unwrap();
     }

@@ -1,6 +1,6 @@
 # Lumina
 
-Versão em desenvolvimento: **0.15.0-beta.1**. A versão **0.14.0-beta.4** está homologada e publicada. Consulte [SPEC-0.15-BETA.md](SPEC-0.15-BETA.md) para o novo ciclo e [RELEASE-0.15-BETA.md](RELEASE-0.15-BETA.md) para o roteiro de validação.
+Versão em desenvolvimento: **0.15.0-beta.2**, candidata consolidada do ciclo 0.15. A **0.15.0-beta.1** permanece homologada e publicada. Consulte [SPEC-0.15-BETA.md](SPEC-0.15-BETA.md) para o escopo e [RELEASE-0.15-BETA.md](RELEASE-0.15-BETA.md) para o roteiro de validação.
 
 A anatomia, os wireframes responsivos e os estados da nova galeria estão registrados em [DESIGN-0.15-GALLERY.md](DESIGN-0.15-GALLERY.md).
 

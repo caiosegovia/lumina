@@ -2743,6 +2743,7 @@ mod tests {
                     filters: GalleryFilters::default(),
                     cursor: None,
                     limit: Some(40),
+                    sort: None,
                 },
             )
             .unwrap();

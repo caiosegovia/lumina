@@ -777,6 +777,7 @@ mod tests {
                 },
                 cursor: None,
                 limit: Some(100),
+                sort: None,
             },
         )
         .unwrap();
@@ -796,6 +797,7 @@ mod tests {
                     },
                     cursor: gallery.next_cursor.clone(),
                     limit: Some(100),
+                    sort: None,
                 },
             )
             .unwrap();

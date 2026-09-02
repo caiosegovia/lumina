@@ -1,6 +1,6 @@
 # Baseline visual — Galeria Lumina 0.15
 
-Status: candidata `0.15.0-beta.1`. Esta baseline registra a intenção visual implementada e os critérios usados para homologação e regressão.
+Status: candidata consolidada `0.15.0-beta.2`. Esta baseline registra a intenção visual implementada e os critérios usados para homologação e regressão.
 
 ## Princípio
 
@@ -20,7 +20,7 @@ flowchart TB
   D --> D1[Grade]
   D --> D2[Lista]
   E --> E1[Preview progressivo ou vídeo]
-  E --> E2[Sequência recolhível]
+  E --> E2[Navegação anterior e próxima]
   E --> E3[Organização pessoal]
   E --> E4[Captura, arquivo e localizações]
 ```
@@ -91,7 +91,9 @@ Critérios:
 - Faz parte do workspace em telas amplas e mantém o acervo acionável.
 - Preview imediato é substituído pelo derivado HD quando estiver pronto.
 - Foto, vídeo e metadados devem mudar juntos durante a navegação.
-- Sequência é identificada, explica anterior/próximas, pode ser recolhida e persiste a escolha.
+- A navegação anterior/próxima permanece junto ao preview; a antiga faixa rolável de miniaturas foi removida para reduzir ruído e rolagem interna.
+- A seleção usa preenchimento, contorno, checkbox e a identificação textual “Selecionado”, mantendo o estado reconhecível sem depender apenas de cor.
+- Captura omite a origem técnica da data; Arquivo e mídia omite MIME, perfil de cor e orientação por não apoiarem as decisões principais desta interface.
 - Organização pessoal, captura, arquivo e localizações seguem ordem do mais frequente ao técnico.
 - Fechar o inspetor devolve toda a largura ao acervo sem perder filtros ou posição.
 
@@ -145,6 +147,14 @@ Estados obrigatórios:
 - A responsividade reduz informação secundária antes de esconder ações.
 - Capturas aprovadas passam a ser evidência da baseline para regressões futuras.
 
-## Decisões futuras já delimitadas
+## Extensões consolidadas na beta.2
 
-Ordenação persistente, densidade própria da lista, seleção por intervalo, seções recolhíveis de metadados e comparação lado a lado pertencem ao próximo incremento. Devem estender esta anatomia sem recriar sidebar sobreposta ou duplicar controles.
+Ordenação persistente, densidade própria da lista, seleção por intervalo, seções recolhíveis de metadados e comparação lado a lado estendem esta anatomia sem recriar sidebar sobreposta ou duplicar controles. A comparação é uma superfície modal focada; ao fechar, o workspace retorna com filtros e seleção preservados.
+
+## Refinamento da visão geral
+
+- Memórias são o indicador principal e primeira/última captura são apresentadas separadamente para fotos e vídeos.
+- Capacidade, proteção, acervo principal e réplica local formam uma única superfície; “tamanho médio de arquivo” substitui a referência interna ao p90.
+- Composição compara somente fotos e vídeos em gráfico de proporção.
+- Formatos, equipamentos normalizados e codecs têm grupos visuais distintos no inventário técnico.
+- Insights usam cards acionáveis e desempenho compara visualmente até cinco processamentos, discriminando análise, leitura, cópia e previews.
