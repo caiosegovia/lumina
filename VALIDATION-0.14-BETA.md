@@ -41,4 +41,4 @@ O hash externo do ZIP é publicado junto da entrega; ele não é incorporado nes
 
 ## Homologação humana pendente
 
-Os gates técnicos autorizam a beta.4 para teste no dispositivo oficial. A promoção para versão final depende da validação visual e funcional do responsável pelo produto, especialmente preview HD, metadados reais, Saúde, pills e estados de duplicatas.
+Os gates técnicos autorizaram a beta.4 para teste no dispositivo oficial. Em 2026-09-02, o responsável pelo produto aprovou os pontos do roteiro funcional e autorizou a promoção da candidata. Preview HD, metadados reais, Saúde, pills e estados de duplicatas ficam registrados como homologados nesta versão.
