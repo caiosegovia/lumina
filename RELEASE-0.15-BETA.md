@@ -2,6 +2,8 @@
 
 Primeira candidata do novo workspace da galeria.
 
+Consulte [DESIGN-0.15-GALLERY.md](DESIGN-0.15-GALLERY.md) para comparar a implementação com a anatomia e os estados esperados.
+
 ## Entregas desta candidata
 
 - Segmentação e comandos da galeria em uma região fixa durante a navegação.

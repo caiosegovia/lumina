@@ -4,6 +4,8 @@
 
 Transformar a galeria em um workspace único de descoberta e revisão. Grade, lista, segmentação e inspeção devem coexistir sem sobreposição, perda de contexto ou navegação desnecessária.
 
+A baseline visual normativa deste ciclo está em [DESIGN-0.15-GALLERY.md](DESIGN-0.15-GALLERY.md).
+
 ## Contrato funcional
 
 - A segmentação principal permanece visível durante a navegação e reúne resumo, mídia, ano, busca, agrupamento, densidade, visões e filtros.
