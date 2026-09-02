@@ -5,9 +5,9 @@ React views
     ↓ DTOs tipados
 Tauri commands
     ↓ casos de uso
-sync | review | duplicates | health
+sync | review | duplicates | health | metadata
     ↓
-catalog + jobs + media + storage/process
+catalog + jobs + media + diagnostics + storage/process
 ```
 
 ## Regras
@@ -20,6 +20,9 @@ catalog + jobs + media + storage/process
 6. A elegibilidade para limpeza é calculada no backend e repetida no momento da decisão.
 7. Migrações são incrementais, idempotentes e executadas em transação.
 8. Nenhum módulo novo depende de componentes React ou de detalhes do protocolo Tauri.
+9. `metadata` controla extração sob demanda e persistência; a UI nunca executa ferramentas externas diretamente.
+10. `media` produz derivados limitados e versionados; originais são somente leitura e vídeo usa leitura por intervalos.
+11. `diagnostics` registra apenas eventos sanitizados, com limite de tamanho e sem telemetria externa.
 
 ## Estratégia de entrega
 

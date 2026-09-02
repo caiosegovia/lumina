@@ -32,6 +32,7 @@ import type {
   CleanupPlan,
   DashboardStats,
   DuplicateGroup,
+  DuplicateStatus,
   ImportEvent,
   ImportSummary,
   JobOverview,
@@ -44,6 +45,7 @@ import type {
   TagInfo,
   StoragePlan,
   ThumbnailAudit,
+  ThumbnailRepairProgress,
   ReviewSummary,
   View,
 } from "./types";
@@ -70,6 +72,13 @@ export default function App() {
   useEffect(() => {
     api.getLibrary().then(setLibrary);
   }, []);
+  useEffect(()=>{
+    const error=(event:ErrorEvent)=>void api.recordClientError("frontend_error",event.message||"Erro não identificado");
+    const rejection=(event:PromiseRejectionEvent)=>void api.recordClientError("unhandled_rejection",event.reason instanceof Error?event.reason.message:String(event.reason));
+    window.addEventListener("error",error);
+    window.addEventListener("unhandledrejection",rejection);
+    return()=>{window.removeEventListener("error",error);window.removeEventListener("unhandledrejection",rejection)};
+  },[]);
   useEffect(() => {
     if (!library) return;
     const load = () =>
@@ -784,6 +793,7 @@ function Sources({ onImport }: { onImport: () => void }) {
 }
 function Duplicates() {
   const [items, setItems] = useState<DuplicateGroup[]>([]);
+  const [status, setStatus] = useState<DuplicateStatus>();
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -793,7 +803,9 @@ function Duplicates() {
     setLoading(true);
     setError("");
     try {
-      setItems(await api.duplicates());
+      const [groups, overview] = await Promise.all([api.duplicates(), api.duplicateStatus()]);
+      setItems(groups);
+      setStatus(overview);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -831,6 +843,13 @@ function Duplicates() {
       </div>
       {notice && <p className="safe-note" role="status">{notice}</p>}
       {error && <div className="error-box">Não foi possível consultar duplicatas: {error}</div>}
+      {status && <div className="duplicate-status" role="status">
+        <span className={`status-pill ${status.state === "found" ? "warning" : "success"}`}>{status.state === "found" ? "Duplicatas encontradas" : status.state === "not_analyzed" ? "Aguardando catálogo" : "Análise concluída"}</span>
+        <span><strong>{status.catalogAssets.toLocaleString("pt-BR")}</strong> mídias catalogadas</span>
+        <span><strong>{status.occurrences.toLocaleString("pt-BR")}</strong> ocorrências ativas</span>
+        <span><strong>{status.connectedSources}</strong> de {status.totalSources} fontes conectadas</span>
+        <span>Última análise: <strong>{formatDate(status.lastScan)}</strong></span>
+      </div>}
       <section className="cleanup-planner">
         <div><h3>Plano de limpeza seguro</h3><p>Simule candidatas e espaço potencial. Esta beta não remove arquivos.</p></div>
         <button className="primary" onClick={async()=>setPlan(await api.createCleanupPlan())}>Gerar plano</button>
@@ -839,12 +858,12 @@ function Duplicates() {
       {!loading && !error && items.length === 0 && (
         <div className="empty-duplicates">
           <Copy />
-          <h3>Nenhuma duplicata catalogada</h3>
+          <h3>{status?.state === "not_analyzed" ? "A biblioteca ainda não foi analisada" : "Nenhuma duplicata exata encontrada"}</h3>
           <p>
             Um grupo aparece aqui depois que o mesmo conteúdo é encontrado em duas ou mais
             origens importadas. Fotos parecidas não são tratadas como duplicatas exatas.
           </p>
-          <small>Importe ou analise as demais fontes e volte para atualizar esta tela.</small>
+          <small>{status?.totalSources !== status?.connectedSources ? "Conecte e atualize as fontes offline para uma análise completa." : "A análise está atualizada. Fotos visualmente parecidas não são classificadas como cópias exatas."}</small>
         </div>
       )}
       <div className="duplicate-list">
@@ -1186,6 +1205,7 @@ function Protection() {
     [master, setMaster] = useState(""),
     [thumbnailHealth, setThumbnailHealth] = useState<ThumbnailAudit>(),
     [repairing, setRepairing] = useState(false),
+    [repairProgress,setRepairProgress]=useState<ThumbnailRepairProgress>(),
     [health,setHealth]=useState<LibraryHealth>(),
     [queue, setQueue] = useState<{
       pending: number;
@@ -1204,6 +1224,13 @@ function Protection() {
     api.auditThumbnails(false).then(setThumbnailHealth).catch(() => {});
     api.libraryHealth().then(setHealth).catch(()=>{});
   }, []);
+  useEffect(()=>{
+    if(!repairing)return;
+    const poll=()=>api.thumbnailRepairProgress().then(setRepairProgress).catch(()=>{});
+    poll();
+    const timer=window.setInterval(poll,350);
+    return()=>window.clearInterval(timer);
+  },[repairing]);
   const choose = async (set: (x: string) => void) => {
     const p = await api.chooseFolder();
     if (p) set(p);
@@ -1260,7 +1287,14 @@ function Protection() {
           {result}
         </div>
       )}
-      {health&&<div className="health-grid">{health.checks.map(check=><article key={check.key} className={check.state}><span>{check.label}</span><strong>{check.state==="healthy"?"Saudável":check.state==="warning"?"Atenção":"Erro"}</strong><small>{check.detail}</small></article>)}</div>}
+      {health&&<section className={`health-overview ${health.overall}`}>
+        <header>
+          <div><span className={`status-pill ${health.overall === "healthy" ? "success" : health.overall === "attention" ? "warning" : "error"}`}>{health.overall === "healthy" ? "Tudo saudável" : health.overall === "attention" ? "Requer atenção" : "Ação necessária"}</span><h3>Saúde da biblioteca</h3><p>{health.checks.filter(check=>check.state!=="healthy").length ? `${health.checks.filter(check=>check.state!=="healthy").length} pontos merecem sua atenção.` : "Catálogo, mídias e ferramentas operando normalmente."}</p></div>
+          <div className="health-score"><strong>{health.checks.filter(check=>check.state==="healthy").length}/{health.checks.length}</strong><span>verificações saudáveis</span></div>
+        </header>
+        <div className="health-actions">{health.checks.filter(check=>check.state!=="healthy"&&!['exiftool','ffmpeg','ffprobe'].includes(check.key)).map(check=><article key={check.key} className={check.state}><span className={`status-dot ${check.state}`}/><div><strong>{check.label}</strong><small>{check.detail}</small></div><span className={`status-pill ${check.state}`}>{check.state==="warning"?"Atenção":"Erro"}</span></article>)}</div>
+        <details className="health-technical"><summary>Ver detalhes técnicos e verificações saudáveis</summary><div>{health.checks.filter(check=>check.state==="healthy"||['exiftool','ffmpeg','ffprobe'].includes(check.key)).map(check=><p key={check.key}><span>{check.label}</span><strong>{check.detail}</strong><i className={`status-dot ${check.state}`}/></p>)}</div></details>
+      </section>}
       <div className="protection-flow">
         <article>
           <Database />
@@ -1289,9 +1323,9 @@ function Protection() {
           </p>
           {repairing && (
             <div className="thumbnail-repair-progress" role="progressbar" aria-label="Reparo de miniaturas em andamento">
-              <span>Validando e reconstruindo o cache…</span>
-              <i />
-              <small>Você pode continuar usando o aplicativo.</small>
+              <span>Verificando {repairProgress?.processed || 0} de {repairProgress?.total || thumbnailHealth?.total || 0} mídias</span>
+              <div><i style={{width:`${repairProgress?.total ? Math.round(repairProgress.processed/repairProgress.total*100) : 2}%`}} /></div>
+              <small>{repairProgress?.regenerated || 0} recuperadas · {repairProgress?.failed || 0} falhas · a galeria continua disponível</small>
             </div>
           )}
           <button

@@ -48,6 +48,41 @@ pub fn list(cfg: &LibraryConfig) -> Result<Vec<DuplicateGroup>, String> {
         .collect())
 }
 
+pub fn status(cfg: &LibraryConfig) -> Result<DuplicateStatus, String> {
+    let conn = catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite"))
+        .map_err(|error| error.to_string())?;
+    let catalog_assets = conn
+        .query_row("SELECT COUNT(*) FROM assets", [], |row| row.get(0))
+        .map_err(|error| error.to_string())?;
+    let exact_groups = conn
+        .query_row("SELECT COUNT(*) FROM assets a WHERE (SELECT COUNT(*) FROM active_occurrences o WHERE o.asset_id=a.id)>1", [], |row| row.get(0))
+        .map_err(|error| error.to_string())?;
+    let occurrences = conn
+        .query_row("SELECT COUNT(*) FROM active_occurrences", [], |row| {
+            row.get(0)
+        })
+        .map_err(|error| error.to_string())?;
+    let (connected_sources, total_sources, last_scan): (i64, i64, Option<String>) = conn
+        .query_row("SELECT COALESCE(SUM(available),0),COUNT(*),MAX(last_scan) FROM sources WHERE path NOT LIKE 'lumina://%'", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .map_err(|error| error.to_string())?;
+    let state = if catalog_assets == 0 {
+        "not_analyzed"
+    } else if exact_groups > 0 {
+        "found"
+    } else {
+        "none_found"
+    };
+    Ok(DuplicateStatus {
+        state: state.into(),
+        catalog_assets,
+        exact_groups,
+        occurrences,
+        connected_sources,
+        total_sources,
+        last_scan,
+    })
+}
+
 pub fn decide_group(
     cfg: &LibraryConfig,
     asset_id: &str,

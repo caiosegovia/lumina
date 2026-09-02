@@ -1,5 +1,6 @@
 mod backup;
 mod catalog;
+mod diagnostics;
 mod duplicates;
 mod engine;
 mod events;
@@ -9,6 +10,7 @@ mod health;
 mod jobs;
 mod library;
 mod media;
+mod metadata;
 mod models;
 mod pipeline;
 mod process;
@@ -732,6 +734,10 @@ fn get_library_health(state: State<AppState>) -> Result<LibraryHealth, String> {
     health::inspect(&current(&state)?)
 }
 #[tauri::command]
+fn record_client_error(kind: String, message: String) {
+    diagnostics::client_error(&kind, &message);
+}
+#[tauri::command]
 fn undo_last_edit(state: State<AppState>) -> Result<BatchResult, String> {
     review::undo_last(&current(&state)?)
 }
@@ -811,6 +817,10 @@ async fn search_gallery(
 #[tauri::command]
 fn list_duplicates(state: State<AppState>) -> Result<Vec<DuplicateGroup>, String> {
     duplicates::list(&current(&state)?)
+}
+#[tauri::command]
+fn get_duplicate_status(state: State<AppState>) -> Result<DuplicateStatus, String> {
+    duplicates::status(&current(&state)?)
 }
 #[tauri::command]
 fn update_duplicate_decision(
@@ -1469,12 +1479,40 @@ fn get_media_url(asset_id: String, state: State<AppState>) -> Result<String, Str
 }
 
 #[tauri::command]
-fn get_asset_details(asset_id: String, state: State<AppState>) -> Result<AssetDetails, String> {
+async fn prepare_photo_preview(
+    asset_id: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
     if !valid_thumbnail_asset_id(&asset_id) {
         return Err("Identificador inválido".into());
     }
-    let conn = db(&current(&state)?)?;
-    conn.query_row("SELECT t.detected_format,t.mime,t.container,t.codec,t.audio_codec,t.frame_rate,t.bitrate,t.pixel_format,t.lens,t.iso,t.aperture,t.exposure,t.focal_length,t.orientation,t.color_profile,t.support_level,t.inventory_state,t.inventory_error FROM assets a LEFT JOIN asset_technical_metadata t ON t.asset_id=a.id WHERE a.id=?1",[asset_id],|row|Ok(AssetDetails{detected_format:row.get(0)?,mime:row.get(1)?,container:row.get(2)?,codec:row.get(3)?,audio_codec:row.get(4)?,frame_rate:row.get(5)?,bitrate:row.get(6)?,pixel_format:row.get(7)?,lens:row.get(8)?,iso:row.get(9)?,aperture:row.get(10)?,exposure:row.get(11)?,focal_length:row.get(12)?,orientation:row.get(13)?,color_profile:row.get(14)?,support_level:row.get(15)?,inventory_state:row.get(16)?,inventory_error:row.get(17)?})).map_err(|_|"Mídia não encontrada".to_string())
+    let cfg = current(&state)?;
+    let requested = asset_id.clone();
+    tauri::async_runtime::spawn_blocking(move || media::viewer_preview_file(&cfg, &requested))
+        .await
+        .map_err(|error| error.to_string())??;
+    #[cfg(windows)]
+    {
+        Ok(format!("http://lumina-preview.localhost/{asset_id}"))
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(format!("lumina-preview://localhost/{asset_id}"))
+    }
+}
+
+#[tauri::command]
+async fn get_asset_details(
+    asset_id: String,
+    state: State<'_, AppState>,
+) -> Result<AssetDetails, String> {
+    if !valid_thumbnail_asset_id(&asset_id) {
+        return Err("Identificador inválido".into());
+    }
+    let cfg = current(&state)?;
+    tauri::async_runtime::spawn_blocking(move || metadata::details(&cfg, &asset_id))
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 fn valid_thumbnail_asset_id(asset: &str) -> bool {
@@ -1501,12 +1539,17 @@ async fn audit_thumbnail_cache(
         .map_err(|e| e.to_string())?
 }
 #[tauri::command]
+fn get_thumbnail_repair_progress() -> ThumbnailRepairProgress {
+    media::repair_progress()
+}
+#[tauri::command]
 fn clear_thumbnail_cache(state: State<AppState>) -> Result<i64, String> {
     media::clear_cache(&current(&state)?)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    diagnostics::start_session();
     let base = dirs::data_local_dir().unwrap_or_else(|| PathBuf::from("."));
     let config_path = base.join("Lumina/library.json");
     let config: Option<LibraryConfig> = fs::read(&config_path)
@@ -1552,6 +1595,36 @@ pub fn run() {
                     .unwrap(),
             }
         })
+        .register_uri_scheme_protocol("lumina-preview", |context, request| {
+            let asset = request.uri().path().trim_start_matches('/');
+            let response = || -> Result<Vec<u8>, String> {
+                if !valid_thumbnail_asset_id(asset) {
+                    return Err("Identificador inválido".into());
+                }
+                let state = context.app_handle().state::<AppState>();
+                let cfg = state
+                    .library
+                    .lock()
+                    .map_err(|_| "Estado indisponível".to_string())?
+                    .clone()
+                    .ok_or_else(|| "Biblioteca não configurada".to_string())?;
+                fs::read(media::viewer_preview_file(&cfg, asset)?)
+                    .map_err(|error| error.to_string())
+            };
+            match response() {
+                Ok(bytes) => tauri::http::Response::builder()
+                    .status(200)
+                    .header("Content-Type", "image/jpeg")
+                    .header("Cache-Control", "private, max-age=86400")
+                    .body(bytes)
+                    .unwrap(),
+                Err(error) => tauri::http::Response::builder()
+                    .status(404)
+                    .header("Content-Type", "text/plain; charset=utf-8")
+                    .body(error.into_bytes())
+                    .unwrap(),
+            }
+        })
         .register_uri_scheme_protocol("lumina-media", |context, request| {
             let asset = request.uri().path().trim_start_matches('/');
             let response = || -> Result<(Vec<u8>, String, u64, u64, u64), String> {
@@ -1566,14 +1639,23 @@ pub fn run() {
                     .clone()
                     .ok_or_else(|| "Biblioteca não configurada".to_string())?;
                 let conn = db(&cfg)?;
-                let (stored, extension): (String, String) = conn
+                let (stored, extension, media_type): (String, String, String) = conn
                     .query_row(
-                        "SELECT master_path,LOWER(extension)FROM assets WHERE id=?1",
+                        "SELECT master_path,LOWER(extension),media_type FROM assets WHERE id=?1",
                         [asset],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                     )
                     .map_err(|_| "Mídia não encontrada".to_string())?;
-                let canonical = fs::canonicalize(&stored).map_err(|error| error.to_string())?;
+                // Navegar rapidamente por originais grandes pode esgotar a memória do
+                // WebView. Fotos usam a representação limitada do cache; vídeos mantêm
+                // acesso parcial ao arquivo original.
+                let served = if media_type == "photo" {
+                    media::thumbnail_file(&cfg, asset)?
+                        .ok_or_else(|| "Prévia indisponível".to_string())?
+                } else {
+                    PathBuf::from(&stored)
+                };
+                let canonical = fs::canonicalize(&served).map_err(|error| error.to_string())?;
                 let master =
                     fs::canonicalize(&cfg.master_path).map_err(|error| error.to_string())?;
                 if !canonical.starts_with(master) {
@@ -1607,15 +1689,19 @@ pub fn run() {
                 let mut bytes = vec![0; length as usize];
                 file.read_exact(&mut bytes)
                     .map_err(|error| error.to_string())?;
-                let mime = match extension.as_str() {
-                    "mp4" | "m4v" => "video/mp4",
-                    "mov" => "video/quicktime",
-                    "webm" => "video/webm",
-                    "jpg" | "jpeg" => "image/jpeg",
-                    "png" => "image/png",
-                    "gif" => "image/gif",
-                    "webp" => "image/webp",
-                    _ => "application/octet-stream",
+                let mime = if media_type == "photo" {
+                    "image/jpeg"
+                } else {
+                    match extension.as_str() {
+                        "mp4" | "m4v" => "video/mp4",
+                        "mov" => "video/quicktime",
+                        "webm" => "video/webm",
+                        "jpg" | "jpeg" => "image/jpeg",
+                        "png" => "image/png",
+                        "gif" => "image/gif",
+                        "webp" => "image/webp",
+                        _ => "application/octet-stream",
+                    }
                 }
                 .to_string();
                 Ok((bytes, mime, start, end, total))
@@ -1628,7 +1714,7 @@ pub fn run() {
                         .header("Content-Type", mime)
                         .header("Accept-Ranges", "bytes")
                         .header("Content-Length", bytes.len().to_string())
-                        .header("Cache-Control", "private, max-age=3600");
+                        .header("Cache-Control", "no-store");
                     if partial {
                         builder =
                             builder.header("Content-Range", format!("bytes {start}-{end}/{total}"));
@@ -1661,10 +1747,12 @@ pub fn run() {
             start_source_sync,
             get_review_summary,
             get_library_health,
+            record_client_error,
             undo_last_edit,
             list_assets,
             search_gallery,
             list_duplicates,
+            get_duplicate_status,
             update_duplicate_decision,
             update_occurrence_decision,
             create_cleanup_plan,
@@ -1711,13 +1799,20 @@ pub fn run() {
             export_diagnostics,
             get_thumbnail,
             get_media_url,
+            prepare_photo_preview,
             get_asset_details,
             rebuild_thumbnail_cache,
             audit_thumbnail_cache,
+            get_thumbnail_repair_progress,
             clear_thumbnail_cache
         ])
-        .run(tauri::generate_context!())
+        .build(tauri::generate_context!())
         .expect("erro ao iniciar Lumina")
+        .run(|_, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                diagnostics::finish_session();
+            }
+        });
 }
 
 #[cfg(test)]

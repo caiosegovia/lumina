@@ -225,26 +225,16 @@ export default function Gallery() {
     };
   return (
     <>
-      <div className="gallery-stats">
-        <Metric
-          label="Mídias"
-          value={(s?.total || 0).toLocaleString("pt-BR")}
-        />
-        <Metric label="Espaço" value={formatBytes(s?.bytes || 0)} />
-        <Metric
-          label="Protegidas"
-          value={
-            s?.total ? `${Math.round((s.protected / s.total) * 100)}%` : "0%"
-          }
-        />
-        <Metric
-          label="Com localização"
-          value={(s?.withLocation || 0).toLocaleString("pt-BR")}
-        />
-        <Metric
-          label="Em várias origens"
-          value={(s?.duplicateAssets || 0).toLocaleString("pt-BR")}
-        />
+      <div className="gallery-aggregate-bar" aria-label="Resumo e filtros rápidos">
+        <div className="aggregate-total"><strong>{(s?.total || 0).toLocaleString("pt-BR")} mídias</strong><span>{formatBytes(s?.bytes || 0)} no resultado atual</span></div>
+        <button className={!filters.mediaType ? "active" : ""} onClick={()=>setFilters(value=>({...value,mediaType:undefined}))}>Todas <b>{s?.total || 0}</b></button>
+        <button className={filters.mediaType === "photo" ? "active" : ""} onClick={()=>setFilters(value=>({...value,mediaType:value.mediaType === "photo" ? undefined : "photo"}))}>Fotos <b>{s?.photos || 0}</b></button>
+        <button className={filters.mediaType === "video" ? "active" : ""} onClick={()=>setFilters(value=>({...value,mediaType:value.mediaType === "video" ? undefined : "video"}))}>Vídeos <b>{s?.videos || 0}</b></button>
+        <button className={filters.mediaType === "raw" ? "active" : ""} onClick={()=>setFilters(value=>({...value,mediaType:value.mediaType === "raw" ? undefined : "raw"}))}>RAW <b>{s?.raw || 0}</b></button>
+        <button className={filters.favorite ? "active accent" : ""} onClick={()=>setFilters(value=>({...value,favorite:value.favorite ? undefined : true}))}>Favoritas <b>{s?.favorites || 0}</b></button>
+        <button className={filters.protectionState === "source_only" ? "active warning" : ""} onClick={()=>setFilters(value=>({...value,protectionState:value.protectionState === "source_only" ? undefined : "source_only"}))}>Sem proteção <b>{s?.pendingProtection || 0}</b></button>
+        <span className="aggregate-info">Em várias origens <b>{s?.duplicateAssets || 0}</b></span>
+        <span className="aggregate-info">Metadados pendentes <b>{s?.incompleteMetadata || 0}</b></span>
       </div>
       <div className="year-strip">
         {s?.years.map((y) => (
@@ -817,7 +807,10 @@ function Preview({
   const [fullscreen, setFullscreen] = useState(false);
   const [previewZoom, setPreviewZoom] = useState(1);
   const [mediaUrl, setMediaUrl] = useState("");
+  const [highQualityUrl, setHighQualityUrl] = useState("");
+  const [qualityState, setQualityState] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [details, setDetails] = useState<AssetDetails>();
+  const [detailsLoading, setDetailsLoading] = useState(false);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const drag = useRef<{ x: number; y: number; left: number; top: number }>();
 
@@ -826,11 +819,17 @@ function Preview({
     setPreviewZoom(1);
     setPan({ x: 0, y: 0 });
     setMediaUrl("");
+    setHighQualityUrl("");
     setDetails(undefined);
+    setDetailsLoading(true);
     if (asset.mediaType !== "raw") {
       api.mediaUrl(asset.id).then(setMediaUrl).catch(() => setMediaUrl(""));
     }
-    api.assetDetails(asset.id).then(setDetails).catch(() => setDetails(undefined));
+    if (asset.mediaType === "photo" || asset.mediaType === "raw") {
+      setQualityState("loading");
+      api.photoPreview(asset.id).then((url)=>{setHighQualityUrl(url);setQualityState("ready")}).catch((cause)=>{setQualityState("error");void api.recordClientError("media_error",cause instanceof Error?cause.message:String(cause))});
+    } else setQualityState("idle");
+    api.assetDetails(asset.id).then(setDetails).catch(() => setDetails(undefined)).finally(()=>setDetailsLoading(false));
   }, [asset.id, asset.description]);
 
   useEffect(() => {
@@ -866,8 +865,8 @@ function Preview({
       <div className={`preview-stage ${previewZoom > 1 ? "pannable" : ""}`} onPointerDown={(event)=>{if(previewZoom===1)return;event.currentTarget.setPointerCapture(event.pointerId);drag.current={x:event.clientX,y:event.clientY,left:pan.x,top:pan.y}}} onPointerMove={(event)=>{if(!drag.current)return;setPan({x:drag.current.left+event.clientX-drag.current.x,y:drag.current.top+event.clientY-drag.current.y})}} onPointerUp={(event)=>{drag.current=undefined;event.currentTarget.releasePointerCapture(event.pointerId)}}>
         {asset.mediaType === "video" && mediaUrl ? (
           <video key={asset.id} className="drawer-video" src={mediaUrl} controls preload="metadata" />
-        ) : asset.mediaType === "photo" && mediaUrl ? (
-          <img key={asset.id} className="drawer-photo" src={mediaUrl} alt={`Prévia de ${asset.filename}`} draggable={false} style={{transform:`translate(${pan.x}px,${pan.y}px) scale(${previewZoom})`}} />
+        ) : (asset.mediaType === "photo" || asset.mediaType === "raw") && (highQualityUrl || mediaUrl) ? (
+          <img key={`${asset.id}-${highQualityUrl ? "hq" : "fast"}`} className="drawer-photo" src={highQualityUrl || mediaUrl} alt={`Prévia de ${asset.filename}`} draggable={false} style={{transform:`translate(${pan.x}px,${pan.y}px) scale(${previewZoom})`}} />
         ) : (
           <MediaThumb key={asset.id} asset={asset} className={`drawer-preview preview-zoom-${previewZoom}`} />
         )}
@@ -876,6 +875,8 @@ function Preview({
           <button aria-label="Aumentar zoom" disabled={previewZoom === 3} onClick={() => setPreviewZoom((value) => Math.min(3, value + 1))}><ZoomIn /></button>
           <button aria-label={fullscreen ? "Sair da tela cheia" : "Abrir em tela cheia"} onClick={() => setFullscreen((value) => !value)}>{fullscreen ? <Minimize2 /> : <Maximize2 />}</button>
         </div>
+        {qualityState === "loading" && <span className="preview-quality"><LoaderCircle className="spin"/> Preparando alta qualidade</span>}
+        {qualityState === "ready" && <span className="preview-quality ready">Prévia HD</span>}
       </div>
       <div className="preview-navigation">
         <button
@@ -904,6 +905,13 @@ function Preview({
       </div>
       <h2>{asset.filename}</h2>
       <p>{new Date(asset.capturedAt).toLocaleString("pt-BR")}</p>
+      <div className="asset-pills" aria-label="Atributos da mídia">
+        <span>{asset.mediaType === "video" ? "Vídeo" : asset.mediaType === "raw" ? "RAW" : "Foto"}</span>
+        <span>{asset.extension.toUpperCase()}</span>
+        {asset.favorite && <span className="accent">Favorita</span>}
+        <span className={asset.protectionState === "replica_verified" ? "success" : "warning"}>{asset.protectionState === "replica_verified" ? "Protegida" : "Proteção pendente"}</span>
+        {asset.tags.map(tag=><span key={tag}>#{tag}</span>)}
+      </div>
       <div className="asset-personal-actions" aria-label="Organização pessoal">
         <button
           className={asset.favorite ? "active" : ""}
@@ -959,7 +967,8 @@ function Preview({
       )}
       <hr />
       <p className="eyebrow">CAPTURA</p>
-      <Info label="Câmera" value={asset.camera || "Não disponível"} />
+      {detailsLoading && <p className="metadata-state"><LoaderCircle className="spin"/> Lendo metadados do arquivo…</p>}
+      <Info label="Câmera" value={details?.camera || asset.camera || "Não informado no arquivo"} />
       <Info label="Lente" value={details?.lens || "Não disponível"} />
       <Info label="Exposição" value={formatExposure(details?.exposure)} />
       <Info label="Abertura" value={details?.aperture ? `f/${details.aperture}` : "Não disponível"} />

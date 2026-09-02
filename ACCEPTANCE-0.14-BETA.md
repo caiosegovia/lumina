@@ -14,7 +14,7 @@ Esta matriz é o contrato operacional do ciclo. Um item só está entregue quand
 | Duplicatas | Plano/relatório sem exclusão e bloqueio sem réplica | Implementado | integração + inspeção da fonte |
 | Visualizador | Foto/vídeo sincronizados, anterior/próxima, atalhos e tela cheia | Implementado e testado | teste de troca foto+metadado aprovado |
 | Visualizador | Filmstrip compreensível, zoom e pan | Implementado e testado | homologação visual aberta |
-| Visualizador | Metadados completos e atualizados durante navegação | Implementado e testado | integração + frontend aprovados |
+| Visualizador | Metadados completos e atualizados durante navegação | Implementado na beta.4 | EXIF real + persistência + frontend |
 | Visualizador | Comparação lado a lado quando aplicável | Implementado em Duplicatas | homologação visual aberta |
 | Organização | CRUD completo de visões e álbuns inteligentes | Implementado e testado | build e frontend aprovados |
 | Organização | CRUD completo de álbuns manuais | Implementado e testado | build e frontend aprovados |
@@ -26,10 +26,23 @@ Esta matriz é o contrato operacional do ciclo. Um item só está entregue quand
 | Release | Benchmark grande e homologação em `D:\Galeria Caio` | Validado tecnicamente | 500 mil itens + app real responsivo |
 | Release | EXE, MSI e NSIS beta com hashes | Beta.2 gerada | hashes em `VALIDATION-0.14-BETA.md` |
 
-## Bloqueadores informados na homologação
+## Bloqueadores informados na homologação e resolução beta.4
 
-- O preview principal de fotos precisa acompanhar imediatamente a navegação.
-- O filmstrip deve explicar sua função e não parecer uma barra sem finalidade.
-- O painel deve apresentar metadados ricos de captura, arquivo, imagem/vídeo, localização, origem e proteção.
+- Preview principal sincronizado: validado pelo responsável do produto na beta.3.
+- Crash durante navegação: não reproduzido após contenção de memória da beta.3; beta.4 preserva a correção.
+- Zoom sem alta qualidade: resolvido com preview derivado de até 2560 px e teste de dimensão/cache.
+- Metadados de Captura vazios: resolvido com ExifTool sob demanda, parser robusto e persistência.
+- Filmstrip sem contexto: identificado como **Próximas mídias** e mantido como navegação acionável.
+- Botões inconsistentes: design system global aplicado na beta.4.
+- Saúde confusa: resumo por prioridade, problemas acionáveis e detalhes técnicos recolhíveis.
+- Duplicatas vazias sem explicação: estado agora informa cobertura do catálogo, ocorrências e fontes.
+- Reparo pouco claro: progresso numérico, recuperadas e falhas expostos durante execução.
+
+## Evidência nova da beta.4
+
+- Preview HD: geração isolada, limite de 2560 px, reuso do cache e teste automatizado com imagem de 3000 px.
+- EXIF sob demanda: câmera, lente, ISO e abertura gravados e relidos em teste de integração.
+- Galeria: agregadores e filtros rápidos com teste de regressão.
+- Observabilidade: marcador de sessão, encerramento limpo, panic hook, erros frontend/mídia e rotação local.
 
 Nenhum item obrigatório pode ser removido, simplificado ou adiado sem autorização explícita do responsável pelo produto.

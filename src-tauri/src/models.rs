@@ -234,6 +234,7 @@ pub struct MediaAsset {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AssetDetails {
+    pub camera: Option<String>,
     pub detected_format: Option<String>,
     pub mime: Option<String>,
     pub container: Option<String>,
@@ -252,6 +253,7 @@ pub struct AssetDetails {
     pub support_level: Option<String>,
     pub inventory_state: Option<String>,
     pub inventory_error: Option<String>,
+    pub enriched_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -324,6 +326,9 @@ pub struct GallerySummary {
     pub protected: i64,
     pub with_location: i64,
     pub duplicate_assets: i64,
+    pub favorites: i64,
+    pub incomplete_metadata: i64,
+    pub pending_protection: i64,
     pub years: Vec<GalleryYearCount>,
 }
 
@@ -363,6 +368,15 @@ pub struct ThumbnailAudit {
     pub missing: i64,
     pub stale: i64,
     pub corrupt: i64,
+    pub regenerated: i64,
+    pub failed: i64,
+}
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThumbnailRepairProgress {
+    pub running: bool,
+    pub processed: i64,
+    pub total: i64,
     pub regenerated: i64,
     pub failed: i64,
 }
@@ -475,6 +489,17 @@ pub struct DuplicateGroup {
     pub safety: String,
     pub occurrences: Vec<Occurrence>,
     pub decision: Option<String>,
+}
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DuplicateStatus {
+    pub state: String,
+    pub catalog_assets: i64,
+    pub exact_groups: i64,
+    pub occurrences: i64,
+    pub connected_sources: i64,
+    pub total_sources: i64,
+    pub last_scan: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

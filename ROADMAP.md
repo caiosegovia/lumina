@@ -34,6 +34,8 @@ Objetivo: ajudar a decidir, sem transformar estimativas em exclusão automática
 
 O ciclo foi ampliado para a beta de revisão e descoberta descrita em [SPEC-0.14-BETA.md](SPEC-0.14-BETA.md): sincronização incremental, Central de Revisão, visualizador avançado, álbuns inteligentes e saúde operacional fazem parte do mesmo gate de produto.
 
+A beta.4 acrescenta o fechamento do ciclo de homologação: preview HD progressivo, EXIF sob demanda, observabilidade de crashes, estados explícitos de duplicatas, progresso real de reparos e redesign do sistema de interação.
+
 ## Exploração — 0.15+: descoberta e portabilidade
 
 - Similaridade visual local e explicável.

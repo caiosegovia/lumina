@@ -30,8 +30,11 @@ Transformar o catálogo em uma biblioteca viva: sincronizar fontes existentes, r
 ### Visualizador
 
 - Tela cheia, filmstrip, anterior/próxima, atalhos, zoom e pan.
+- Entrega progressiva: miniatura imediata e preview de até 2560 px sob demanda, cacheado por versão e hash.
+- Originais grandes não podem ser acumulados na memória do processo de interface.
 - Reprodução de vídeo e comparação lado a lado quando suportado.
 - Organização pessoal e metadados sincronizados durante a navegação.
+- EXIF real é extraído sob demanda, persistido e apresentado com estados de leitura, ausência legítima e falha.
 
 ### Organização inteligente
 
@@ -44,6 +47,13 @@ Transformar o catálogo em uma biblioteca viva: sincronizar fontes existentes, r
 - Estado agregado de catálogo, fontes, miniaturas, réplica, filas e ferramentas externas.
 - Progresso uniforme, histórico, reparos em segundo plano e falhas acionáveis.
 - Diagnóstico exportável sem caminhos, nomes, hashes, GPS ou conteúdo pessoal.
+- Sessões anormais, panics e falhas do frontend são registradas localmente com rotação e sanitização.
+
+### Sistema de interação
+
+- Botões, campos, foco, loading, disabled e ações destrutivas seguem variantes visuais compartilhadas.
+- Pills e agregadores são informativos e acionáveis; filtros ativos permanecem explícitos.
+- Estados vazios distinguem ausência de dados, análise ainda não executada e falha.
 
 ## Fronteiras arquiteturais
 

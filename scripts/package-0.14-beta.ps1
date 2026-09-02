@@ -2,7 +2,7 @@ $ErrorActionPreference = "Stop"
 $workspace=(Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $release=Join-Path $workspace "src-tauri\target-0.14-beta\release"
 $artifacts=Join-Path $workspace "artifacts"
-$final=Join-Path $artifacts "Lumina-0.14.0-beta.2-portable-windows-x64"
+$final=Join-Path $artifacts "Lumina-0.14.0-beta.4-portable-windows-x64"
 $zip="$final.zip"
 if(Test-Path $final){Remove-Item -LiteralPath $final -Recurse -Force}
 if(Test-Path $zip){Remove-Item -LiteralPath $zip -Force}

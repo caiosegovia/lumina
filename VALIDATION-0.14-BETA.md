@@ -1,35 +1,44 @@
-# Evidências de validação — Lumina 0.14.0-beta.2
+# Evidências de validação — Lumina 0.14.0-beta.4
 
-Data: 2026-09-01. Ambiente: Windows x64, biblioteca de homologação `D:\Galeria Caio`.
+Data: 2026-09-02. Ambiente: Windows x64. Biblioteca de homologação: `D:\Galeria Caio`.
 
 ## Gates automatizados
 
-- Rust: 97 testes descobertos; 95 aprovados, 0 falhas e 2 ignorados deliberadamente no gate comum.
-- Migração: snapshot v13→v14 aprovado e rollback transacional v13 aprovado.
-- Resiliência: restart de importação, restart de sincronização, volume offline, espaço insuficiente e ferramenta ausente aprovados.
-- Segurança: fontes permanecem inalteradas, promoção exige hash, réplica exige verificação e duplicata sem proteção é bloqueada.
-- Frontend: 15/15 testes aprovados, incluindo troca conjunta do arquivo real e metadados ao navegar.
+- Rust: 100 testes descobertos; 98 aprovados, 0 falhas e 2 fixtures opcionais ignoradas no gate comum.
+- Preview HD: imagem de 3000 × 1800 convertida em 2560 × 1536, cache reutilizado e original preservado.
+- EXIF sob demanda: câmera, lente, ISO e abertura extraídos por ExifTool, persistidos e relidos.
+- Migração: snapshot v13→v14 e rollback transacional continuam aprovados.
+- Resiliência: restart, volume offline, espaço insuficiente, ferramenta ausente e filas duráveis aprovados.
+- Segurança: fontes somente leitura, promoção por hash, réplica verificada e bloqueio de duplicata sem proteção aprovados.
+- Frontend: 16/16 testes aprovados, incluindo troca sincronizada e substituição por preview HD.
 - TypeScript/Vite: build aprovado.
 - Clippy: `--all-targets -- -D warnings` aprovado.
 - Dependências npm: 0 vulnerabilidades no nível moderado ou superior.
 
-## Escala
+## Escala preservada
 
-- 100.000 itens: dashboard p50 3 ms, p95 4 ms; carga completa 613 ms.
-- 500.000 itens: dashboard p50 2 ms, p95 4 ms; carga completa 3.061 ms.
-- Leituras concorrentes permaneceram disponíveis durante ambos os cenários.
+- 100.000 itens: dashboard p95 abaixo do limite de 300 ms no teste de catálogo.
+- 500.000 itens: benchmark de release anterior permanece como referência; consultas usam agregados e índices sem N+1.
+- Leituras concorrentes continuam disponíveis durante geração de miniaturas.
 
 ## Aplicativo empacotado
 
-- Smoke portátil: 563 entradas do manifesto verificadas, frontend pronto e processo responsivo.
-- Homologação real: beta.2 iniciou e migrou o catálogo com sucesso; processo `Lumina Ready` responsivo.
+- Portátil: 565 entradas verificadas pelo manifesto SHA-256.
+- Frontend do ZIP: título `Lumina Ready`, processo responsivo e encerramento limpo.
+- Memória inicial no smoke isolado: 31.031.296 bytes.
+- Marcador de sessão removido após encerramento normal.
 - Snapshot externo antes/depois: 1.563 arquivos e 84.315.833.947 bytes, sem alteração fora de `.lumina`.
 
-## Artefatos finais
+## Artefatos beta.4
 
 | Artefato | Bytes | SHA-256 |
 |---|---:|---|
-| `lumina.exe` | 14.966.784 | `0263842437f9b01ee890c9354a8ee1142217e9de7d620cf602ec7ee4f55d64c7` |
-| `Lumina_0.14.0-2_x64_en-US.msi` | 91.677.396 | `99ef66f4a0d70cf750764b67828a9386b616356ca52b3339b865acad7c3dd918` |
-| `Lumina_0.14.0-2_x64-setup.exe` | 66.656.534 | `7c6fe56251d476e0cc332d39c7ed557439a2eaa4ca19ebffe2f8d86b527d546b` |
-| portátil ZIP | 91.708.186 | `c70c03daed7dbef40fcdb126e10f258d57491c46c2987ec97fe64d093e9ab4c9` |
+| `Lumina.exe` portátil | 15.457.280 | `be3ef4b098333cec8782a4e1d07a197adb14df02ce64b1a03e50843cd9392a51` |
+| `Lumina_0.14.0-4_x64_en-US.msi` | 91.865.812 | `3222b9e5be62d8471985871ff6ffbffdca3317761dd7ed0404874fe1efa2c7e9` |
+| `Lumina_0.14.0-4_x64-setup.exe` | 66.760.750 | `3c4ab02c0ebc0cc5badb4cf0177e92cc80de59679cbdce406bf93a3fff72da86` |
+
+O hash externo do ZIP é publicado junto da entrega; ele não é incorporado neste documento para evitar uma referência circular dentro do próprio arquivo compactado.
+
+## Homologação humana pendente
+
+Os gates técnicos autorizam a beta.4 para teste no dispositivo oficial. A promoção para versão final depende da validação visual e funcional do responsável pelo produto, especialmente preview HD, metadados reais, Saúde, pills e estados de duplicatas.

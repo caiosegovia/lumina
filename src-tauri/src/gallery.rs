@@ -212,7 +212,7 @@ pub fn search(conn: &Connection, r: &GalleryRequest) -> Result<GalleryResult, St
     let (mut clauses, mut values) = conditions(&r.filters);
     let base = where_sql(&clauses);
     let (t, years, filter_options) = if r.cursor.is_none() {
-        let q=format!("SELECT COUNT(*),COALESCE(SUM(a.bytes),0),COALESCE(SUM(a.media_type='photo'),0),COALESCE(SUM(a.media_type='video'),0),COALESCE(SUM(a.media_type='raw'),0),COALESCE(SUM(a.protection_state='replica_verified'),0),COALESCE(SUM(a.latitude IS NOT NULL AND a.longitude IS NOT NULL),0),COALESCE(SUM((SELECT COUNT(*) FROM active_occurrences od WHERE od.asset_id=a.id)>1),0) FROM assets a WHERE {base}");
+        let q=format!("SELECT COUNT(*),COALESCE(SUM(a.bytes),0),COALESCE(SUM(a.media_type='photo'),0),COALESCE(SUM(a.media_type='video'),0),COALESCE(SUM(a.media_type='raw'),0),COALESCE(SUM(a.protection_state='replica_verified'),0),COALESCE(SUM(a.latitude IS NOT NULL AND a.longitude IS NOT NULL),0),COALESCE(SUM((SELECT COUNT(*) FROM active_occurrences od WHERE od.asset_id=a.id)>1),0),COALESCE(SUM(COALESCE((SELECT favorite FROM asset_user_state us WHERE us.asset_id=a.id),0)),0),COALESCE(SUM(COALESCE((SELECT inventory_state!='complete' FROM asset_technical_metadata tm WHERE tm.asset_id=a.id),1)),0),COALESCE(SUM(a.protection_state!='replica_verified'),0) FROM assets a WHERE {base}");
         let totals = conn
             .query_row(&q, params_from_iter(values.iter()), |x| {
                 Ok((
@@ -224,6 +224,9 @@ pub fn search(conn: &Connection, r: &GalleryRequest) -> Result<GalleryResult, St
                     x.get(5)?,
                     x.get(6)?,
                     x.get(7)?,
+                    x.get(8)?,
+                    x.get(9)?,
+                    x.get(10)?,
                 ))
             })
             .map_err(|e| e.to_string())?;
@@ -243,7 +246,7 @@ pub fn search(conn: &Connection, r: &GalleryRequest) -> Result<GalleryResult, St
         (totals, years, options(conn)?)
     } else {
         (
-            (0, 0, 0, 0, 0, 0, 0, 0),
+            (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
             Vec::new(),
             GalleryFilterOptions::default(),
         )
@@ -373,6 +376,9 @@ pub fn search(conn: &Connection, r: &GalleryRequest) -> Result<GalleryResult, St
             protected: t.5,
             with_location: t.6,
             duplicate_assets: t.7,
+            favorites: t.8,
+            incomplete_metadata: t.9,
+            pending_protection: t.10,
             years,
         },
         options: filter_options,
