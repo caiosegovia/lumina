@@ -49,6 +49,12 @@ Feedback registrado após a beta.4:
 
 Essa evolução será especificada e prototipada depois da homologação da beta.4; ela não altera o escopo binário desta candidata.
 
+Situação em `0.15.0-beta.1`:
+
+- Implementados: workspace dividido, inspetor embutido, segmentação fixa, lista operacional responsiva e sequência recolhível.
+- Em validação: convivência grade/lista, preservação do contexto, comportamento em diferentes larguras e regressões do visualizador.
+- Próximo incremento: ordenação, densidade da lista, seleção por intervalo, metadados recolhíveis e comparação lado a lado.
+
 ## Exploração — 0.15+: descoberta e portabilidade
 
 - Similaridade visual local e explicável.
