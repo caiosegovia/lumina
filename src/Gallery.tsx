@@ -224,7 +224,9 @@ export default function Gallery() {
       setFilters(empty);
     };
   return (
-    <>
+    <div className={`gallery-workspace ${preview ? "inspector-open" : ""}`}>
+      <section className="gallery-canvas" aria-label="Acervo de mídias">
+      <div className="gallery-command-center">
       <div className="gallery-aggregate-bar" aria-label="Resumo e filtros rápidos">
         <div className="aggregate-total"><strong>{(s?.total || 0).toLocaleString("pt-BR")} mídias</strong><span>{formatBytes(s?.bytes || 0)} no resultado atual</span></div>
         <button className={!filters.mediaType ? "active" : ""} onClick={()=>setFilters(value=>({...value,mediaType:undefined}))}>Todas <b>{s?.total || 0}</b></button>
@@ -236,7 +238,7 @@ export default function Gallery() {
         <span className="aggregate-info">Em várias origens <b>{s?.duplicateAssets || 0}</b></span>
         <span className="aggregate-info">Metadados pendentes <b>{s?.incompleteMetadata || 0}</b></span>
       </div>
-      <div className="year-strip">
+      <div className="year-strip" aria-label="Segmentar por ano">
         {s?.years.map((y) => (
           <button
             key={y.year}
@@ -307,6 +309,7 @@ export default function Gallery() {
           <Tags /> Filtros {active > 0 && <b>{active}</b>}
         </button>
       </div>
+      </div>
       {filterOpen && (
         <Filters
           value={draft}
@@ -348,6 +351,12 @@ export default function Gallery() {
           <p>Remova filtros ou importe uma fonte.</p>
         </div>
       ) : (
+        <>
+        {mode === "list" && (
+          <div className="gallery-list-head" aria-hidden="true">
+            <span>Mídia</span><span>Captura</span><span>Arquivo</span><span>Origem</span><span>Proteção</span>
+          </div>
+        )}
         <div
           className={`virtual-gallery ${mode}`}
           style={{ height: virtual.getTotalSize(), position: "relative" }}
@@ -394,6 +403,7 @@ export default function Gallery() {
             );
           })}
         </div>
+        </>
       )}
       {loading && (
         <div className="gallery-loading">
@@ -405,6 +415,7 @@ export default function Gallery() {
           Todas as {result?.matched.toLocaleString("pt-BR")} mídias carregadas
         </p>
       )}
+      </section>
       {preview && (
         <Preview
           asset={preview}
@@ -441,7 +452,7 @@ export default function Gallery() {
           }}
         />
       )}
-    </>
+    </div>
   );
 }
 function ChoiceMenu({icon,label,value,options,onChange}:{icon:React.ReactNode;label:string;value:string;options:{value:string;label:string}[];onChange:(value:string)=>void}){const[open,setOpen]=useState(false),selected=options.find(x=>x.value===value)?.label;return <div className="choice-menu"><button aria-label={label} aria-haspopup="listbox" aria-expanded={open} onClick={()=>setOpen(v=>!v)}>{icon}<span>{selected}</span><ChevronDown/></button>{open&&<div className="choice-popover" role="listbox" aria-label={label}>{options.map(option=><button role="option" aria-selected={option.value===value} className={option.value===value?"active":""} key={option.value} onClick={()=>{onChange(option.value);setOpen(false)}}>{option.label}{option.value===value&&<Check/>}</button>)}</div>}</div>}
@@ -458,6 +469,24 @@ function Item({
   toggle: () => void;
   open: () => void;
 }) {
+  if (mode === "list") {
+    return (
+      <div className={`media-card selectable list-row ${checked ? "selected" : ""}`}>
+        <button className="selection-check" aria-label={`Selecionar ${asset.filename}`} aria-pressed={checked} onClick={toggle}>{checked && <Check />}</button>
+        <button className="media-main" aria-label={`Abrir detalhes de ${asset.filename}`} onClick={open}>
+          <div className="list-media-cell">
+            <MediaThumb asset={asset} />
+            <span className="list-identity"><strong>{asset.filename}</strong><small>{asset.camera || "Dispositivo desconhecido"}</small></span>
+          </div>
+          <span className="list-capture"><time>{new Date(asset.capturedAt).toLocaleString("pt-BR")}</time>{asset.dateSuspicious && <small className="suspicious"><AlertTriangle /> Revisar data</small>}</span>
+          <span className="list-file"><strong>{asset.extension.toUpperCase()}</strong><small>{formatBytes(asset.bytes)}{asset.width && asset.height ? ` · ${asset.width} × ${asset.height}` : ""}</small></span>
+          <span className="list-origin"><strong>{asset.sourceNames[0] || "Acervo"}</strong><small>{asset.sourceNames.length > 1 ? `+${asset.sourceNames.length - 1} origem(ns)` : asset.mediaType === "video" ? "Vídeo" : asset.mediaType === "raw" ? "RAW" : "Foto"}</small></span>
+          <span className={`list-protection ${asset.protectionState}`}><i />{asset.protectionState === "replica_verified" ? "Protegida" : asset.protectionState === "error" ? "Requer atenção" : "Pendente"}</span>
+          <span className="list-markers">{asset.favorite && <Star fill="currentColor" />}{asset.reviewLater && <Bookmark />}{asset.rating > 0 && <small>{asset.rating}★</small>}</span>
+        </button>
+      </div>
+    );
+  }
   return (
     <div className={`media-card selectable ${checked ? "selected" : ""}`}>
       <button
@@ -487,18 +516,6 @@ function Item({
         {asset.reviewLater && <span className="asset-review"><Bookmark /> Revisar</span>}
         {asset.rating > 0 && <span className="asset-rating">{"★".repeat(asset.rating)}</span>}
         {mode === "grid" && asset.protectionState === "error" && <span className="asset-state error">Revisar proteção</span>}
-        {mode === "list" && (
-          <>
-            <time>{new Date(asset.capturedAt).toLocaleString("pt-BR")}</time>
-            <span>
-              {asset.extension.toUpperCase()} · {formatBytes(asset.bytes)}
-            </span>
-            <span>{asset.sourceNames.join(", ") || "Acervo"}</span>
-            <span className="protection">
-              {asset.protectionState.replaceAll("_", " ")}
-            </span>
-          </>
-        )}
       </button>
     </div>
   );
@@ -811,6 +828,7 @@ function Preview({
   const [qualityState, setQualityState] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [details, setDetails] = useState<AssetDetails>();
   const [detailsLoading, setDetailsLoading] = useState(false);
+  const [filmstripOpen, setFilmstripOpen] = useState(() => localStorage.getItem("lumina-filmstrip") !== "closed");
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const drag = useRef<{ x: number; y: number; left: number; top: number }>();
 
@@ -854,7 +872,7 @@ function Preview({
   }
 
   return (
-    <div className={`drawer ${fullscreen ? "fullscreen" : ""}`}>
+    <aside className={`drawer gallery-inspector ${fullscreen ? "fullscreen" : ""}`} aria-label="Detalhes da mídia">
       <button
         aria-label="Fechar detalhes"
         className="icon-only close"
@@ -895,13 +913,15 @@ function Preview({
           <ChevronRight />
         </button>
       </div>
-      <div className="preview-filmstrip" aria-label="Mídias próximas">
-        <span>Próximas mídias</span>
-        {assets.slice(Math.max(0, position - 3), Math.min(assets.length, position + 4)).map((item) => (
+      <div className={`preview-filmstrip ${filmstripOpen ? "open" : "collapsed"}`} aria-label="Mídias próximas">
+        <button className="filmstrip-toggle" aria-expanded={filmstripOpen} onClick={() => setFilmstripOpen(value => { localStorage.setItem("lumina-filmstrip", value ? "closed" : "open"); return !value; })}>
+          <span><Images /> Sequência</span><small>{Math.max(0, position)} anteriores · {Math.max(0, total-position-1)} próximas</small><ChevronDown />
+        </button>
+        {filmstripOpen && <div className="filmstrip-items">{assets.slice(Math.max(0, position - 3), Math.min(assets.length, position + 4)).map((item) => (
           <button key={item.id} className={item.id === asset.id ? "active" : ""} aria-label={`Abrir ${item.filename}`} onClick={() => select(item)}>
             <MediaThumb asset={item} />
           </button>
-        ))}
+        ))}</div>}
       </div>
       <h2>{asset.filename}</h2>
       <p>{new Date(asset.capturedAt).toLocaleString("pt-BR")}</p>
@@ -1014,7 +1034,7 @@ function Preview({
         <br />
         <code>{asset.hash}</code>
       </p>
-    </div>
+    </aside>
   );
 }
 function Info({ label, value }: { label: string; value: string }) {
