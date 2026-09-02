@@ -161,6 +161,46 @@ pub struct Source {
     pub last_scan: Option<String>,
     pub asset_count: i64,
 }
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceSyncSummary {
+    pub job_id: String,
+    pub source_id: String,
+    pub discovered: i64,
+    pub present: i64,
+    pub new_files: i64,
+    pub duplicates: i64,
+    pub changed: i64,
+    pub missing: i64,
+    pub failed: i64,
+    pub processed_bytes: i64,
+}
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewSummary {
+    pub review_later: i64,
+    pub suspicious_dates: i64,
+    pub missing_previews: i64,
+    pub incomplete_metadata: i64,
+    pub pending_protection: i64,
+    pub undecided_duplicates: i64,
+    pub technical_failures: i64,
+}
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HealthCheck {
+    pub key: String,
+    pub label: String,
+    pub state: String,
+    pub detail: String,
+}
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryHealth {
+    pub overall: String,
+    pub checks: Vec<HealthCheck>,
+    pub generated_at: String,
+}
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaAsset {
@@ -189,6 +229,31 @@ pub struct MediaAsset {
     pub rating: i64,
     pub review_later: bool,
     pub description: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssetDetails {
+    pub camera: Option<String>,
+    pub detected_format: Option<String>,
+    pub mime: Option<String>,
+    pub container: Option<String>,
+    pub codec: Option<String>,
+    pub audio_codec: Option<String>,
+    pub frame_rate: Option<f64>,
+    pub bitrate: Option<i64>,
+    pub pixel_format: Option<String>,
+    pub lens: Option<String>,
+    pub iso: Option<i64>,
+    pub aperture: Option<f64>,
+    pub exposure: Option<String>,
+    pub focal_length: Option<f64>,
+    pub orientation: Option<i64>,
+    pub color_profile: Option<String>,
+    pub support_level: Option<String>,
+    pub inventory_state: Option<String>,
+    pub inventory_error: Option<String>,
+    pub enriched_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -261,6 +326,9 @@ pub struct GallerySummary {
     pub protected: i64,
     pub with_location: i64,
     pub duplicate_assets: i64,
+    pub favorites: i64,
+    pub incomplete_metadata: i64,
+    pub pending_protection: i64,
     pub years: Vec<GalleryYearCount>,
 }
 
@@ -300,6 +368,15 @@ pub struct ThumbnailAudit {
     pub missing: i64,
     pub stale: i64,
     pub corrupt: i64,
+    pub regenerated: i64,
+    pub failed: i64,
+}
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThumbnailRepairProgress {
+    pub running: bool,
+    pub processed: i64,
+    pub total: i64,
     pub regenerated: i64,
     pub failed: i64,
 }
@@ -395,8 +472,10 @@ pub struct ImportEvent {
 }
 #[derive(Serialize)]
 pub struct Occurrence {
+    pub id: String,
     pub source: String,
     pub path: String,
+    pub decision: Option<String>,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -411,6 +490,41 @@ pub struct DuplicateGroup {
     pub occurrences: Vec<Occurrence>,
     pub decision: Option<String>,
 }
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DuplicateStatus {
+    pub state: String,
+    pub catalog_assets: i64,
+    pub exact_groups: i64,
+    pub occurrences: i64,
+    pub connected_sources: i64,
+    pub total_sources: i64,
+    pub last_scan: Option<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanupPlanItem {
+    pub occurrence_id: String,
+    pub asset_id: String,
+    pub filename: String,
+    pub source: String,
+    pub path: String,
+    pub bytes: i64,
+    pub eligibility: String,
+    pub reason: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanupPlan {
+    pub id: String,
+    pub state: String,
+    pub groups: i64,
+    pub candidates: i64,
+    pub bytes: i64,
+    pub blocked: i64,
+    pub items: Vec<CleanupPlanItem>,
+    pub created_at: String,
+}
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Album {
@@ -418,6 +532,13 @@ pub struct Album {
     pub name: String,
     pub asset_count: i64,
     pub cover: Option<String>,
+}
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TagInfo {
+    pub id: String,
+    pub name: String,
+    pub asset_count: i64,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

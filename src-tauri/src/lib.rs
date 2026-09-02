@@ -1,17 +1,23 @@
 mod backup;
 mod catalog;
+mod diagnostics;
+mod duplicates;
 mod engine;
 mod events;
 mod formats;
 mod gallery;
+mod health;
 mod jobs;
 mod library;
 mod media;
+mod metadata;
 mod models;
 mod pipeline;
 mod process;
 mod resource;
+mod review;
 mod storage;
+mod sync;
 mod volume;
 
 use chrono::Utc;
@@ -19,6 +25,7 @@ use models::*;
 use rusqlite::{params, OptionalExtension};
 use std::{
     fs,
+    io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::Mutex,
 };
@@ -351,7 +358,7 @@ fn compute_dashboard(cfg: &LibraryConfig) -> Result<DashboardStats, String> {
     let total_started = std::time::Instant::now();
     let conn = db(cfg)?;
     let row=conn.query_row("SELECT COUNT(*),COALESCE(SUM(media_type!='video'),0),COALESCE(SUM(media_type='video'),0),COALESCE(SUM(bytes),0),COALESCE(SUM(protection_state='replica_verified'),0),COALESCE(SUM(protection_state IN('source_only','consolidated','stale')),0),COALESCE(SUM(protection_state='error'),0) FROM assets",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).map_err(|e|e.to_string())?;
-    let duplicate_groups=conn.query_row("SELECT COUNT(*) FROM(SELECT asset_id FROM occurrences GROUP BY asset_id HAVING COUNT(*)>1)",[],|r|r.get(0)).unwrap_or(0);
+    let duplicate_groups=conn.query_row("SELECT COUNT(*) FROM(SELECT asset_id FROM active_occurrences GROUP BY asset_id HAVING COUNT(*)>1)",[],|r|r.get(0)).unwrap_or(0);
     let offline = conn
         .query_row(
             "SELECT COUNT(*) FROM sources WHERE available=0 AND path NOT LIKE 'lumina://%'",
@@ -405,7 +412,7 @@ fn compute_dashboard(cfg: &LibraryConfig) -> Result<DashboardStats, String> {
             |r| r.get(0),
         )
         .unwrap_or(0);
-    let duplicate_bytes:i64=conn.query_row("SELECT COALESCE(SUM(a.bytes*(x.copies-1)),0)FROM assets a JOIN(SELECT asset_id,COUNT(*) copies FROM occurrences GROUP BY asset_id HAVING copies>1)x ON x.asset_id=a.id",[],|r|r.get(0)).unwrap_or(0);
+    let duplicate_bytes:i64=conn.query_row("SELECT COALESCE(SUM(a.bytes*(x.copies-1)),0)FROM assets a JOIN(SELECT asset_id,COUNT(*) copies FROM active_occurrences GROUP BY asset_id HAVING copies>1)x ON x.asset_id=a.id",[],|r|r.get(0)).unwrap_or(0);
     let suspicious:i64=conn.query_row("SELECT COUNT(*)FROM assets WHERE date_source='filesystem_modified' OR CAST(substr(captured_at,1,4)AS INTEGER)<1990 OR CAST(substr(captured_at,1,4)AS INTEGER)>CAST(strftime('%Y','now')AS INTEGER)+1",[],|r|r.get(0)).unwrap_or(0);
     let format_mismatches: i64 = conn
         .query_row(
@@ -639,7 +646,7 @@ fn compute_dashboard(cfg: &LibraryConfig) -> Result<DashboardStats, String> {
         pending: row.5,
         duplicate_groups,
         duplicate_bytes,
-        reclaimable_bytes: conn.query_row("SELECT COALESCE(SUM(a.bytes*(x.copies-1)),0) FROM assets a JOIN(SELECT asset_id,COUNT(*) copies FROM occurrences GROUP BY asset_id HAVING copies>1)x ON x.asset_id=a.id WHERE a.protection_state='replica_verified'",[],|row|row.get(0)).unwrap_or(0),
+        reclaimable_bytes: conn.query_row("SELECT COALESCE(SUM(a.bytes*(x.copies-1)),0) FROM assets a JOIN(SELECT asset_id,COUNT(*) copies FROM active_occurrences GROUP BY asset_id HAVING copies>1)x ON x.asset_id=a.id WHERE a.protection_state='replica_verified'",[],|row|row.get(0)).unwrap_or(0),
         errors: row.6,
         offline_sources: offline,
         oldest,
@@ -709,6 +716,30 @@ fn list_sources(state: State<AppState>) -> Result<Vec<Source>, String> {
             }
         })
         .collect())
+}
+#[tauri::command]
+fn start_source_sync(
+    source_id: String,
+    state: State<AppState>,
+    manager: State<jobs::JobManager>,
+) -> Result<String, String> {
+    manager.start_source_sync(current(&state)?, source_id)
+}
+#[tauri::command]
+fn get_review_summary(state: State<AppState>) -> Result<ReviewSummary, String> {
+    review::summary(&current(&state)?)
+}
+#[tauri::command]
+fn get_library_health(state: State<AppState>) -> Result<LibraryHealth, String> {
+    health::inspect(&current(&state)?)
+}
+#[tauri::command]
+fn record_client_error(kind: String, message: String) {
+    diagnostics::client_error(&kind, &message);
+}
+#[tauri::command]
+fn undo_last_edit(state: State<AppState>) -> Result<BatchResult, String> {
+    review::undo_last(&current(&state)?)
 }
 #[tauri::command]
 fn list_assets(query: String, state: State<AppState>) -> Result<Vec<MediaAsset>, String> {
@@ -785,47 +816,11 @@ async fn search_gallery(
 }
 #[tauri::command]
 fn list_duplicates(state: State<AppState>) -> Result<Vec<DuplicateGroup>, String> {
-    let cfg = current(&state)?;
-    let conn = db(&cfg)?;
-    let mut stmt=conn.prepare("SELECT a.id,a.hash,a.filename,a.bytes,a.protection_state,(SELECT COUNT(*) FROM occurrences o WHERE o.asset_id=a.id),(SELECT decision FROM duplicate_decisions d WHERE d.asset_id=a.id) FROM assets a WHERE(SELECT COUNT(*) FROM occurrences o WHERE o.asset_id=a.id)>1 ORDER BY a.captured_at DESC").map_err(|e|e.to_string())?;
-    let rows = stmt
-        .query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, i64>(3)?,
-                r.get::<_, String>(4)?,
-                r.get::<_, i64>(5)?,
-                r.get::<_, Option<String>>(6)?,
-            ))
-        })
-        .map_err(|e| e.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
-    drop(stmt);
-    Ok(rows
-        .into_iter()
-        .map(|r| DuplicateGroup {
-            asset_id: r.0.clone(),
-            hash: r.1,
-            filename: r.2,
-            bytes: r.3,
-            additional_bytes: r.3 * (r.5 - 1),
-            reclaimable_bytes: if r.4 == "replica_verified" {
-                r.3 * (r.5 - 1)
-            } else {
-                0
-            },
-            safety: if r.4 == "replica_verified" {
-                "eligible_for_review".into()
-            } else {
-                "protection_required".into()
-            },
-            occurrences: engine::duplicate_occurrences(&conn, &r.0),
-            decision: r.6,
-        })
-        .collect())
+    duplicates::list(&current(&state)?)
+}
+#[tauri::command]
+fn get_duplicate_status(state: State<AppState>) -> Result<DuplicateStatus, String> {
+    duplicates::status(&current(&state)?)
 }
 #[tauri::command]
 fn update_duplicate_decision(
@@ -834,34 +829,23 @@ fn update_duplicate_decision(
     reason: String,
     state: State<AppState>,
 ) -> Result<BatchResult, String> {
-    if !matches!(
-        decision.as_str(),
-        "keep_all" | "review" | "remove_candidates"
-    ) {
-        return Err("Decisão de duplicata inválida".into());
-    }
-    if reason.chars().count() > 500 {
-        return Err("Motivo muito longo".into());
-    }
-    let conn = db(&current(&state)?)?;
-    if decision == "remove_candidates" {
-        let eligible: bool = conn
-            .query_row(
-                "SELECT protection_state='replica_verified' AND (SELECT COUNT(*) FROM occurrences WHERE asset_id=assets.id)>1 FROM assets WHERE id=?1",
-                [&asset_id],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|error| error.to_string())?
-            .unwrap_or(false);
-        if !eligible {
-            return Err(
-                "A réplica precisa estar verificada antes de marcar cópias candidatas".into(),
-            );
-        }
-    }
-    let affected=conn.execute("INSERT INTO duplicate_decisions(asset_id,decision,reason,decided_at)SELECT id,?2,?3,?4 FROM assets WHERE id=?1 ON CONFLICT(asset_id)DO UPDATE SET decision=excluded.decision,reason=excluded.reason,decided_at=excluded.decided_at",params![asset_id,decision,reason,Utc::now().to_rfc3339()]).map_err(|error|error.to_string())? as i64;
-    Ok(BatchResult { affected })
+    duplicates::decide_group(&current(&state)?, &asset_id, &decision, &reason)
+}
+#[tauri::command]
+fn update_occurrence_decision(
+    occurrence_id: String,
+    decision: String,
+    state: State<AppState>,
+) -> Result<BatchResult, String> {
+    duplicates::decide_occurrence(&current(&state)?, &occurrence_id, &decision)
+}
+#[tauri::command]
+fn create_cleanup_plan(state: State<AppState>) -> Result<CleanupPlan, String> {
+    duplicates::create_plan(&current(&state)?)
+}
+#[tauri::command]
+fn export_cleanup_plan(plan_id: String, state: State<AppState>) -> Result<ReportExport, String> {
+    duplicates::export_plan(&current(&state)?, &plan_id)
 }
 #[tauri::command]
 fn list_albums(state: State<AppState>) -> Result<Vec<Album>, String> {
@@ -944,6 +928,29 @@ fn create_album(name: String, state: State<AppState>) -> Result<Album, String> {
     })
 }
 #[tauri::command]
+fn rename_album(id: String, name: String, state: State<AppState>) -> Result<BatchResult, String> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 100 {
+        return Err("Nome de álbum inválido".into());
+    }
+    let affected = db(&current(&state)?)?
+        .execute("UPDATE albums SET name=?2 WHERE id=?1", params![id, name])
+        .map_err(|error| error.to_string())? as i64;
+    Ok(BatchResult { affected })
+}
+#[tauri::command]
+fn delete_album(id: String, state: State<AppState>) -> Result<BatchResult, String> {
+    let mut conn = db(&current(&state)?)?;
+    let tx = conn.transaction().map_err(|error| error.to_string())?;
+    tx.execute("DELETE FROM album_assets WHERE album_id=?1", [&id])
+        .map_err(|error| error.to_string())?;
+    let affected = tx
+        .execute("DELETE FROM albums WHERE id=?1", [id])
+        .map_err(|error| error.to_string())? as i64;
+    tx.commit().map_err(|error| error.to_string())?;
+    Ok(BatchResult { affected })
+}
+#[tauri::command]
 fn add_assets_to_album(
     album_id: String,
     asset_ids: Vec<String>,
@@ -999,6 +1006,47 @@ fn apply_tag(
         affected+=tx.execute("INSERT OR IGNORE INTO asset_tags(asset_id,tag_id)SELECT id,?2 FROM assets WHERE id=?1",params![asset,tag_id]).map_err(|e|e.to_string())? as i64
     }
     tx.commit().map_err(|e| e.to_string())?;
+    Ok(BatchResult { affected })
+}
+#[tauri::command]
+fn list_tags(state: State<AppState>) -> Result<Vec<TagInfo>, String> {
+    let conn = db(&current(&state)?)?;
+    let mut statement=conn.prepare("SELECT t.id,t.name,COUNT(at.asset_id)FROM tags t LEFT JOIN asset_tags at ON at.tag_id=t.id GROUP BY t.id ORDER BY LOWER(t.name)").map_err(|error|error.to_string())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok(TagInfo {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                asset_count: row.get(2)?,
+            })
+        })
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    Ok(rows)
+}
+#[tauri::command]
+fn rename_tag(id: String, name: String, state: State<AppState>) -> Result<BatchResult, String> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 80 {
+        return Err("Nome de tag inválido".into());
+    }
+    let conn = db(&current(&state)?)?;
+    let affected = conn
+        .execute("UPDATE tags SET name=?2 WHERE id=?1", params![id, name])
+        .map_err(|error| error.to_string())? as i64;
+    Ok(BatchResult { affected })
+}
+#[tauri::command]
+fn delete_tag(id: String, state: State<AppState>) -> Result<BatchResult, String> {
+    let mut conn = db(&current(&state)?)?;
+    let tx = conn.transaction().map_err(|error| error.to_string())?;
+    tx.execute("DELETE FROM asset_tags WHERE tag_id=?1", [&id])
+        .map_err(|error| error.to_string())?;
+    let affected = tx
+        .execute("DELETE FROM tags WHERE id=?1", [id])
+        .map_err(|error| error.to_string())? as i64;
+    tx.commit().map_err(|error| error.to_string())?;
     Ok(BatchResult { affected })
 }
 #[tauri::command]
@@ -1153,6 +1201,24 @@ fn delete_saved_view(id: String, state: State<AppState>) -> Result<BatchResult, 
     let conn = db(&current(&state)?)?;
     let affected = conn
         .execute("DELETE FROM saved_views WHERE id=?1", [id])
+        .map_err(|error| error.to_string())? as i64;
+    Ok(BatchResult { affected })
+}
+#[tauri::command]
+fn rename_saved_view(
+    id: String,
+    name: String,
+    state: State<AppState>,
+) -> Result<BatchResult, String> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 100 {
+        return Err("Nome de visão inválido".into());
+    }
+    let affected = db(&current(&state)?)?
+        .execute(
+            "UPDATE saved_views SET name=?2,updated_at=?3 WHERE id=?1",
+            params![id, name, Utc::now().to_rfc3339()],
+        )
         .map_err(|error| error.to_string())? as i64;
     Ok(BatchResult { affected })
 }
@@ -1385,6 +1451,69 @@ fn get_thumbnail(
         }
     }))
 }
+#[tauri::command]
+fn get_media_url(asset_id: String, state: State<AppState>) -> Result<String, String> {
+    if !valid_thumbnail_asset_id(&asset_id) {
+        return Err("Identificador inválido".into());
+    }
+    let cfg = current(&state)?;
+    let conn = db(&cfg)?;
+    let exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM assets WHERE id=?1)",
+            [&asset_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if !exists {
+        return Err("Mídia não encontrada".into());
+    }
+    #[cfg(windows)]
+    {
+        Ok(format!("http://lumina-media.localhost/{asset_id}"))
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(format!("lumina-media://localhost/{asset_id}"))
+    }
+}
+
+#[tauri::command]
+async fn prepare_photo_preview(
+    asset_id: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    if !valid_thumbnail_asset_id(&asset_id) {
+        return Err("Identificador inválido".into());
+    }
+    let cfg = current(&state)?;
+    let requested = asset_id.clone();
+    tauri::async_runtime::spawn_blocking(move || media::viewer_preview_file(&cfg, &requested))
+        .await
+        .map_err(|error| error.to_string())??;
+    #[cfg(windows)]
+    {
+        Ok(format!("http://lumina-preview.localhost/{asset_id}"))
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(format!("lumina-preview://localhost/{asset_id}"))
+    }
+}
+
+#[tauri::command]
+async fn get_asset_details(
+    asset_id: String,
+    state: State<'_, AppState>,
+) -> Result<AssetDetails, String> {
+    if !valid_thumbnail_asset_id(&asset_id) {
+        return Err("Identificador inválido".into());
+    }
+    let cfg = current(&state)?;
+    tauri::async_runtime::spawn_blocking(move || metadata::details(&cfg, &asset_id))
+        .await
+        .map_err(|error| error.to_string())?
+}
 
 fn valid_thumbnail_asset_id(asset: &str) -> bool {
     !asset.is_empty()
@@ -1410,12 +1539,17 @@ async fn audit_thumbnail_cache(
         .map_err(|e| e.to_string())?
 }
 #[tauri::command]
+fn get_thumbnail_repair_progress() -> ThumbnailRepairProgress {
+    media::repair_progress()
+}
+#[tauri::command]
 fn clear_thumbnail_cache(state: State<AppState>) -> Result<i64, String> {
     media::clear_cache(&current(&state)?)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    diagnostics::start_session();
     let base = dirs::data_local_dir().unwrap_or_else(|| PathBuf::from("."));
     let config_path = base.join("Lumina/library.json");
     let config: Option<LibraryConfig> = fs::read(&config_path)
@@ -1461,6 +1595,139 @@ pub fn run() {
                     .unwrap(),
             }
         })
+        .register_uri_scheme_protocol("lumina-preview", |context, request| {
+            let asset = request.uri().path().trim_start_matches('/');
+            let response = || -> Result<Vec<u8>, String> {
+                if !valid_thumbnail_asset_id(asset) {
+                    return Err("Identificador inválido".into());
+                }
+                let state = context.app_handle().state::<AppState>();
+                let cfg = state
+                    .library
+                    .lock()
+                    .map_err(|_| "Estado indisponível".to_string())?
+                    .clone()
+                    .ok_or_else(|| "Biblioteca não configurada".to_string())?;
+                fs::read(media::viewer_preview_file(&cfg, asset)?)
+                    .map_err(|error| error.to_string())
+            };
+            match response() {
+                Ok(bytes) => tauri::http::Response::builder()
+                    .status(200)
+                    .header("Content-Type", "image/jpeg")
+                    .header("Cache-Control", "private, max-age=86400")
+                    .body(bytes)
+                    .unwrap(),
+                Err(error) => tauri::http::Response::builder()
+                    .status(404)
+                    .header("Content-Type", "text/plain; charset=utf-8")
+                    .body(error.into_bytes())
+                    .unwrap(),
+            }
+        })
+        .register_uri_scheme_protocol("lumina-media", |context, request| {
+            let asset = request.uri().path().trim_start_matches('/');
+            let response = || -> Result<(Vec<u8>, String, u64, u64, u64), String> {
+                if !valid_thumbnail_asset_id(asset) {
+                    return Err("Identificador inválido".into());
+                }
+                let state = context.app_handle().state::<AppState>();
+                let cfg = state
+                    .library
+                    .lock()
+                    .map_err(|_| "Estado indisponível".to_string())?
+                    .clone()
+                    .ok_or_else(|| "Biblioteca não configurada".to_string())?;
+                let conn = db(&cfg)?;
+                let (stored, extension, media_type): (String, String, String) = conn
+                    .query_row(
+                        "SELECT master_path,LOWER(extension),media_type FROM assets WHERE id=?1",
+                        [asset],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    )
+                    .map_err(|_| "Mídia não encontrada".to_string())?;
+                // Navegar rapidamente por originais grandes pode esgotar a memória do
+                // WebView. Fotos usam a representação limitada do cache; vídeos mantêm
+                // acesso parcial ao arquivo original.
+                let served = if media_type == "photo" {
+                    media::thumbnail_file(&cfg, asset)?
+                        .ok_or_else(|| "Prévia indisponível".to_string())?
+                } else {
+                    PathBuf::from(&stored)
+                };
+                let canonical = fs::canonicalize(&served).map_err(|error| error.to_string())?;
+                let master =
+                    fs::canonicalize(&cfg.master_path).map_err(|error| error.to_string())?;
+                if !canonical.starts_with(master) {
+                    return Err("Mídia fora do acervo".into());
+                }
+                let mut file = fs::File::open(canonical).map_err(|error| error.to_string())?;
+                let total = file.metadata().map_err(|error| error.to_string())?.len();
+                let range = request
+                    .headers()
+                    .get("range")
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.strip_prefix("bytes="))
+                    .and_then(|value| value.split_once('-'))
+                    .map(|(start, end)| {
+                        (start.parse::<u64>().unwrap_or(0), end.parse::<u64>().ok())
+                    });
+                let (start, end) = range
+                    .map(|(start, end)| {
+                        (
+                            start,
+                            end.unwrap_or_else(|| {
+                                (start + 4 * 1024 * 1024 - 1).min(total.saturating_sub(1))
+                            }),
+                        )
+                    })
+                    .unwrap_or((0, total.saturating_sub(1)));
+                let end = end.min(total.saturating_sub(1));
+                let length = end.saturating_sub(start) + 1;
+                file.seek(SeekFrom::Start(start))
+                    .map_err(|error| error.to_string())?;
+                let mut bytes = vec![0; length as usize];
+                file.read_exact(&mut bytes)
+                    .map_err(|error| error.to_string())?;
+                let mime = if media_type == "photo" {
+                    "image/jpeg"
+                } else {
+                    match extension.as_str() {
+                        "mp4" | "m4v" => "video/mp4",
+                        "mov" => "video/quicktime",
+                        "webm" => "video/webm",
+                        "jpg" | "jpeg" => "image/jpeg",
+                        "png" => "image/png",
+                        "gif" => "image/gif",
+                        "webp" => "image/webp",
+                        _ => "application/octet-stream",
+                    }
+                }
+                .to_string();
+                Ok((bytes, mime, start, end, total))
+            };
+            match response() {
+                Ok((bytes, mime, start, end, total)) => {
+                    let partial = start > 0 || end + 1 < total;
+                    let mut builder = tauri::http::Response::builder()
+                        .status(if partial { 206 } else { 200 })
+                        .header("Content-Type", mime)
+                        .header("Accept-Ranges", "bytes")
+                        .header("Content-Length", bytes.len().to_string())
+                        .header("Cache-Control", "no-store");
+                    if partial {
+                        builder =
+                            builder.header("Content-Range", format!("bytes {start}-{end}/{total}"));
+                    }
+                    builder.body(bytes).unwrap()
+                }
+                Err(error) => tauri::http::Response::builder()
+                    .status(404)
+                    .header("Content-Type", "text/plain; charset=utf-8")
+                    .body(error.into_bytes())
+                    .unwrap(),
+            }
+        })
         .plugin(tauri_plugin_dialog::init())
         .manage(manager)
         .manage(AppState {
@@ -1477,20 +1744,35 @@ pub fn run() {
             get_dashboard,
             refresh_dashboard,
             list_sources,
+            start_source_sync,
+            get_review_summary,
+            get_library_health,
+            record_client_error,
+            undo_last_edit,
             list_assets,
             search_gallery,
             list_duplicates,
+            get_duplicate_status,
             update_duplicate_decision,
+            update_occurrence_decision,
+            create_cleanup_plan,
+            export_cleanup_plan,
             list_albums,
             list_jobs,
             create_album,
+            rename_album,
+            delete_album,
             add_assets_to_album,
             apply_tag,
+            list_tags,
+            rename_tag,
+            delete_tag,
             update_capture_date,
             update_user_state,
             list_saved_views,
             save_gallery_view,
             delete_saved_view,
+            rename_saved_view,
             list_events,
             analyze_source,
             consolidate_import,
@@ -1516,12 +1798,21 @@ pub fn run() {
             export_job_report,
             export_diagnostics,
             get_thumbnail,
+            get_media_url,
+            prepare_photo_preview,
+            get_asset_details,
             rebuild_thumbnail_cache,
             audit_thumbnail_cache,
+            get_thumbnail_repair_progress,
             clear_thumbnail_cache
         ])
-        .run(tauri::generate_context!())
+        .build(tauri::generate_context!())
         .expect("erro ao iniciar Lumina")
+        .run(|_, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                diagnostics::finish_session();
+            }
+        });
 }
 
 #[cfg(test)]

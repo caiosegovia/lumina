@@ -11,11 +11,30 @@ use serde::Serialize;
 use std::{
     fs,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicI64, AtomicU8, Ordering},
     time::Duration,
 };
 
 pub const THUMBNAIL_VERSION: i64 = 2;
+pub const VIEWER_PREVIEW_VERSION: i64 = 1;
+const VIEWER_PREVIEW_EDGE: u32 = 2560;
+const VIEWER_CACHE_LIMIT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const INTERNAL_IMAGE: &[&str] = &["jpg", "jpeg", "png", "gif", "webp", "tif", "tiff", "bmp"];
+static REPAIR_RUNNING: AtomicU8 = AtomicU8::new(0);
+static REPAIR_PROCESSED: AtomicI64 = AtomicI64::new(0);
+static REPAIR_TOTAL: AtomicI64 = AtomicI64::new(0);
+static REPAIR_REGENERATED: AtomicI64 = AtomicI64::new(0);
+static REPAIR_FAILED: AtomicI64 = AtomicI64::new(0);
+
+pub fn repair_progress() -> crate::models::ThumbnailRepairProgress {
+    crate::models::ThumbnailRepairProgress {
+        running: REPAIR_RUNNING.load(Ordering::Relaxed) == 1,
+        processed: REPAIR_PROCESSED.load(Ordering::Relaxed),
+        total: REPAIR_TOTAL.load(Ordering::Relaxed),
+        regenerated: REPAIR_REGENERATED.load(Ordering::Relaxed),
+        failed: REPAIR_FAILED.load(Ordering::Relaxed),
+    }
+}
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -417,6 +436,111 @@ pub fn thumbnail_file(cfg: &LibraryConfig, asset: &str) -> Result<Option<PathBuf
     }
 }
 
+/// Produces a bounded, high-quality representation for the photo viewer.
+/// Decoding is isolated in FFmpeg so a malformed or very large original cannot
+/// exhaust the UI process. The source is never modified.
+pub fn viewer_preview_file(cfg: &LibraryConfig, asset: &str) -> Result<PathBuf, String> {
+    let conn = catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite"))
+        .map_err(|error| error.to_string())?;
+    let (source, extension, hash, media_type): (String, String, String, String) = conn
+        .query_row(
+            "SELECT master_path,LOWER(extension),hash,media_type FROM assets WHERE id=?1",
+            [asset],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .map_err(|_| "Mídia não encontrada".to_string())?;
+    if media_type == "video" {
+        return Err("Preview fotográfico solicitado para um vídeo".into());
+    }
+    let cache_root = Path::new(&cfg.master_path)
+        .join(".lumina/cache/viewer")
+        .join(format!("v{VIEWER_PREVIEW_VERSION}"));
+    fs::create_dir_all(&cache_root).map_err(|error| error.to_string())?;
+    let destination = cache_root.join(format!("{}-{}.jpg", &hash[..16.min(hash.len())], asset));
+    if destination.is_file() && image::image_dimensions(&destination).is_ok() {
+        return Ok(destination);
+    }
+    let temporary = destination.with_extension("part.jpg");
+    let _ = fs::remove_file(&temporary);
+    let cancel = CancellationToken::default();
+    let mut generated = false;
+    let ffmpeg = ProcessSpec::new("FFmpeg", "ffmpeg")
+        .args([
+            "-y",
+            "-v",
+            "error",
+            "-i",
+            source.as_str(),
+            "-frames:v",
+            "1",
+            "-vf",
+            &format!(
+                "scale={VIEWER_PREVIEW_EDGE}:{VIEWER_PREVIEW_EDGE}:force_original_aspect_ratio=decrease"
+            ),
+            "-q:v",
+            "2",
+            temporary.to_string_lossy().as_ref(),
+        ])
+        .timeout(Duration::from_secs(90))
+        .logical("High quality photo preview");
+    if process::run(ffmpeg, &cancel).is_ok() && temporary.is_file() {
+        generated = true;
+    }
+    if !generated && crate::formats::family(&extension) == crate::formats::MediaFamily::Raw {
+        let preview = process::run(
+            ProcessSpec::new("ExifTool", "exiftool")
+                .args(["-b", "-PreviewImage", source.as_str()])
+                .timeout(Duration::from_secs(45))
+                .logical("Embedded RAW viewer preview"),
+            &cancel,
+        )
+        .map_err(|error| error.message)?;
+        if preview.stdout.is_empty() {
+            return Err("RAW sem prévia embarcada".into());
+        }
+        let decoded =
+            image::load_from_memory(&preview.stdout).map_err(|error| error.to_string())?;
+        decoded
+            .thumbnail(VIEWER_PREVIEW_EDGE, VIEWER_PREVIEW_EDGE)
+            .save_with_format(&temporary, image::ImageFormat::Jpeg)
+            .map_err(|error| error.to_string())?;
+    }
+    if !temporary.is_file() {
+        return Err("Não foi possível gerar a prévia em alta qualidade".into());
+    }
+    if destination.exists() {
+        fs::remove_file(&destination).map_err(|error| error.to_string())?;
+    }
+    fs::rename(&temporary, &destination).map_err(|error| error.to_string())?;
+    trim_viewer_cache(&cache_root, &destination);
+    Ok(destination)
+}
+
+fn trim_viewer_cache(root: &Path, keep: &Path) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    let mut files = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let metadata = entry.metadata().ok()?;
+            metadata
+                .is_file()
+                .then(|| (entry.path(), metadata.len(), metadata.modified().ok()))
+        })
+        .collect::<Vec<_>>();
+    let mut total = files.iter().map(|item| item.1).sum::<u64>();
+    files.sort_by_key(|item| item.2);
+    for (path, bytes, _) in files {
+        if total <= VIEWER_CACHE_LIMIT_BYTES {
+            break;
+        }
+        if path != keep && path.starts_with(root) && fs::remove_file(&path).is_ok() {
+            total = total.saturating_sub(bytes);
+        }
+    }
+}
+
 #[cfg(test)]
 pub fn thumbnail_data(cfg: &LibraryConfig, asset: &str) -> Result<Option<String>, String> {
     thumbnail_file(cfg, asset)?
@@ -546,6 +670,13 @@ pub fn audit_thumbnails(cfg: &LibraryConfig, repair: bool) -> Result<ThumbnailAu
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
     drop(stmt);
+    if repair {
+        REPAIR_RUNNING.store(1, Ordering::Relaxed);
+        REPAIR_PROCESSED.store(0, Ordering::Relaxed);
+        REPAIR_TOTAL.store(rows.len() as i64, Ordering::Relaxed);
+        REPAIR_REGENERATED.store(0, Ordering::Relaxed);
+        REPAIR_FAILED.store(0, Ordering::Relaxed);
+    }
     let mut out = ThumbnailAudit {
         total: rows.len() as i64,
         valid: 0,
@@ -586,15 +717,23 @@ pub fn audit_thumbnails(cfg: &LibraryConfig, repair: bool) -> Result<ThumbnailAu
             ) {
                 Ok(p) => {
                     out.regenerated += 1;
+                    REPAIR_REGENERATED.store(out.regenerated, Ordering::Relaxed);
                     let file_bytes = p.metadata().map(|value| value.len()).unwrap_or(0);
                     conn.execute("INSERT INTO thumbnails(asset_id,generator_version,path,file_bytes,state,last_error,updated_at)VALUES(?1,?2,?3,?4,'ready',NULL,datetime('now'))ON CONFLICT(asset_id)DO UPDATE SET generator_version=excluded.generator_version,path=excluded.path,file_bytes=excluded.file_bytes,state='ready',last_error=NULL,updated_at=excluded.updated_at",params![id,THUMBNAIL_VERSION,p.to_string_lossy(),file_bytes]).map_err(|e|e.to_string())?;
                 }
                 Err(e) => {
                     out.failed += 1;
+                    REPAIR_FAILED.store(out.failed, Ordering::Relaxed);
                     conn.execute("INSERT INTO thumbnails(asset_id,generator_version,path,state,last_error,updated_at)VALUES(?1,?2,'','failed',?3,datetime('now'))ON CONFLICT(asset_id)DO UPDATE SET state='failed',path='',last_error=excluded.last_error,updated_at=excluded.updated_at",params![id,THUMBNAIL_VERSION,e]).ok();
                 }
             }
         }
+        if repair {
+            REPAIR_PROCESSED.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    if repair {
+        REPAIR_RUNNING.store(0, Ordering::Relaxed);
     }
     Ok(out)
 }
@@ -604,6 +743,34 @@ mod tests {
     use super::*;
     use image::{ImageBuffer, Rgb};
     use uuid::Uuid;
+    #[test]
+    fn viewer_preview_is_bounded_high_quality_and_reused() {
+        let root = std::env::temp_dir().join(Uuid::new_v4().to_string());
+        let backup = root.join("backup");
+        fs::create_dir_all(root.join(".lumina")).unwrap();
+        fs::create_dir_all(&backup).unwrap();
+        let source = root.join("large.png");
+        ImageBuffer::<Rgb<u8>, _>::from_pixel(3000, 1800, Rgb([40, 90, 130]))
+            .save(&source)
+            .unwrap();
+        let cfg = LibraryConfig {
+            id: "viewer".into(),
+            name: "Viewer".into(),
+            master_path: root.to_string_lossy().into_owned(),
+            backup_path: backup.to_string_lossy().into_owned(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+        let conn = catalog::open(&root.join(".lumina/catalog.sqlite")).unwrap();
+        let hash = crate::storage::sha256(&source).unwrap();
+        conn.execute("INSERT INTO assets(id,hash,filename,media_type,extension,captured_at,date_source,bytes,master_path,created_at)VALUES('large',?1,'large.png','photo','png',?2,'file',1,?3,?2)",params![hash,chrono::Utc::now().to_rfc3339(),source.to_string_lossy()]).unwrap();
+        drop(conn);
+        let first = viewer_preview_file(&cfg, "large").unwrap();
+        let second = viewer_preview_file(&cfg, "large").unwrap();
+        assert_eq!(first, second);
+        let (width, height) = image::image_dimensions(first).unwrap();
+        assert_eq!((width, height), (2560, 1536));
+        fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn rejects_fake_image_and_accepts_real_image() {
         let root = std::env::temp_dir().join(Uuid::new_v4().to_string());

@@ -1,6 +1,6 @@
 # Lumina
 
-Versão em desenvolvimento: **0.13.1**. Consulte [SPEC-0.13.md](SPEC-0.13.md) para os critérios do ciclo e [RELEASE-0.12.md](RELEASE-0.12.md) para a última versão estável.
+Versão beta atual: **0.14.0-beta.4**. Consulte [SPEC-0.14-BETA.md](SPEC-0.14-BETA.md) para o escopo e [RELEASE-0.14-BETA.md](RELEASE-0.14-BETA.md) para validação e limitações.
 
 Lumina é um aplicativo desktop local para inventariar, consolidar, deduplicar e proteger grandes acervos de fotos e vídeos espalhados por discos, cartões e pastas.
 
@@ -20,7 +20,7 @@ Lumina é um aplicativo desktop local para inventariar, consolidar, deduplicar e
 - Deduplicação exata, hash seletivo e hash integrado à cópia.
 - Inventário amplo de fotos, vídeos e RAW com ExifTool em lotes, FFmpeg e FFprobe empacotados.
 - Importação retomável, controles de trabalhos e relatórios técnicos.
-- Galeria em grade ou lista, paginação por cursor, filtros, miniaturas progressivas e preview.
+- Galeria em grade ou lista, paginação por cursor, filtros rápidos, pills, preview HD progressivo e metadados EXIF sob demanda.
 - Dashboard progressivo com capacidade dos discos, composição, crescimento, saúde técnica, proteção e insights acionáveis.
 - Catálogo SQLite com snapshots, agregados e índices testados com 100 mil e 500 mil mídias.
 
@@ -55,7 +55,7 @@ npm.cmd run build
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
-A versão 0.12 possui 82 testes aprovados no núcleo e 13 no frontend, além dos benchmarks de release. Consulte [RELEASE-0.12.md](RELEASE-0.12.md).
+A versão beta atual possui gates automatizados do núcleo e frontend, além dos benchmarks de release. Consulte [RELEASE-0.14-BETA.md](RELEASE-0.14-BETA.md).
 
 ## Build
 

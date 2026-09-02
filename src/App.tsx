@@ -4,6 +4,7 @@ import {
   Activity,
   Album as AlbumIcon,
   Archive,
+  ClipboardCheck,
   CheckCircle2,
   ChevronRight,
   Cloud,
@@ -28,22 +29,30 @@ import "./gallery.css";
 import { formatBytes, formatDate } from "./format";
 import type {
   Album,
+  CleanupPlan,
   DashboardStats,
   DuplicateGroup,
+  DuplicateStatus,
   ImportEvent,
   ImportSummary,
   JobOverview,
   JobProgress,
   LibraryConfig,
+  LibraryHealth,
   RecoverableJob,
   Source,
+  SavedView,
+  TagInfo,
   StoragePlan,
   ThumbnailAudit,
+  ThumbnailRepairProgress,
+  ReviewSummary,
   View,
 } from "./types";
 const nav = [
   { id: "dashboard", label: "Visão geral", icon: LayoutDashboard },
   { id: "library", label: "Biblioteca", icon: Images },
+  { id: "review", label: "Revisão", icon: ClipboardCheck },
   { id: "sources", label: "Fontes", icon: HardDrive },
   { id: "duplicates", label: "Duplicatas", icon: Copy },
   { id: "albums", label: "Álbuns", icon: AlbumIcon },
@@ -63,6 +72,13 @@ export default function App() {
   useEffect(() => {
     api.getLibrary().then(setLibrary);
   }, []);
+  useEffect(()=>{
+    const error=(event:ErrorEvent)=>void api.recordClientError("frontend_error",event.message||"Erro não identificado");
+    const rejection=(event:PromiseRejectionEvent)=>void api.recordClientError("unhandled_rejection",event.reason instanceof Error?event.reason.message:String(event.reason));
+    window.addEventListener("error",error);
+    window.addEventListener("unhandledrejection",rejection);
+    return()=>{window.removeEventListener("error",error);window.removeEventListener("unhandledrejection",rejection)};
+  },[]);
   useEffect(() => {
     if (!library) return;
     const load = () =>
@@ -289,6 +305,8 @@ const stageText = (stage: string, state?: string) =>
               thumbnail: "Preparando a galeria",
               backup: "Criando a cópia de proteção",
               backing_up: "Finalizando a cópia de proteção",
+              sync_inventory: "Preparando atualização da fonte",
+              sync_reconcile: "Comparando fonte e catálogo",
               completed: "Trabalho concluído",
             } as Record<string, string>
           )[stage] || "Processando suas mídias";
@@ -365,13 +383,37 @@ function Content({
   openJob: (x: string) => void;
 }) {
   if (view === "library") return <Gallery />;
+  if (view === "review") return <ReviewCenter navigate={navigate} />;
   if (view === "sources") return <Sources onImport={onImport} />;
   if (view === "duplicates") return <Duplicates />;
-  if (view === "albums") return <Albums />;
+  if (view === "albums") return <Albums navigate={navigate} />;
   if (view === "activity")
     return <ActivityCenter jobs={jobs} openJob={openJob} />;
   if (view === "protection") return <Protection />;
   return <Dashboard onImport={onImport} navigate={navigate} />;
+}
+function ReviewCenter({ navigate }: { navigate: (view: View) => void }) {
+  const [summary, setSummary] = useState<ReviewSummary>();
+  const [notice,setNotice]=useState("");
+  useEffect(() => { api.reviewSummary().then(setSummary); }, []);
+  const open = (filters: Parameters<typeof openGalleryWithFilters>[0]) => {
+    openGalleryWithFilters(filters);
+    navigate("library");
+  };
+  const cards = [
+    {label:"Revisar depois",value:summary?.reviewLater??0,detail:"Itens separados por você",action:()=>open({reviewLater:true})},
+    {label:"Datas suspeitas",value:summary?.suspiciousDates??0,detail:"Datas obtidas do arquivo ou fora do intervalo esperado",action:()=>open({dateSuspicious:true})},
+    {label:"Previews pendentes",value:summary?.missingPreviews??0,detail:"Miniaturas ausentes ou com falha",action:()=>navigate("protection")},
+    {label:"Metadados incompletos",value:summary?.incompleteMetadata??0,detail:"Informações técnicas ainda não enriquecidas",action:()=>navigate("activity")},
+    {label:"Falhas técnicas",value:summary?.technicalFailures??0,detail:"Previews ou metadados que precisam de uma nova tentativa",action:()=>navigate("activity")},
+    {label:"Proteção pendente",value:summary?.pendingProtection??0,detail:"Mídias sem réplica verificada",action:()=>navigate("protection")},
+    {label:"Duplicatas sem decisão",value:summary?.undecidedDuplicates??0,detail:"Grupos exatos aguardando revisão",action:()=>navigate("duplicates")},
+  ];
+  return <>
+    <div className="section-heading"><div><h2>Central de revisão</h2><p>Tudo que merece uma decisão humana, reunido por prioridade.</p></div><div className="activity-actions"><button onClick={async()=>{const result=await api.rebuildCache();setNotice(`${result.generated} previews reparados · ${result.failed} falhas`);setSummary(await api.reviewSummary())}}>Reparar previews</button><button onClick={async()=>{await api.startFormatEnrichment();setNotice("Complementação de metadados iniciada em segundo plano. Acompanhe em Atividade.")}}>Completar metadados</button><button onClick={async()=>{const result=await api.undoLastEdit();setNotice(result.affected?"Última alteração desfeita.":"Nenhuma alteração para desfazer.");setSummary(await api.reviewSummary())}}>Desfazer última alteração</button><button onClick={()=>api.reviewSummary().then(setSummary)}><RefreshCw/>Atualizar</button></div></div>
+    {notice&&<div className="notice" role="status">{notice}</div>}
+    <div className="review-grid">{cards.map(card=><button key={card.label} onClick={card.action}><span>{card.label}</span><strong>{card.value.toLocaleString("pt-BR")}</strong><small>{card.detail}</small><ChevronRight/></button>)}</div>
+  </>;
 }
 function ReportTools() {
   const [job, setJob] = useState(""),
@@ -676,9 +718,34 @@ function Stat({
 }
 function Sources({ onImport }: { onImport: () => void }) {
   const [items, setItems] = useState<Source[]>([]);
+  const [syncing, setSyncing] = useState<Record<string, JobProgress>>({});
+  const [notice, setNotice] = useState("");
+  const [syncingAll,setSyncingAll]=useState(false);
   useEffect(() => {
     api.sources().then(setItems);
   }, []);
+  async function synchronize(source: Source) {
+    setNotice("");
+    try {
+      const jobId = await api.startSourceSync(source.id);
+      while (true) {
+        const progress = await api.jobProgress(jobId);
+        setSyncing((current) => ({ ...current, [source.id]: progress }));
+        if (["completed", "failed", "canceled"].includes(progress.state)) {
+          if (progress.state === "completed") {
+            setNotice(`${source.name} atualizada: ${progress.imported} novas · ${progress.duplicates} duplicatas · ${progress.excluded} ausentes.`);
+            setItems(await api.sources());
+          } else {
+            setNotice(`A sincronização de ${source.name} terminou como ${progress.state}.`);
+          }
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+    } catch (cause) {
+      setNotice(cause instanceof Error ? cause.message : String(cause));
+    }
+  }
   return (
     <>
       <div className="section-heading">
@@ -686,13 +753,14 @@ function Sources({ onImport }: { onImport: () => void }) {
           <h2>De onde vêm suas mídias</h2>
           <p>Fontes continuam inventariadas quando offline.</p>
         </div>
-        <button className="primary" onClick={onImport}>
-          <Plus />
-          Adicionar fonte
-        </button>
+        <div className="activity-actions"><button disabled={syncingAll||!items.some(source=>source.available)} onClick={async()=>{setSyncingAll(true);for(const source of items.filter(item=>item.available)){await synchronize(source)}setSyncingAll(false);setNotice("Todas as fontes conectadas foram atualizadas.")}}><RefreshCw className={syncingAll?"spin":""}/>{syncingAll?"Atualizando fontes":"Atualizar conectadas"}</button><button className="primary" onClick={onImport}><Plus />Adicionar fonte</button></div>
       </div>
+      {notice && <div className="notice" role="status">{notice}</div>}
       <div className="source-list">
-        {items.map((s) => (
+        {items.map((s) => {
+          const progress = syncing[s.id];
+          const active = progress && !["completed", "failed", "canceled"].includes(progress.state);
+          return (
           <article key={s.id}>
             <HardDrive />
             <div className="source-main">
@@ -712,23 +780,32 @@ function Sources({ onImport }: { onImport: () => void }) {
             <span className="badge">
               {s.available ? "Conectada" : "Offline"}
             </span>
+            <button disabled={!s.available || active} onClick={() => synchronize(s)}>
+              <RefreshCw className={active ? "spin" : ""} />
+              {active ? `${Math.round(progress.overallPercent)}%` : "Atualizar"}
+            </button>
           </article>
-        ))}
+          );
+        })}
       </div>
     </>
   );
 }
 function Duplicates() {
   const [items, setItems] = useState<DuplicateGroup[]>([]);
+  const [status, setStatus] = useState<DuplicateStatus>();
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [plan, setPlan] = useState<CleanupPlan>();
 
   async function loadDuplicates() {
     setLoading(true);
     setError("");
     try {
-      setItems(await api.duplicates());
+      const [groups, overview] = await Promise.all([api.duplicates(), api.duplicateStatus()]);
+      setItems(groups);
+      setStatus(overview);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -766,34 +843,46 @@ function Duplicates() {
       </div>
       {notice && <p className="safe-note" role="status">{notice}</p>}
       {error && <div className="error-box">Não foi possível consultar duplicatas: {error}</div>}
+      {status && <div className="duplicate-status" role="status">
+        <span className={`status-pill ${status.state === "found" ? "warning" : "success"}`}>{status.state === "found" ? "Duplicatas encontradas" : status.state === "not_analyzed" ? "Aguardando catálogo" : "Análise concluída"}</span>
+        <span><strong>{status.catalogAssets.toLocaleString("pt-BR")}</strong> mídias catalogadas</span>
+        <span><strong>{status.occurrences.toLocaleString("pt-BR")}</strong> ocorrências ativas</span>
+        <span><strong>{status.connectedSources}</strong> de {status.totalSources} fontes conectadas</span>
+        <span>Última análise: <strong>{formatDate(status.lastScan)}</strong></span>
+      </div>}
+      <section className="cleanup-planner">
+        <div><h3>Plano de limpeza seguro</h3><p>Simule candidatas e espaço potencial. Esta beta não remove arquivos.</p></div>
+        <button className="primary" onClick={async()=>setPlan(await api.createCleanupPlan())}>Gerar plano</button>
+        {plan&&<><div className="cleanup-summary"><span><strong>{plan.groups}</strong> grupos</span><span><strong>{plan.candidates}</strong> candidatas elegíveis</span><span><strong>{formatBytes(plan.bytes)}</strong> potencial</span><span><strong>{plan.blocked}</strong> bloqueadas</span></div><button onClick={async()=>{const report=await api.exportCleanupPlan(plan.id);setNotice(`Relatório exportado em ${report.path}`)}}>Exportar relatório do plano</button></>}
+      </section>
       {!loading && !error && items.length === 0 && (
         <div className="empty-duplicates">
           <Copy />
-          <h3>Nenhuma duplicata catalogada</h3>
+          <h3>{status?.state === "not_analyzed" ? "A biblioteca ainda não foi analisada" : "Nenhuma duplicata exata encontrada"}</h3>
           <p>
             Um grupo aparece aqui depois que o mesmo conteúdo é encontrado em duas ou mais
             origens importadas. Fotos parecidas não são tratadas como duplicatas exatas.
           </p>
-          <small>Importe ou analise as demais fontes e volte para atualizar esta tela.</small>
+          <small>{status?.totalSources !== status?.connectedSources ? "Conecte e atualize as fontes offline para uma análise completa." : "A análise está atualizada. Fotos visualmente parecidas não são classificadas como cópias exatas."}</small>
         </div>
       )}
       <div className="duplicate-list">
         {items.map((g) => (
           <article key={g.hash}>
-            <div className="duplicate-preview">
-              <Copy />
-            </div>
+            <DuplicateThumb assetId={g.assetId} filename={g.filename} />
             <div className="duplicate-main">
               <h3>{g.filename}</h3>
               <p>{formatBytes(g.bytes)}</p>
               <p>{formatBytes(g.additionalBytes)} em ocorrências adicionais · {g.safety==="eligible_for_review"?`${formatBytes(g.reclaimableBytes)} aptos para futura revisão`:"proteja o acervo antes de decidir"}</p>
-              <div>
+              <div className="occurrence-comparison" aria-label={`Comparação de ${g.filename}`}>
                 {g.occurrences.map((o, i) => (
-                  <span key={i}>
-                    <HardDrive />
-                    {o.source}
-                    <small>{o.path}</small>
-                  </span>
+                  <section key={o.id}>
+                    <DuplicateThumb assetId={g.assetId} filename={`${g.filename} em ${o.source}`} />
+                    <strong><HardDrive />{i===0?"Referência":"Ocorrência adicional"}</strong>
+                    <span>{o.source}<small>{o.path}</small></span>
+                    <small>{g.safety==="eligible_for_review"?"Réplica verificada":"Proteção pendente"}</small>
+                    <div><button className={o.decision==="keep"?"active":""} onClick={async()=>{await api.updateOccurrenceDecision(o.id,"keep");setItems(current=>current.map(group=>group.assetId===g.assetId?{...group,occurrences:group.occurrences.map(item=>item.id===o.id?{...item,decision:"keep"}:item)}:group))}}>Manter</button><button className={o.decision==="review"?"active":""} onClick={async()=>{await api.updateOccurrenceDecision(o.id,"review");setItems(current=>current.map(group=>group.assetId===g.assetId?{...group,occurrences:group.occurrences.map(item=>item.id===o.id?{...item,decision:"review"}:item)}:group))}}>Revisar</button><button disabled={i===0||g.safety!=="eligible_for_review"} className={o.decision==="remove_candidate"?"active":""} onClick={async()=>{await api.updateOccurrenceDecision(o.id,"remove_candidate");setItems(current=>current.map(group=>group.assetId===g.assetId?{...group,occurrences:group.occurrences.map(item=>item.id===o.id?{...item,decision:"remove_candidate"}:item)}:group))}}>Candidata</button></div>
+                  </section>
                 ))}
               </div>
               <div className="duplicate-actions">
@@ -840,13 +929,18 @@ function Duplicates() {
     </>
   );
 }
-function Albums() {
+function DuplicateThumb({assetId,filename}:{assetId:string;filename:string}){const[src,setSrc]=useState<string|null>();useEffect(()=>{let live=true;api.thumbnail(assetId).then(value=>live&&setSrc(value));return()=>{live=false}},[assetId]);return <div className="duplicate-preview">{src?<img src={src} alt={`Prévia de ${filename}`}/>:<Copy/>}</div>}
+function Albums({navigate}:{navigate:(view:View)=>void}) {
   const [items, setItems] = useState<Album[]>([]),
+    [smart, setSmart] = useState<SavedView[]>([]),
+    [tags, setTags] = useState<TagInfo[]>([]),
     [name, setName] = useState(""),
     [creating, setCreating] = useState(false);
   const load = () => api.albums().then(setItems);
   useEffect(() => {
     load();
+    api.savedViews().then(views=>setSmart(views.filter(view=>view.smartAlbum)));
+    api.tags().then(setTags);
   }, []);
   return (
     <>
@@ -882,16 +976,26 @@ function Albums() {
         </div>
       )}
       <div className="album-grid">
+        {smart.map((view) => (
+          <article key={view.id} className="smart-album" onClick={()=>{openGalleryWithFilters(view.filters);navigate("library")}}>
+            <div><Search /></div>
+            <h3>{view.name}</h3>
+            <p>Álbum inteligente · atualizado automaticamente</p>
+            <div className="album-actions"><button onClick={async event=>{event.stopPropagation();const name=prompt("Novo nome",view.name);if(name){await api.renameSavedView(view.id,name);setSmart(await api.savedViews().then(views=>views.filter(item=>item.smartAlbum)))}}}>Renomear</button><button onClick={async event=>{event.stopPropagation();if(confirm(`Excluir ${view.name}?`)){await api.deleteSavedView(view.id);setSmart(current=>current.filter(item=>item.id!==view.id))}}}>Excluir</button></div>
+          </article>
+        ))}
         {items.map((a) => (
-          <article key={a.id}>
+          <article key={a.id} className="smart-album" onClick={()=>{openGalleryWithFilters({albumId:a.id});navigate("library")}}>
             <div>
               <AlbumIcon />
             </div>
             <h3>{a.name}</h3>
             <p>{a.assetCount} itens</p>
+            <div className="album-actions"><button onClick={async event=>{event.stopPropagation();const name=prompt("Novo nome",a.name);if(name){await api.renameAlbum(a.id,name);load()}}}>Renomear</button><button onClick={async event=>{event.stopPropagation();if(confirm(`Excluir ${a.name}? As mídias permanecerão no acervo.`)){await api.deleteAlbum(a.id);load()}}}>Excluir</button></div>
           </article>
         ))}
       </div>
+      <section className="tag-manager"><h3>Tags</h3><p>Renomeie ou remova classificações do catálogo sem alterar as mídias.</p><div>{tags.map(tag=><span key={tag.id}><button onClick={async()=>{const name=prompt("Novo nome da tag",tag.name);if(name){await api.renameTag(tag.id,name);setTags(await api.tags())}}}>{tag.name} · {tag.assetCount}</button><button aria-label={`Excluir tag ${tag.name}`} onClick={async()=>{if(confirm(`Remover a tag ${tag.name} do catálogo?`)){await api.deleteTag(tag.id);setTags(current=>current.filter(item=>item.id!==tag.id))}}}><X/></button></span>)}</div></section>
     </>
   );
 }
@@ -1101,6 +1205,8 @@ function Protection() {
     [master, setMaster] = useState(""),
     [thumbnailHealth, setThumbnailHealth] = useState<ThumbnailAudit>(),
     [repairing, setRepairing] = useState(false),
+    [repairProgress,setRepairProgress]=useState<ThumbnailRepairProgress>(),
+    [health,setHealth]=useState<LibraryHealth>(),
     [queue, setQueue] = useState<{
       pending: number;
       failed: number;
@@ -1116,7 +1222,15 @@ function Protection() {
     });
     api.protectionQueue().then(setQueue);
     api.auditThumbnails(false).then(setThumbnailHealth).catch(() => {});
+    api.libraryHealth().then(setHealth).catch(()=>{});
   }, []);
+  useEffect(()=>{
+    if(!repairing)return;
+    const poll=()=>api.thumbnailRepairProgress().then(setRepairProgress).catch(()=>{});
+    poll();
+    const timer=window.setInterval(poll,350);
+    return()=>window.clearInterval(timer);
+  },[repairing]);
   const choose = async (set: (x: string) => void) => {
     const p = await api.chooseFolder();
     if (p) set(p);
@@ -1173,6 +1287,14 @@ function Protection() {
           {result}
         </div>
       )}
+      {health&&<section className={`health-overview ${health.overall}`}>
+        <header>
+          <div><span className={`status-pill ${health.overall === "healthy" ? "success" : health.overall === "attention" ? "warning" : "error"}`}>{health.overall === "healthy" ? "Tudo saudável" : health.overall === "attention" ? "Requer atenção" : "Ação necessária"}</span><h3>Saúde da biblioteca</h3><p>{health.checks.filter(check=>check.state!=="healthy").length ? `${health.checks.filter(check=>check.state!=="healthy").length} pontos merecem sua atenção.` : "Catálogo, mídias e ferramentas operando normalmente."}</p></div>
+          <div className="health-score"><strong>{health.checks.filter(check=>check.state==="healthy").length}/{health.checks.length}</strong><span>verificações saudáveis</span></div>
+        </header>
+        <div className="health-actions">{health.checks.filter(check=>check.state!=="healthy"&&!['exiftool','ffmpeg','ffprobe'].includes(check.key)).map(check=><article key={check.key} className={check.state}><span className={`status-dot ${check.state}`}/><div><strong>{check.label}</strong><small>{check.detail}</small></div><span className={`status-pill ${check.state}`}>{check.state==="warning"?"Atenção":"Erro"}</span></article>)}</div>
+        <details className="health-technical"><summary>Ver detalhes técnicos e verificações saudáveis</summary><div>{health.checks.filter(check=>check.state==="healthy"||['exiftool','ffmpeg','ffprobe'].includes(check.key)).map(check=><p key={check.key}><span>{check.label}</span><strong>{check.detail}</strong><i className={`status-dot ${check.state}`}/></p>)}</div></details>
+      </section>}
       <div className="protection-flow">
         <article>
           <Database />
@@ -1201,9 +1323,9 @@ function Protection() {
           </p>
           {repairing && (
             <div className="thumbnail-repair-progress" role="progressbar" aria-label="Reparo de miniaturas em andamento">
-              <span>Validando e reconstruindo o cache…</span>
-              <i />
-              <small>Você pode continuar usando o aplicativo.</small>
+              <span>Verificando {repairProgress?.processed || 0} de {repairProgress?.total || thumbnailHealth?.total || 0} mídias</span>
+              <div><i style={{width:`${repairProgress?.total ? Math.round(repairProgress.processed/repairProgress.total*100) : 2}%`}} /></div>
+              <small>{repairProgress?.regenerated || 0} recuperadas · {repairProgress?.failed || 0} falhas · a galeria continua disponível</small>
             </div>
           )}
           <button

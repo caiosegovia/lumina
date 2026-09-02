@@ -309,6 +309,43 @@ impl JobManager {
         // O catálogo mantém o job em queued até o slot ficar livre.
         Ok(job)
     }
+    pub fn start_source_sync(
+        &self,
+        cfg: LibraryConfig,
+        source_id: String,
+    ) -> Result<String, String> {
+        if self.has_active() {
+            return Err("Aguarde o trabalho atual terminar antes de sincronizar".into());
+        }
+        let job = crate::sync::queue(&cfg, &source_id)?;
+        self.spawn_source_sync(cfg, job.clone())?;
+        Ok(job)
+    }
+    fn spawn_source_sync(&self, cfg: LibraryConfig, job: String) -> Result<(), String> {
+        self.reserve(&job)?;
+        let cancel = self.token(&job)?;
+        let manager = self.clone();
+        let worker = job.clone();
+        std::thread::Builder::new()
+            .name(format!("lumina-source-sync-{job}"))
+            .spawn(move || {
+                if let Err(error) = crate::sync::run(&cfg, &worker, &cancel) {
+                    if error == "JOB_CANCELED" {
+                        manager.mark_canceled(&cfg, &worker);
+                    } else {
+                        if let Ok(conn) = catalog::open(
+                            &Path::new(&cfg.master_path).join(".lumina/catalog.sqlite"),
+                        ) {
+                            let _ = conn.execute("UPDATE source_sync_settings SET last_state='failed',last_error=?2 WHERE source_id=(SELECT source_id FROM jobs WHERE id=?1)",params![worker,error]);
+                        }
+                        manager.mark_failed(&cfg, &worker, &error);
+                    }
+                }
+                manager.release(&worker);
+            })
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
     pub fn start_consolidation(&self, cfg: LibraryConfig, job: String) -> Result<(), String> {
         self.reserve(&job)?;
         let cancel = self.token(&job)?;
@@ -397,8 +434,11 @@ impl JobManager {
     pub fn resume(&self, cfg: LibraryConfig, job: String) -> Result<(), String> {
         let conn = catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite"))
             .map_err(|e| e.to_string())?;
-        let (source,name,stage):(String,String,String)=conn.query_row("SELECT j.source_path,s.name,j.stage FROM jobs j JOIN sources s ON s.id=j.source_id WHERE j.id=?1",[&job],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(|e|e.to_string())?;
+        let (source,name,stage,kind):(String,String,String,String)=conn.query_row("SELECT j.source_path,s.name,j.stage,COALESCE(j.job_kind,'import') FROM jobs j JOIN sources s ON s.id=j.source_id WHERE j.id=?1",[&job],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).map_err(|e|e.to_string())?;
         drop(conn);
+        if kind == "source_sync" {
+            return self.spawn_source_sync(cfg, job);
+        }
         if stage == "thumbnail" {
             return self.resume_background(cfg);
         }
@@ -608,6 +648,55 @@ mod tests {
             "pending"
         );
         drop(conn);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn interrupted_source_sync_resumes_from_its_durable_job() {
+        let root = std::env::temp_dir().join(format!("lumina-sync-resume-{}", Uuid::new_v4()));
+        let master = root.join("master");
+        let backup = root.join("backup");
+        let source = root.join("source");
+        fs::create_dir_all(master.join(".lumina")).unwrap();
+        fs::create_dir_all(&backup).unwrap();
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("photo.jpg"), b"resume").unwrap();
+        let cfg = LibraryConfig {
+            id: "l".into(),
+            name: "t".into(),
+            master_path: master.to_string_lossy().into(),
+            backup_path: backup.to_string_lossy().into(),
+            created_at: Utc::now().to_rfc3339(),
+        };
+        let conn = catalog::open(&master.join(".lumina/catalog.sqlite")).unwrap();
+        conn.execute("INSERT INTO sources(id,name,path,volume_label,mount_path)VALUES('s','Fonte','key','v',?1)",[source.to_string_lossy().as_ref()]).unwrap();
+        drop(conn);
+        let job = crate::sync::queue(&cfg, "s").unwrap();
+        let conn = catalog::open(&master.join(".lumina/catalog.sqlite")).unwrap();
+        conn.execute("UPDATE jobs SET state='interrupted' WHERE id=?1", [&job])
+            .unwrap();
+        drop(conn);
+        let manager = JobManager::new();
+        manager.resume(cfg.clone(), job.clone()).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let conn = catalog::open(&master.join(".lumina/catalog.sqlite")).unwrap();
+            let state: String = conn
+                .query_row("SELECT state FROM jobs WHERE id=?1", [&job], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            drop(conn);
+            if state == "completed" {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "sincronização não retomou: {state}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(source.join("photo.jpg").is_file());
         fs::remove_dir_all(root).unwrap();
     }
 

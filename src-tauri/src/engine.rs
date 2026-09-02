@@ -2001,12 +2001,14 @@ pub fn grouped_tags(conn: &rusqlite::Connection, asset: &str) -> Vec<String> {
     result
 }
 pub fn duplicate_occurrences(conn: &rusqlite::Connection, asset: &str) -> Vec<Occurrence> {
-    let mut s=match conn.prepare("SELECT s.name,o.path FROM occurrences o JOIN sources s ON s.id=o.source_id WHERE o.asset_id=?1"){Ok(v)=>v,Err(_)=>return vec![]};
+    let mut s=match conn.prepare("SELECT o.id,s.name,o.path,d.decision FROM active_occurrences o JOIN sources s ON s.id=o.source_id LEFT JOIN occurrence_decisions d ON d.occurrence_id=o.id WHERE o.asset_id=?1 ORDER BY o.seen_at,o.id"){Ok(v)=>v,Err(_)=>return vec![]};
     let result = s
         .query_map([asset], |r| {
             Ok(Occurrence {
-                source: r.get(0)?,
-                path: r.get(1)?,
+                id: r.get(0)?,
+                source: r.get(1)?,
+                path: r.get(2)?,
+                decision: r.get(3)?,
             })
         })
         .map(|rows| rows.filter_map(Result::ok).collect())
