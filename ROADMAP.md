@@ -109,7 +109,17 @@ Situação da candidata consolidada `0.15.0-beta.2`: os temas Beta.2, Beta.3 e B
 
 Refinamento incorporado à mesma candidata, sem reiniciar o ciclo: visão geral orientada a memórias; datas extremas de fotos e vídeos; capacidade e proteção consolidadas; composição fotos/vídeos; inventário técnico separado e normalizado; insights em cards; comparação de desempenho entre jobs; seleção mais evidente; preview sem faixa inferior; metadados focados nas decisões do usuário.
 
-## Exploração — 0.15+: descoberta e portabilidade
+## Agora — 0.16: clareza operacional e lapidação
+
+- `0.15.0-beta.2` homologada como baseline estável.
+- Atividade passa a distinguir execução, ação necessária e histórico, com próximo passo explícito e atualização adaptativa.
+- Duplicatas passam a usar lista compacta, pills, filtros, ordenação, expansão sob demanda e carregamento progressivo.
+- Estados de jobs são centralizados e implementações legadas removidas.
+- Todas as seções permanecem no gate de regressão antes de novas funcionalidades de descoberta.
+
+Critérios: nenhum job visualmente preso; nenhum preview de duplicata carregado antes da expansão; estados e ações coerentes; pacote instalado aprovado no dispositivo oficial.
+
+## Exploração — 0.16+: descoberta e portabilidade
 
 - Similaridade visual local e explicável.
 - Pessoas/rostos com processamento local, consentimento e controles de privacidade.

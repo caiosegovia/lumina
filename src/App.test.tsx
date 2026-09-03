@@ -61,6 +61,12 @@ describe("fluxo principal do aplicativo", () => {
     await user.click(screen.getByRole("button", { name: "Duplicatas" }));
     expect(await screen.findByText("Duplicatas exatas")).toBeInTheDocument();
     expect(await screen.findAllByText("3 cópias")).toHaveLength(2);
+    expect(screen.queryByLabelText(/Comparação de/)).not.toBeInTheDocument();
+    const duplicateGroup=screen.getAllByRole("button",{name:/3 cópias/})[0];
+    expect(duplicateGroup).toHaveAttribute("aria-expanded","false");
+    await user.click(duplicateGroup);
+    expect(duplicateGroup).toHaveAttribute("aria-expanded","true");
+    expect(screen.getByLabelText(/Comparação de/)).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Álbuns" }));
     expect(await screen.findByText("Viagens")).toBeInTheDocument();

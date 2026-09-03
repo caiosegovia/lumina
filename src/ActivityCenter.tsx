@@ -3,14 +3,9 @@ import { AlertTriangle, CheckCircle2, ChevronDown, Clock3, FileDown, Pause, Play
 import { api } from "./api";
 import { formatBytes, formatDate } from "./format";
 import type { ImportEvent, JobOverview } from "./types";
+import { jobBucket, jobNextStep, jobStateLabel } from "./jobState";
 import "./activity.css";
 
-const stateLabel: Record<string, string> = {
-  queued: "Na fila", analyzing: "Em análise", consolidating: "Importando",
-  pausing: "Pausando…", paused: "Pausado", canceling: "Cancelando…",
-  canceled: "Cancelado", ready: "Pronto para revisar", interrupted: "Interrompido",
-  waiting_space: "Aguardando espaço", batch_pending:"Próximo lote pendente", protection_pending:"Proteção pendente", protecting:"Protegendo", waiting_backup_space:"Réplica sem espaço", backup_error:"Falha na proteção", failed: "Com erro", completed: "Concluído"
-};
 const stageLabel: Record<string, string> = {
   discovery: "Inventariando pastas", inventory:"Inventário rápido", confirmation:"Confirmando conteúdo", metadata: "Identificando datas e câmeras",
   validation: "Verificando os arquivos", hashing: "Comparando com sua biblioteca",
@@ -44,7 +39,8 @@ export default function ActivityCenter({ jobs, openJob }: { jobs: JobOverview[];
   const [busy, setBusy] = useState("");
   const [historyOpen, setHistoryOpen] = useState(false);
   const [storageWarning, setStorageWarning] = useState("");
-  useEffect(() => { api.events().then(setEvents); }, [jobs]);
+  const jobRevision=jobs.map(job=>`${job.jobId}:${job.state}:${job.updatedAt}`).join("|");
+  useEffect(() => { api.events().then(setEvents); }, [jobRevision]);
   useEffect(() => { api.getLibrary().then(library => { if (!library) return; const master=library.masterPath.match(/^[A-Za-z]:/)?.[0].toUpperCase(),backup=library.backupPath.match(/^[A-Za-z]:/)?.[0].toUpperCase(); if(master&&master===backup)setStorageWarning(`O acervo e a réplica estão na mesma unidade ${master}. Isso reduz a velocidade e não protege contra falha física do disco.`); }); }, []);
   useEffect(() => { if (!notice) return; const id = setTimeout(() => setNotice(""), 4500); return () => clearTimeout(id); }, [notice]);
 
@@ -56,19 +52,20 @@ export default function ActivityCenter({ jobs, openJob }: { jobs: JobOverview[];
       setNotice(action === "paused" ? "Pausa solicitada" : action === "running" ? "Trabalho retomado" : "Cancelamento solicitado; aguardando a etapa atual encerrar com segurança");
     } catch (error) { setNotice(String(error)); } finally { setBusy(""); }
   };
-  const active = jobs.filter(j => ["queued", "analyzing", "consolidating", "protecting", "paused", "pausing", "canceling"].includes(j.state));
-  const attention = jobs.filter(j => ["ready", "waiting_space", "batch_pending", "protection_pending", "waiting_backup_space", "backup_error", "interrupted", "failed"].includes(j.state));
-  const history = jobs.filter(j => ["completed", "canceled"].includes(j.state));
+  const active = jobs.filter(j => jobBucket(j.state)==="active");
+  const attention = jobs.filter(j => jobBucket(j.state)==="attention");
+  const history = jobs.filter(j => jobBucket(j.state)==="history");
   const latestJob = jobs[0]?.jobId || events[0]?.jobId || "";
 
   const card = (job: JobOverview, compact = false) => (
     <article className={`work-card state-${job.state} ${compact ? "compact" : ""}`} key={job.jobId}>
       <div className="work-icon">{job.state === "completed" ? <CheckCircle2/> : job.state === "failed" ? <AlertTriangle/> : job.state === "canceled" ? <XCircle/> : <Clock3/>}</div>
       <div className="work-main">
-        <div className="work-title"><strong>{stageLabel[job.stage] || "Processando suas mídias"}</strong><span className={`work-state ${job.state}`}>{stateLabel[job.state] || job.state}</span></div>
+        <div className="work-title"><strong>{stageLabel[job.stage] || "Processando suas mídias"}</strong><span className={`work-state ${job.state}`}>{jobStateLabel[job.state] || job.state}</span></div>
         <p>{job.sourceName}<span>•</span>{job.sourcePath}</p>
-        <div className="work-progress" role="progressbar" aria-label={`Progresso de ${job.sourceName}`} aria-valuenow={Math.round(job.overallPercent)}><i style={{ width: `${job.overallPercent}%` }}/></div>
+        {jobBucket(job.state)==="active"&&<div className="work-progress" role="progressbar" aria-label={`Progresso de ${job.sourceName}`} aria-valuenow={Math.round(job.overallPercent)}><i style={{ width: `${job.overallPercent}%` }}/></div>}
         <div className="work-meta"><span>{formatBytes(job.processedBytes)} de {formatBytes(job.totalBytes)}</span><span>{Math.round(job.overallPercent)}%</span><span>{job.bytesPerSecond?`${formatBytes(job.bytesPerSecond)}/s · ${eta(job.estimatedSecondsRemaining)}`:`${job.processedItems.toLocaleString("pt-BR")} de ${job.totalItems.toLocaleString("pt-BR")} arquivos`}</span><span>{job.state==="completed"?elapsed(job):formatDate(job.updatedAt)}</span></div>
+        <p className="work-next">{jobNextStep(job)}</p>
         {job.interruptionReason && <p className="work-reason">{job.interruptionReason}</p>}
       </div>
       <div className="work-actions">

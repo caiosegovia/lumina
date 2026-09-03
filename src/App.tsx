@@ -6,6 +6,7 @@ import {
   Archive,
   ClipboardCheck,
   CheckCircle2,
+  ChevronDown,
   ChevronRight,
   Cloud,
   Copy,
@@ -25,6 +26,7 @@ import {
 import { api } from "./api";
 import Gallery, { MediaThumb, openGalleryWithFilters } from "./Gallery";
 import ActivityCenter from "./ActivityCenter";
+import { isJobPollingFast, jobBucket } from "./jobState";
 import "./gallery.css";
 import { formatBytes, formatDate } from "./format";
 import type {
@@ -68,7 +70,8 @@ export default function App() {
     [jobId, setJobId] = useState<string>(),
     [jobs, setJobs] = useState<JobOverview[]>([]),
     [toast, setToast] = useState(""),
-    previous = useRef(new Map<string, string>());
+    previous = useRef(new Map<string, string>()),
+    pollingFast = useRef(false);
   useEffect(() => {
     api.getLibrary().then(setLibrary);
   }, []);
@@ -101,12 +104,15 @@ export default function App() {
               );
             previous.current.set(j.jobId, j.state);
           });
+          pollingFast.current=isJobPollingFast(next);
           setJobs(next);
         })
         .catch(() => {});
     load();
-    const timer = setInterval(load, 1000);
-    return () => clearInterval(timer);
+    let timer:ReturnType<typeof setTimeout>;
+    const schedule=()=>{timer=setTimeout(async()=>{await load();schedule()},pollingFast.current?1000:5000)};
+    schedule();
+    return () => clearTimeout(timer);
   }, [library]);
   if (library === undefined)
     return (
@@ -120,16 +126,7 @@ export default function App() {
       setJobId(id);
       setImportOpen(true);
     },
-    active = jobs.filter((j) =>
-      [
-        "queued",
-        "analyzing",
-        "consolidating",
-        "paused",
-        "ready",
-        "interrupted",
-      ].includes(j.state),
-    ).length;
+    active = jobs.filter((j) => jobBucket(j.state)!=="history").length;
   return (
     <div className="app-shell">
       <aside>
@@ -415,45 +412,6 @@ function ReviewCenter({ navigate }: { navigate: (view: View) => void }) {
     <div className="review-grid">{cards.map(card=><button key={card.label} onClick={card.action}><span>{card.label}</span><strong>{card.value.toLocaleString("pt-BR")}</strong><small>{card.detail}</small><ChevronRight/></button>)}</div>
   </>;
 }
-function ReportTools() {
-  const [job, setJob] = useState(""),
-    [notice, setNotice] = useState("");
-  useEffect(() => {
-    api.events().then((x) => setJob(x[0]?.jobId || ""));
-  }, []);
-  if (!job) return null;
-  return (
-    <div className="report-tools">
-      <span>Relatórios técnicos</span>
-      <button
-        onClick={async () =>
-          setNotice((await api.exportReport(job, "jsonl")).path)
-        }
-      >
-        Exportar JSONL
-      </button>
-      <button
-        onClick={async () =>
-          setNotice((await api.exportReport(job, "csv")).path)
-        }
-      >
-        Exportar CSV
-      </button>
-      <button
-        onClick={async () =>
-          setNotice(`${await api.retryFailed(job)} itens preparados`)
-        }
-      >
-        Tentar novamente
-      </button>
-      {notice && (
-        <p className="safe-note" role="status">
-          {notice}
-        </p>
-      )}
-    </div>
-  );
-}
 const typeLabel = (x: string) =>
   (({ raw: "RAW", video: "Vídeos", photo: "Fotos" }) as Record<string, string>)[
     x
@@ -499,7 +457,7 @@ function Dashboard({ onImport,navigate }: { onImport: () => void;navigate:(view:
     {key:"photo",label:"Fotos",items:s.photos,bytes:s.types.filter(x=>x.key!=="video").reduce((total,x)=>total+x.bytes,0)},
     {key:"video",label:"Vídeos",items:s.videos,bytes:s.types.find(x=>x.key==="video")?.bytes||0},
   ],compositionTotal=Math.max(1,composition.reduce((total,item)=>total+item.items,0)),photoPercent=composition[0].items/compositionTotal*100;
-  const equipment=Object.values(s.cameras.reduce<Record<string,DashboardStats["cameras"][number]>>((all,item)=>{const key=normalizeEquipment(item.key);const current=all[key]||{key,items:0,bytes:0};current.items+=item.items;current.bytes+=item.bytes;all[key]=current;return all},{})).sort((a,b)=>b.bytes-a.bytes);
+  const equipment=Object.values(s.cameras.reduce<Record<string,{key:string;items:number;bytes:number;original:string}>>((all,item)=>{const key=normalizeEquipment(item.key);const current=all[key]||{key,items:0,bytes:0,original:item.key};current.items+=item.items;current.bytes+=item.bytes;all[key]=current;return all},{})).sort((a,b)=>b.bytes-a.bytes);
   const benchmarks=s.recentBenchmarks?.length?s.recentBenchmarks:(s.latestBenchmark?[s.latestBenchmark]:[]),maxBenchmark=Math.max(1,...benchmarks.map(item=>item.analysisMs+item.hashingMs+item.copyMs+item.thumbnailsMs));
   return (
     <>
@@ -577,7 +535,7 @@ function Dashboard({ onImport,navigate }: { onImport: () => void;navigate:(view:
           <h4>Formatos de arquivo</h4>
           {s.formats.slice(0,6).map(x=><button key={x.key} onClick={()=>openLibrary({extension:x.key})}><span><b>{x.label}</b><small>{x.family} · suporte {x.support}</small></span><strong>{x.items.toLocaleString("pt-BR")} · {formatBytes(x.bytes)}</strong></button>)}
           <h4>Equipamentos normalizados</h4>
-          {equipment.slice(0,5).map(x=><button className="dashboard-rank" key={x.key} onClick={()=>openLibrary({camera:x.key})}><span>{x.key}</span><b>{x.items.toLocaleString("pt-BR")}</b><small>{formatBytes(x.bytes)}</small></button>)}
+          {equipment.slice(0,5).map(x=><button className="dashboard-rank" key={x.key} onClick={()=>openLibrary({camera:x.original})}><span>{x.key}</span><b>{x.items.toLocaleString("pt-BR")}</b><small>{formatBytes(x.bytes)}</small></button>)}
           {!!s.codecs?.length&&<><h4>Codecs de vídeo</h4>{s.codecs.slice(0,4).map(x=><div className="dashboard-rank" key={x.key}><span>{x.key}</span><b>{x.items.toLocaleString("pt-BR")}</b><small>{formatBytes(x.bytes)}</small></div>)}</>}
           <button onClick={()=>api.startFormatEnrichment().then(id=>setInventoryMessage(`Inventário iniciado · ${id.slice(0,8)}`)).catch(error=>setInventoryMessage(String(error)))}>Atualizar inventário técnico</button>
           {inventoryMessage&&<small className="inventory-message">{inventoryMessage}</small>}
@@ -633,25 +591,6 @@ function Dashboard({ onImport,navigate }: { onImport: () => void;navigate:(view:
   );
 }
 function StorageVolume({title,used,total,managed,detail}:{title:string;used:number;total:number;managed:number;detail:string}){const percent=total?Math.min(100,used/total*100):0,managedPercent=total?Math.min(100,managed/total*100):0;return <article><header><span>{title}</span><strong>{formatBytes(Math.max(0,total-used))} livres</strong></header><div className="volume-bar"><i style={{width:`${percent}%`}}/><em style={{width:`${managedPercent}%`}}/></div><div><b>{formatBytes(used)} usados de {formatBytes(total)}</b><small>{detail}</small></div></article>}
-function Stat({
-  label,
-  value,
-  detail,
-}: {
-  label: string;
-  value: string | number;
-  detail?: string;
-}) {
-  return (
-    <article>
-      <span>{label}</span>
-      <strong>
-        {typeof value === "number" ? value.toLocaleString("pt-BR") : value}
-      </strong>
-      {detail && <small>{detail}</small>}
-    </article>
-  );
-}
 function Sources({ onImport }: { onImport: () => void }) {
   const [items, setItems] = useState<Source[]>([]);
   const [syncing, setSyncing] = useState<Record<string, JobProgress>>({});
@@ -734,6 +673,10 @@ function Duplicates() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [plan, setPlan] = useState<CleanupPlan>();
+  const [expanded,setExpanded]=useState<Set<string>>(new Set());
+  const [filter,setFilter]=useState("all");
+  const [sort,setSort]=useState("space");
+  const [visible,setVisible]=useState(50);
 
   async function loadDuplicates() {
     setLoading(true);
@@ -765,6 +708,7 @@ function Duplicates() {
   useEffect(() => {
     loadDuplicates();
   }, []);
+  const filtered=items.filter(group=>filter==="all"||filter==="pending"&&!group.decision||filter==="protected"&&group.safety==="eligible_for_review"||filter==="review"&&group.decision==="review"||filter==="eligible"&&group.safety==="eligible_for_review").sort((a,b)=>sort==="name"?a.filename.localeCompare(b.filename):sort==="copies"?b.occurrences.length-a.occurrences.length:b.additionalBytes-a.additionalBytes);
   return (
     <>
       <div className="section-heading">
@@ -786,6 +730,10 @@ function Duplicates() {
         <span><strong>{status.connectedSources}</strong> de {status.totalSources} fontes conectadas</span>
         <span>Última análise: <strong>{formatDate(status.lastScan)}</strong></span>
       </div>}
+      <div className="duplicate-toolbar" aria-label="Organizar duplicatas">
+        <div className="duplicate-filters">{[["all","Todas"],["pending","Pendentes"],["protected","Protegidas"],["review","Revisar"],["eligible","Elegíveis"]].map(([value,label])=><button key={value} className={filter===value?"active":""} onClick={()=>{setFilter(value);setVisible(50)}}>{label}</button>)}</div>
+        <label>Ordenar por <select value={sort} onChange={event=>setSort(event.target.value)}><option value="space">Maior espaço</option><option value="copies">Mais cópias</option><option value="name">Nome</option></select></label>
+      </div>
       <section className="cleanup-planner">
         <div><h3>Plano de limpeza seguro</h3><p>Simule candidatas e espaço potencial. Esta beta não remove arquivos.</p></div>
         <button className="primary" onClick={async()=>setPlan(await api.createCleanupPlan())}>Gerar plano</button>
@@ -803,17 +751,24 @@ function Duplicates() {
         </div>
       )}
       <div className="duplicate-list">
-        {items.map((g) => (
-          <article key={g.hash}>
-            <DuplicateThumb assetId={g.assetId} filename={g.filename} />
-            <div className="duplicate-main">
-              <h3>{g.filename}</h3>
-              <p>{formatBytes(g.bytes)}</p>
+        {filtered.slice(0,visible).map((g) => {
+          const open=expanded.has(g.assetId);
+          return <article className={`duplicate-group ${open?"expanded":""}`} key={g.hash}>
+            <button className="duplicate-summary" aria-expanded={open} onClick={()=>setExpanded(current=>{const next=new Set(current);next.has(g.assetId)?next.delete(g.assetId):next.add(g.assetId);return next})}>
+              <span className="duplicate-name"><Copy/><span><strong>{g.filename}</strong><small>{formatBytes(g.bytes)} por arquivo</small></span></span>
+              <span className="duplicate-pill">{g.occurrences.length} cópias</span>
+              <span className="duplicate-pill space">+ {formatBytes(g.additionalBytes)}</span>
+              <span className={`duplicate-pill ${g.safety==="eligible_for_review"?"success":"warning"}`}>{g.safety==="eligible_for_review"?"Protegida":"Proteção pendente"}</span>
+              <span className={`duplicate-pill decision ${g.decision||"pending"}`}>{g.decision==="keep_all"?"Manter todas":g.decision==="review"?"Revisar":g.decision==="remove_candidates"?"Candidatas":"Sem decisão"}</span>
+              <ChevronDown/>
+            </button>
+            {open&&<div className="duplicate-details">
+              <DuplicateThumb assetId={g.assetId} filename={g.filename} />
+              <div className="duplicate-main">
               <p>{formatBytes(g.additionalBytes)} em ocorrências adicionais · {g.safety==="eligible_for_review"?`${formatBytes(g.reclaimableBytes)} aptos para futura revisão`:"proteja o acervo antes de decidir"}</p>
               <div className="occurrence-comparison" aria-label={`Comparação de ${g.filename}`}>
                 {g.occurrences.map((o, i) => (
                   <section key={o.id}>
-                    <DuplicateThumb assetId={g.assetId} filename={`${g.filename} em ${o.source}`} />
                     <strong><HardDrive />{i===0?"Referência":"Ocorrência adicional"}</strong>
                     <span>{o.source}<small>{o.path}</small></span>
                     <small>{g.safety==="eligible_for_review"?"Réplica verificada":"Proteção pendente"}</small>
@@ -858,10 +813,10 @@ function Duplicates() {
                 </button>
               </div>
             </div>
-            <span className="count">{g.occurrences.length} cópias</span>
-          </article>
-        ))}
+            </div>}
+          </article>})}
       </div>
+      {visible<filtered.length&&<button className="load-more-duplicates" onClick={()=>setVisible(value=>value+50)}>Carregar mais {Math.min(50,filtered.length-visible)} grupos</button>}
     </>
   );
 }
@@ -932,205 +887,6 @@ function Albums({navigate}:{navigate:(view:View)=>void}) {
         ))}
       </div>
       <section className="tag-manager"><h3>Tags</h3><p>Renomeie ou remova classificações do catálogo sem alterar as mídias.</p><div>{tags.map(tag=><span key={tag.id}><button onClick={async()=>{const name=prompt("Novo nome da tag",tag.name);if(name){await api.renameTag(tag.id,name);setTags(await api.tags())}}}>{tag.name} · {tag.assetCount}</button><button aria-label={`Excluir tag ${tag.name}`} onClick={async()=>{if(confirm(`Remover a tag ${tag.name} do catálogo?`)){await api.deleteTag(tag.id);setTags(current=>current.filter(item=>item.id!==tag.id))}}}><X/></button></span>)}</div></section>
-    </>
-  );
-}
-function JobCenter({
-  jobs,
-  openJob,
-}: {
-  jobs: JobOverview[];
-  openJob: (x: string) => void;
-}) {
-  const [events, setEvents] = useState<ImportEvent[]>([]),
-    [notice, setNotice] = useState(""),
-    [busy, setBusy] = useState("");
-  useEffect(() => {
-    const load = () => api.events().then(setEvents);
-    load();
-    const timer = setInterval(load, 1000);
-    return () => clearInterval(timer);
-  }, []);
-  const act = async (
-    j: JobOverview,
-    action: "paused" | "running" | "canceled",
-  ) => {
-    if (
-      action === "canceled" &&
-      !confirm(
-        "Cancelar este trabalho? O histórico e os arquivos já verificados serão preservados.",
-      )
-    )
-      return;
-    setBusy(j.jobId + action);
-    try {
-      await api.controlImport(j.jobId, action);
-      setNotice(
-        action === "paused"
-          ? "Trabalho pausado"
-          : action === "running"
-            ? "Trabalho retomado"
-            : "Cancelamento solicitado",
-      );
-    } catch (e) {
-      setNotice(String(e));
-    } finally {
-      setBusy("");
-    }
-  };
-  const sections = [
-    {
-      title: "Em andamento",
-      items: jobs.filter((j) =>
-        [
-          "queued",
-          "analyzing",
-          "consolidating",
-          "paused",
-          "pausing",
-          "canceling",
-        ].includes(j.state),
-      ),
-    },
-    {
-      title: "Aguardando você",
-      items: jobs.filter((j) =>
-        ["ready", "interrupted", "failed"].includes(j.state),
-      ),
-    },
-    {
-      title: "Histórico",
-      items: jobs.filter((j) => ["completed", "canceled"].includes(j.state)),
-    },
-  ];
-  return (
-    <>
-      <div className="section-heading">
-        <div>
-          <h2>Central de trabalhos</h2>
-          <p>
-            Acompanhe e controle análises e importações sem interromper sua
-            navegação.
-          </p>
-        </div>
-      </div>
-      {notice && (
-        <p className="safe-note" role="status">
-          {notice}
-        </p>
-      )}
-      {sections.map((section) => (
-        <section className="job-section" key={section.title}>
-          <h3>
-            {section.title} <span>{section.items.length}</span>
-          </h3>
-          {!section.items.length ? (
-            <p className="job-empty">Nenhum trabalho nesta seção.</p>
-          ) : (
-            <div className="job-list">
-              {section.items.map((j) => (
-                <article key={j.jobId}>
-                  <div>
-                    <strong>{stageText(j.stage, j.state)}</strong>
-                    <small>
-                      {j.sourceName} · {j.sourcePath}
-                    </small>
-                  </div>
-                  <span className={`badge ${j.state}`}>
-                    {j.state === "ready"
-                      ? "Revisar"
-                      : j.state === "interrupted"
-                        ? "Interrompido"
-                        : j.state === "completed"
-                          ? "Concluído"
-                          : j.state}
-                  </span>
-                  <div className="mini-progress">
-                    <i style={{ width: `${j.overallPercent}%` }} />
-                  </div>
-                  <b>
-                    {j.processedItems.toLocaleString("pt-BR")}/
-                    {j.totalItems.toLocaleString("pt-BR")}
-                  </b>
-                  <div className="job-controls">
-                    {["analyzing", "consolidating"].includes(j.state) && (
-                      <button
-                        disabled={!!busy}
-                        onClick={() => act(j, "paused")}
-                      >
-                        Pausar
-                      </button>
-                    )}
-                    {j.state === "paused" && (
-                      <button
-                        disabled={!!busy}
-                        onClick={() => act(j, "running")}
-                      >
-                        Retomar
-                      </button>
-                    )}
-                    {j.state === "interrupted" && (
-                      <button
-                        disabled={!!busy}
-                        onClick={async () => {
-                          setBusy(j.jobId);
-                          await api.resumeJob(j.jobId);
-                          setBusy("");
-                        }}
-                      >
-                        Retomar
-                      </button>
-                    )}
-                    {[
-                      "queued",
-                      "analyzing",
-                      "consolidating",
-                      "paused",
-                    ].includes(j.state) && (
-                      <button
-                        className="danger-button"
-                        disabled={!!busy}
-                        onClick={() => act(j, "canceled")}
-                      >
-                        Cancelar
-                      </button>
-                    )}
-                    <button onClick={() => openJob(j.jobId)}>
-                      {j.state === "ready" ? "Revisar" : "Detalhes"}
-                    </button>
-                    {j.failed > 0 && (
-                      <button
-                        onClick={async () =>
-                          setNotice(
-                            `${await api.retryFailed(j.jobId)} itens preparados`,
-                          )
-                        }
-                      >
-                        Repetir falhas
-                      </button>
-                    )}
-                  </div>
-                </article>
-              ))}
-            </div>
-          )}
-        </section>
-      ))}
-      <details className="event-history">
-        <summary>Diagnósticos e eventos ({events.length})</summary>
-        <div className="timeline">
-          {events.map((e) => (
-            <article key={e.id}>
-              <CheckCircle2 />
-              <div>
-                <strong>{e.details}</strong>
-                <small>{e.path}</small>
-              </div>
-              <time>{formatDate(e.at)}</time>
-            </article>
-          ))}
-        </div>
-      </details>
     </>
   );
 }
