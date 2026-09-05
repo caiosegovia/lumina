@@ -1,7 +1,7 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import Gallery, { resetGallerySession } from "./Gallery";
+import Gallery, { openGalleryComparison, resetGallerySession } from "./Gallery";
 import { api } from "./api";
 
 describe("galeria em escala",()=>{
@@ -23,4 +23,5 @@ describe("galeria em escala",()=>{
  it("prioriza miniaturas visíveis em lotes limitados",async()=>{const prefetch=vi.spyOn(api,"prefetchThumbnails");render(<Gallery/>);await screen.findByText("IMG_2401.JPG");await waitFor(()=>expect(prefetch).toHaveBeenCalledWith(expect.any(Array),180));expect(prefetch.mock.calls.every(call=>call[0].length<=80)).toBe(true)});
  it("persiste seções de metadados e abre localização sob demanda",async()=>{const user=userEvent.setup();const reveal=vi.spyOn(api,"revealAsset");render(<Gallery/>);await user.click(await screen.findByRole("button",{name:"Abrir detalhes de IMG_2401.JPG"}));const capture=screen.getByText("Captura").closest("summary")!;await user.click(capture);expect(localStorage.getItem("lumina-metadata-capture")).toBe("closed");await user.click(screen.getByRole("button",{name:/Abrir localização/}));expect(reveal).toHaveBeenCalledWith("demo-1")});
  it("seleciona mídias, mostra o highlight e aplica tag em lote",async()=>{const user=userEvent.setup();const apply=vi.spyOn(api,"applyTag");render(<Gallery/>);await screen.findByText("IMG_2401.JPG");await user.click(screen.getByRole("button",{name:"Selecionar IMG_2401.JPG"}));expect(screen.getByText("1 selecionadas")).toBeInTheDocument();expect(screen.getByText("Selecionado")).toBeInTheDocument();await user.click(screen.getByRole("button",{name:"Aplicar tag"}));await user.type(screen.getByLabelText("Nome da tag"),"favorita");await user.click(screen.getByRole("button",{name:"Aplicar"}));await waitFor(()=>expect(apply).toHaveBeenCalledWith("favorita",["demo-1"]));expect(await screen.findByRole("status")).toHaveTextContent("1 mídias atualizadas")});
+ it("abre a comparação iniciada por uma descoberta",async()=>{openGalleryComparison(["demo-0","demo-1"]);render(<Gallery/>);expect(await screen.findByRole("dialog",{name:"Comparar mídias"})).toBeInTheDocument();expect((await screen.findAllByText("IMG_2401.JPG")).length).toBeGreaterThan(0)});
 });

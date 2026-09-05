@@ -128,6 +128,24 @@ Critérios: nenhum job visualmente preso; nenhum preview de duplicata carregado 
 - Portabilidade de catálogo, backup de configuração e migração entre computadores.
 - Acesso remoto somente depois de um modelo de ameaças e autenticação adequados.
 
+## Agora — 0.17: descoberta e curadoria local
+
+- A `v0.16.0-beta.1` foi congelada como baseline histórica; a incerteza de jobs técnicos foi carregada como bloqueador, não ocultada por uma promoção estável.
+- Atividades humanas e manutenção reconstruível passam a ter representações independentes.
+- Índice visual perceptual, incremental e local sustenta sugestões de imagens parecidas.
+- Memórias e sequências temporais transformam datas e equipamentos já catalogados em navegação útil.
+- Descobertas abrem diretamente a galeria e a comparação avançada.
+- Similaridade permanece explicável, não equivale a duplicidade e nunca autoriza exclusão.
+
+Critérios: nenhuma manutenção interna aparenta ser job preso; índice funciona sem modificar originais; grandes catálogos não usam comparação integral quadrática; falhas são isoladas; pacote instalado passa no dispositivo oficial.
+
+## Próximo — 0.18: pessoas, lugares e organização avançada
+
+- Agrupamento local e opcional de rostos, com consentimento, correção e remoção integral do índice.
+- Exploração por mapa, cidade, região e viagem para mídias com GPS.
+- Tags hierárquicas, álbuns por regras e operações em lote reversíveis.
+- Busca visual semântica local será avaliada somente com modelo, desempenho e privacidade validados; não será simulada por palavras-chave.
+
 ## Trilhas contínuas
 
 - Compatibilidade real de formatos e fixtures RAW/vídeo.

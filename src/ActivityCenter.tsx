@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
-import { AlertTriangle, CheckCircle2, ChevronDown, Clock3, FileDown, Pause, Play, RotateCcw, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ChevronDown, Clock3, FileDown, Pause, Play, RotateCcw, Sparkles, XCircle } from "lucide-react";
 import { api } from "./api";
 import { formatBytes, formatDate } from "./format";
-import type { ImportEvent, JobOverview } from "./types";
+import type { BackgroundWorkStatus, ImportEvent, JobOverview } from "./types";
 import { jobBucket, jobNextStep, jobStateLabel } from "./jobState";
 import "./activity.css";
 
@@ -39,8 +39,16 @@ export default function ActivityCenter({ jobs, openJob }: { jobs: JobOverview[];
   const [busy, setBusy] = useState("");
   const [historyOpen, setHistoryOpen] = useState(false);
   const [storageWarning, setStorageWarning] = useState("");
+  const [background, setBackground] = useState<BackgroundWorkStatus[]>([]);
   const jobRevision=jobs.map(job=>`${job.jobId}:${job.state}:${job.updatedAt}`).join("|");
   useEffect(() => { api.events().then(setEvents); }, [jobRevision]);
+  useEffect(() => {
+    let live = true;
+    const load = () => api.backgroundWork().then(value => live && setBackground(value)).catch(() => live && setBackground([]));
+    void load();
+    const timer = setInterval(load, 5000);
+    return () => { live = false; clearInterval(timer); };
+  }, []);
   useEffect(() => { api.getLibrary().then(library => { if (!library) return; const master=library.masterPath.match(/^[A-Za-z]:/)?.[0].toUpperCase(),backup=library.backupPath.match(/^[A-Za-z]:/)?.[0].toUpperCase(); if(master&&master===backup)setStorageWarning(`O acervo e a réplica estão na mesma unidade ${master}. Isso reduz a velocidade e não protege contra falha física do disco.`); }); }, []);
   useEffect(() => { if (!notice) return; const id = setTimeout(() => setNotice(""), 4500); return () => clearTimeout(id); }, [notice]);
 
@@ -74,7 +82,7 @@ export default function ActivityCenter({ jobs, openJob }: { jobs: JobOverview[];
         {job.state === "interrupted" && <button disabled={!!busy} onClick={async () => { setBusy(job.jobId); try { await api.resumeJob(job.jobId); setNotice("Trabalho retomado"); } finally { setBusy(""); } }}><Play/>Retomar</button>}
         {["queued", "analyzing", "consolidating", "paused"].includes(job.state) && <button className="subtle-danger" disabled={!!busy} onClick={() => act(job, "canceled")}>Cancelar</button>}
         {job.state === "canceled" && <button onClick={async () => { await api.resumeJob(job.jobId); setNotice("Nova tentativa iniciada"); }}><RotateCcw/>Tentar novamente</button>}
-        <button className="secondary" onClick={() => openJob(job.jobId)}>{job.state === "waiting_space" ? "Resolver espaço" : job.state === "ready" ? "Revisar" : "Detalhes"}</button>
+        <button className="secondary" onClick={() => openJob(job.jobId)}>{job.state === "waiting_space" ? "Resolver espaço" : job.state === "ready" ? "Revisar" : job.state === "protection_pending" ? "Proteger agora" : job.state === "waiting_backup_space" ? "Resolver réplica" : "Detalhes"}</button>
       </div>
     </article>
   );
@@ -86,6 +94,7 @@ export default function ActivityCenter({ jobs, openJob }: { jobs: JobOverview[];
     {active.length > 0 && <section className="work-section"><h3>Em andamento <b>{active.length}</b></h3><div className="work-cards">{active.map(j => card(j))}</div></section>}
     {attention.length > 0 && <section className="work-section"><h3>Precisa da sua atenção <b>{attention.length}</b></h3><div className="work-cards">{attention.map(j => card(j))}</div></section>}
     {active.length === 0 && attention.length === 0 && <div className="activity-empty"><CheckCircle2/><div><strong>Tudo em ordem</strong><p>Nenhum trabalho precisa da sua atenção.</p></div></div>}
+    {background.length > 0 && <section className="background-work" aria-label="Processamento em segundo plano"><div className="background-work-heading"><Sparkles/><div><strong>Organização em segundo plano</strong><p>O Lumina prepara a biblioteca sem interromper seu uso.</p></div></div><div className="background-work-items">{background.map(work => <div className={`background-work-item ${work.state}`} key={work.stage}><span>{work.stage === "thumbnail" ? "Previews" : "Metadados"}</span><b>{work.state === "processing" ? "Processando" : work.state === "pending" ? "Na fila" : work.state === "attention" ? "Requer revisão" : "Atualizado"}</b><small>{work.failed > 0 ? `${work.failed.toLocaleString("pt-BR")} falhas` : work.pending > 0 ? `${work.pending.toLocaleString("pt-BR")} restantes` : `${work.completed.toLocaleString("pt-BR")} concluídos`}</small>{(work.state === "processing" || work.state === "pending") && <div className="background-progress"><i style={{width:`${work.progressPercent}%`}}/></div>}</div>)}</div></section>}
     {history.length > 0 && <section className="history-section"><button className="history-toggle" onClick={() => setHistoryOpen(v => !v)} aria-expanded={historyOpen}><div><h3>Histórico recente</h3><span>{history.length} trabalhos encerrados</span></div><ChevronDown/></button>{historyOpen && <div className="work-cards history-cards">{history.map(j => card(j, true))}</div>}</section>}
     <details className="technical-tools"><summary>Diagnósticos e relatórios</summary><p>Informações para suporte e conferência da biblioteca.</p><div><button disabled={!latestJob} onClick={async () => setNotice((await api.exportReport(latestJob, "jsonl")).path)}><FileDown/>Exportar relatório completo</button><button disabled={!latestJob} onClick={async () => setNotice((await api.exportReport(latestJob, "csv")).path)}><FileDown/>Exportar planilha CSV</button></div>{events.length > 0 && <details><summary>{events.length} eventos registrados</summary><div className="diagnostic-events">{events.slice(0, 50).map(e => <p key={e.id}><time>{formatDate(e.at)}</time><span>{e.details}</span></p>)}</div></details>}</details>
   </div>;

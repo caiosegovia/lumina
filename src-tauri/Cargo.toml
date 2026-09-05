@@ -1,6 +1,6 @@
 [package]
 name = "lumina"
-version = "0.16.0-beta.1"
+version = "0.17.0-beta.1"
 description = "Organizador local e seguro de fotos e vídeos"
 authors = ["Lumina"]
 edition = "2021"

@@ -40,7 +40,9 @@ const session: {
   result?: GalleryResult;
   assets: MediaAsset[];
   scrollY: number;
-} = { filters: empty, assets: [], scrollY: 0 };
+  selected: string[];
+  compare: boolean;
+} = { filters: empty, assets: [], scrollY: 0, selected: [], compare: false };
 const saved = <T extends string>(key: string, fallback: T) =>
   (localStorage.getItem(key) || fallback) as T;
 export function resetGallerySession() {
@@ -48,6 +50,8 @@ export function resetGallerySession() {
   session.result = undefined;
   session.assets = [];
   session.scrollY = 0;
+  session.selected = [];
+  session.compare = false;
   thumbs.clear();
 }
 export function openGalleryWithFilters(filters: Partial<GalleryFilters>) {
@@ -55,6 +59,16 @@ export function openGalleryWithFilters(filters: Partial<GalleryFilters>) {
   session.result = undefined;
   session.assets = [];
   session.scrollY = 0;
+  session.selected = [];
+  session.compare = false;
+}
+export function openGalleryComparison(assetIds:string[]) {
+  session.filters = empty;
+  session.result = undefined;
+  session.assets = [];
+  session.scrollY = 0;
+  session.selected = assetIds.slice(0,2);
+  session.compare = session.selected.length === 2;
 }
 export default function Gallery() {
   const [filters, setFilters] = useState(session.filters),
@@ -70,9 +84,9 @@ export default function Gallery() {
     [zoom, setZoom0] = useState<Zoom>(() => saved("lumina-zoom", "normal")),
     [sort, setSort0] = useState<GallerySort>(() => saved("lumina-sort", "captured_desc")),
     [listDensity, setListDensity0] = useState<ListDensity>(() => saved("lumina-list-density", "comfortable")),
-    [selection, setSelection] = useState<Set<string>>(new Set()),
+    [selection, setSelection] = useState<Set<string>>(()=>new Set(session.selected)),
     [action, setAction] = useState<"tag" | "album" | "date">(),
-    [comparing, setComparing] = useState(false),
+    [comparing, setComparing] = useState(()=>session.compare),
     [notice, setNotice] = useState(""),
     [undoAvailable, setUndoAvailable] = useState(false),
     [savedViews, setSavedViews] = useState<SavedView[]>([]),
@@ -128,6 +142,7 @@ export default function Gallery() {
   useEffect(() => {
     api.savedViews().then(setSavedViews);
   }, []);
+  useEffect(()=>{session.selected=[];session.compare=false},[]);
   useEffect(() => {
     const t = setTimeout(() => load(), 200);
     return () => clearTimeout(t);

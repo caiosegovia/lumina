@@ -37,6 +37,14 @@ struct PendingAnalysis {
     name: String,
     job: String,
 }
+struct PendingWork {
+    cfg: LibraryConfig,
+    job: String,
+    path: String,
+    name: String,
+    stage: String,
+    kind: String,
+}
 impl JobManager {
     pub fn new() -> Self {
         Self {
@@ -211,22 +219,39 @@ impl JobManager {
         }
         self.inner.tokens.lock().unwrap().remove(job);
         let cfg = self.inner.library.lock().ok().and_then(|cfg| cfg.clone());
-        let next = cfg.and_then(|cfg| {
+        let next = cfg.clone().and_then(|cfg| {
             let path = Path::new(&cfg.master_path).join(".lumina/catalog.sqlite");
             catalog::open(&path).ok().and_then(|conn| {
                 conn.query_row(
-                    "SELECT id,source_path,COALESCE((SELECT name FROM sources WHERE id=jobs.source_id),'Fonte') FROM jobs WHERE state='queued' AND stage='discovery' ORDER BY created_at,id LIMIT 1",
+                    "SELECT id,source_path,COALESCE((SELECT name FROM sources WHERE id=jobs.source_id),'Fonte'),stage,COALESCE(job_kind,'import') FROM jobs WHERE state='queued' ORDER BY created_at,id LIMIT 1",
                     [],
-                    |row| Ok(PendingAnalysis { cfg: cfg.clone(), job: row.get(0)?, path: row.get(1)?, name: row.get(2)? }),
+                    |row| Ok(PendingWork { cfg: cfg.clone(), job: row.get(0)?, path: row.get(1)?, name: row.get(2)?, stage: row.get(3)?, kind: row.get(4)? }),
                 ).ok()
             })
         });
         if let Some(next) = next {
-            if self.reserve(&next.job).is_ok() {
-                if let Err(error) = self.spawn_analysis(next.clone()) {
-                    self.mark_failed(&next.cfg, &next.job, &error);
-                    self.release(&next.job);
-                }
+            let job = next.job.clone();
+            let result = if next.stage == "discovery" {
+                self.reserve(&job).and_then(|_| {
+                    self.spawn_analysis(PendingAnalysis {
+                        cfg: next.cfg.clone(),
+                        path: next.path,
+                        name: next.name,
+                        job: job.clone(),
+                    })
+                })
+            } else if next.kind == "source_sync" {
+                self.spawn_source_sync(next.cfg.clone(), job.clone())
+            } else if next.stage == "technical_enrichment" {
+                self.spawn_format_enrichment(next.cfg.clone(), job.clone())
+            } else if matches!(next.stage.as_str(), "verification" | "verification_error") {
+                self.spawn_verification(next.cfg.clone(), job.clone())
+            } else {
+                Ok(())
+            };
+            if let Err(error) = result {
+                self.mark_failed(&next.cfg, &job, &error);
+                self.release(&job);
             }
         }
     }
@@ -409,6 +434,9 @@ impl JobManager {
     }
     pub fn start_verification(&self, cfg: LibraryConfig) -> Result<String, String> {
         let job = engine::queue_verification(&cfg)?;
+        if self.has_active() {
+            return Ok(job);
+        }
         self.spawn_verification(cfg, job.clone())?;
         Ok(job)
     }
@@ -434,6 +462,9 @@ impl JobManager {
     }
     pub fn start_format_enrichment(&self, cfg: LibraryConfig) -> Result<String, String> {
         let job = engine::queue_format_enrichment(&cfg)?;
+        if self.has_active() {
+            return Ok(job);
+        }
         self.spawn_format_enrichment(cfg, job.clone())?;
         Ok(job)
     }
@@ -771,6 +802,58 @@ mod tests {
             "completed"
         );
         drop(conn);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn queued_metadata_work_starts_after_the_current_user_job_finishes() {
+        let root =
+            std::env::temp_dir().join(format!("lumina-metadata-dispatch-{}", Uuid::new_v4()));
+        let master = root.join("master");
+        let backup = root.join("backup");
+        fs::create_dir_all(&master).unwrap();
+        fs::create_dir_all(&backup).unwrap();
+        let cfg = LibraryConfig {
+            id: "l".into(),
+            name: "Teste".into(),
+            master_path: master.to_string_lossy().into(),
+            backup_path: backup.to_string_lossy().into(),
+            created_at: Utc::now().to_rfc3339(),
+        };
+        let manager = JobManager::new();
+        *manager.inner.library.lock().unwrap() = Some(cfg.clone());
+        manager.reserve("busy").unwrap();
+        let metadata = manager.start_format_enrichment(cfg.clone()).unwrap();
+        let conn = catalog::open(&master.join(".lumina/catalog.sqlite")).unwrap();
+        assert_eq!(
+            conn.query_row("SELECT state FROM jobs WHERE id=?1", [&metadata], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap(),
+            "queued"
+        );
+        drop(conn);
+        manager.release("busy");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let conn = catalog::open(&master.join(".lumina/catalog.sqlite")).unwrap();
+            let state = conn
+                .query_row("SELECT state FROM jobs WHERE id=?1", [&metadata], |r| {
+                    r.get::<_, String>(0)
+                })
+                .unwrap();
+            drop(conn);
+            if state == "completed" && !manager.has_active() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "metadados permaneceram em {state}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        drop(manager);
+        std::thread::sleep(std::time::Duration::from_millis(50));
         fs::remove_dir_all(root).unwrap();
     }
 }

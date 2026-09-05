@@ -54,6 +54,10 @@ describe("fluxo principal do aplicativo", () => {
     await user.type(search, "DJI");
     await waitFor(() => expect(screen.queryByText("IMG_2401.JPG")).not.toBeInTheDocument());
 
+    await user.click(screen.getByRole("button", { name: "Descobrir" }));
+    expect(await screen.findByText("Redescubra sua biblioteca")).toBeInTheDocument();
+    expect(screen.getByText("Visualmente parecidas")).toBeInTheDocument();
+
     await user.click(screen.getByRole("button", { name: "Fontes" }));
     expect(await screen.findByText("De onde vêm suas mídias")).toBeInTheDocument();
     expect(await screen.findByText("HD Fotos Antigas")).toBeInTheDocument();

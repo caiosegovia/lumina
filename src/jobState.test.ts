@@ -16,4 +16,9 @@ describe("ciclo operacional dos jobs",()=>{
     expect(jobBucket("completed")).toBe("history");
     expect(isJobPollingFast([job("protecting")])).toBe(true);
   });
+  it("não apresenta uma pausa deliberada como execução presa",()=>{
+    expect(jobBucket("paused")).toBe("attention");
+    expect(isJobPollingFast([job("paused")])).toBe(false);
+    expect(jobNextStep(job("paused"))).toContain("Retome ou cancele");
+  });
 });

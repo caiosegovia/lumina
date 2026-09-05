@@ -574,6 +574,57 @@ pub struct JobOverview {
     pub updated_at: String,
     pub interruption_reason: Option<String>,
 }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackgroundWorkStatus {
+    pub state: String,
+    pub stage: String,
+    pub pending: i64,
+    pub processing: i64,
+    pub completed: i64,
+    pub failed: i64,
+    pub total: i64,
+    pub progress_percent: f64,
+    pub updated_at: Option<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveryItem {
+    pub id: String,
+    pub filename: String,
+    pub media_type: String,
+    pub captured_at: String,
+    pub camera: Option<String>,
+    pub quality_score: Option<f64>,
+    pub visual_labels: Vec<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveryGroup {
+    pub id: String,
+    pub title: String,
+    pub detail: String,
+    pub score: f64,
+    pub items: Vec<DiscoveryItem>,
+    pub recommended_id: Option<String>,
+    pub recommendation: Option<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveryOverview {
+    pub indexed: i64,
+    pub indexable: i64,
+    pub similar: Vec<DiscoveryGroup>,
+    pub sequences: Vec<DiscoveryGroup>,
+    pub memories: Vec<DiscoveryGroup>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveryIndexResult {
+    pub indexed: i64,
+    pub skipped: i64,
+    pub failed: i64,
+}
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BatchResult {

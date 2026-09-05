@@ -1,6 +1,6 @@
 # Lumina
 
-Versão em desenvolvimento: **0.16.0-beta.1**, ciclo de clareza operacional e lapidação. A **0.15.0-beta.2** permanece homologada e publicada. Consulte [SPEC-0.16-BETA.md](SPEC-0.16-BETA.md) para o escopo e [RELEASE-0.16-BETA.md](RELEASE-0.16-BETA.md) para o roteiro de validação.
+Versão em desenvolvimento: **0.17.0-beta.1**, ciclo de descoberta e curadoria local. A **0.16.0-beta.1** permanece publicada e congelada como baseline histórica. Consulte [SPEC-0.17-BETA.md](SPEC-0.17-BETA.md), [ARCHITECTURE-0.17.md](ARCHITECTURE-0.17.md) e [CLOSURE-0.16.md](CLOSURE-0.16.md).
 
 A anatomia, os wireframes responsivos e os estados da nova galeria estão registrados em [DESIGN-0.15-GALLERY.md](DESIGN-0.15-GALLERY.md).
 

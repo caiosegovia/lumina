@@ -10,8 +10,8 @@ export const jobStateLabel: Record<string,string> = {
   backup_error:"Falha na proteção",interrupted:"Interrompido",failed:"Com erro",completed:"Concluído",canceled:"Cancelado",
 };
 
-const activeStates=new Set(["queued","analyzing","consolidating","protecting","pausing","paused","canceling"]);
-const attentionStates=new Set(["ready","waiting_space","batch_pending","protection_pending","waiting_backup_space","backup_error","interrupted","failed"]);
+const activeStates=new Set(["queued","analyzing","consolidating","protecting","pausing","canceling"]);
+const attentionStates=new Set(["paused","ready","waiting_space","batch_pending","protection_pending","waiting_backup_space","backup_error","interrupted","failed"]);
 
 export function jobBucket(state:string):JobBucket {
   if(activeStates.has(state))return "active";
@@ -22,6 +22,7 @@ export function jobBucket(state:string):JobBucket {
 export function jobNextStep(job:JobOverview):string {
   return ({
     ready:"A análise terminou. Revise a seleção para iniciar a importação.",
+    paused:"Este trabalho está parado por sua solicitação. Retome ou cancele quando quiser.",
     protection_pending:"Os arquivos já estão no acervo. Inicie a réplica quando o destino estiver disponível.",
     batch_pending:"O lote atual terminou. Você pode preparar o próximo lote.",
     waiting_space:"Libere espaço ou escolha outra localização para continuar.",

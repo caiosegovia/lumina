@@ -20,12 +20,14 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Sparkles,
   ShieldCheck,
   X,
 } from "lucide-react";
 import { api } from "./api";
 import Gallery, { MediaThumb, openGalleryWithFilters } from "./Gallery";
 import ActivityCenter from "./ActivityCenter";
+import Discovery from "./Discovery";
 import { isJobPollingFast, jobBucket } from "./jobState";
 import "./gallery.css";
 import { formatBytes, formatDate } from "./format";
@@ -54,6 +56,7 @@ import type {
 const nav = [
   { id: "dashboard", label: "Visão geral", icon: LayoutDashboard },
   { id: "library", label: "Biblioteca", icon: Images },
+  { id: "discover", label: "Descobrir", icon: Sparkles },
   { id: "review", label: "Revisão", icon: ClipboardCheck },
   { id: "sources", label: "Fontes", icon: HardDrive },
   { id: "duplicates", label: "Duplicatas", icon: Copy },
@@ -380,6 +383,7 @@ function Content({
   openJob: (x: string) => void;
 }) {
   if (view === "library") return <Gallery />;
+  if (view === "discover") return <Discovery navigate={navigate} />;
   if (view === "review") return <ReviewCenter navigate={navigate} />;
   if (view === "sources") return <Sources onImport={onImport} />;
   if (view === "duplicates") return <Duplicates />;

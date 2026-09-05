@@ -1,6 +1,7 @@
 mod backup;
 mod catalog;
 mod diagnostics;
+mod discovery;
 mod duplicates;
 mod engine;
 mod events;
@@ -911,7 +912,7 @@ fn list_albums(state: State<AppState>) -> Result<Vec<Album>, String> {
 fn list_jobs(state: State<AppState>) -> Result<Vec<JobOverview>, String> {
     let cfg = current(&state)?;
     let conn = db(&cfg)?;
-    let mut stmt=conn.prepare("SELECT j.id,s.name,j.source_path,j.state,j.stage,j.processed_items,j.total_items,j.processed_bytes,j.total_bytes,CASE WHEN j.state='analyzing' AND j.stage_total_bytes>0 THEN MIN(100.0,j.stage_processed_bytes*100.0/j.stage_total_bytes) WHEN j.state='analyzing' AND j.stage_total_items>0 THEN MIN(100.0,j.stage_processed_items*100.0/j.stage_total_items) WHEN j.total_bytes>0 THEN MIN(100.0,j.processed_bytes*100.0/j.total_bytes) WHEN j.total_items>0 THEN MIN(100.0,j.processed_items*100.0/j.total_items) ELSE 0 END,j.bytes_per_second,j.estimated_seconds_remaining,j.imported_count,j.duplicate_count,j.excluded_count,j.failed_count,j.created_at,j.updated_at,j.interruption_reason FROM jobs j JOIN sources s ON s.id=j.source_id ORDER BY CASE WHEN j.state IN('queued','analyzing','consolidating','protecting','pausing','paused','canceling','ready','batch_pending','protection_pending','waiting_space','waiting_backup_space','backup_error','interrupted') THEN 0 ELSE 1 END,j.updated_at DESC LIMIT 200").map_err(|e|e.to_string())?;
+    let mut stmt=conn.prepare("SELECT j.id,s.name,j.source_path,j.state,j.stage,j.processed_items,j.total_items,j.processed_bytes,j.total_bytes,CASE WHEN j.state='analyzing' AND j.stage_total_bytes>0 THEN MIN(100.0,j.stage_processed_bytes*100.0/j.stage_total_bytes) WHEN j.state='analyzing' AND j.stage_total_items>0 THEN MIN(100.0,j.stage_processed_items*100.0/j.stage_total_items) WHEN j.total_bytes>0 THEN MIN(100.0,j.processed_bytes*100.0/j.total_bytes) WHEN j.total_items>0 THEN MIN(100.0,j.processed_items*100.0/j.total_items) ELSE 0 END,j.bytes_per_second,j.estimated_seconds_remaining,j.imported_count,j.duplicate_count,j.excluded_count,j.failed_count,j.created_at,j.updated_at,j.interruption_reason FROM jobs j JOIN sources s ON s.id=j.source_id WHERE j.source_path NOT LIKE 'lumina://%' ORDER BY CASE WHEN j.state IN('queued','analyzing','consolidating','protecting','pausing','paused','canceling','ready','batch_pending','protection_pending','waiting_space','waiting_backup_space','backup_error','interrupted') THEN 0 ELSE 1 END,j.updated_at DESC LIMIT 200").map_err(|e|e.to_string())?;
     let rows = stmt
         .query_map([], |r| {
             Ok(JobOverview {
@@ -940,6 +941,63 @@ fn list_jobs(state: State<AppState>) -> Result<Vec<JobOverview>, String> {
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
     Ok(rows)
+}
+#[tauri::command]
+fn get_background_work_status(state: State<AppState>) -> Result<Vec<BackgroundWorkStatus>, String> {
+    let cfg = current(&state)?;
+    let conn = db(&cfg)?;
+    let mut stmt = conn.prepare("SELECT kind,COALESCE(SUM(state='pending'),0),COALESCE(SUM(state='processing'),0),COALESCE(SUM(state='completed'),0),COALESCE(SUM(state='failed'),0),COUNT(*),MAX(updated_at) FROM work_queue WHERE kind IN('thumbnail','technical_metadata') GROUP BY kind ORDER BY kind").map_err(|e| e.to_string())?;
+    let mapped = stmt
+        .query_map([], |row| {
+            let stage: String = row.get(0)?;
+            let pending: i64 = row.get(1)?;
+            let processing: i64 = row.get(2)?;
+            let completed: i64 = row.get(3)?;
+            let failed: i64 = row.get(4)?;
+            let total: i64 = row.get(5)?;
+            let work_state = if processing > 0 {
+                "processing"
+            } else if pending > 0 {
+                "pending"
+            } else if failed > 0 {
+                "attention"
+            } else {
+                "idle"
+            };
+            Ok(BackgroundWorkStatus {
+                state: work_state.into(),
+                stage,
+                pending,
+                processing,
+                completed,
+                failed,
+                total,
+                progress_percent: if total > 0 {
+                    (completed as f64 * 100.0 / total as f64).clamp(0.0, 100.0)
+                } else {
+                    100.0
+                },
+                updated_at: row.get(6)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    mapped
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
+}
+#[tauri::command]
+async fn build_discovery_index(state: State<'_, AppState>) -> Result<DiscoveryIndexResult, String> {
+    let cfg = current(&state)?;
+    tauri::async_runtime::spawn_blocking(move || discovery::build_index(&cfg))
+        .await
+        .map_err(|e| e.to_string())?
+}
+#[tauri::command]
+async fn get_discovery_overview(state: State<'_, AppState>) -> Result<DiscoveryOverview, String> {
+    let cfg = current(&state)?;
+    tauri::async_runtime::spawn_blocking(move || discovery::overview(&cfg))
+        .await
+        .map_err(|e| e.to_string())?
 }
 fn checked_ids(ids: Vec<String>) -> Result<Vec<String>, String> {
     if ids.is_empty() || ids.len() > 5000 {
@@ -1844,6 +1902,9 @@ pub fn run() {
             export_cleanup_plan,
             list_albums,
             list_jobs,
+            get_background_work_status,
+            build_discovery_index,
+            get_discovery_overview,
             create_album,
             rename_album,
             delete_album,

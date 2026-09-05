@@ -1,4 +1,4 @@
-export type View = "dashboard" | "library" | "review" | "sources" | "duplicates" | "albums" | "activity" | "protection";
+export type View = "dashboard" | "library" | "discover" | "review" | "sources" | "duplicates" | "albums" | "activity" | "protection";
 export type ProtectionState = "source_only" | "consolidated" | "replica_verified" | "stale" | "error";
 
 export interface LibraryConfig { id: string; name: string; masterPath: string; backupPath: string; createdAt: string }
@@ -38,4 +38,9 @@ export interface CleanupPlanItem{occurrenceId:string;assetId:string;filename:str
 export interface CleanupPlan{id:string;state:string;groups:number;candidates:number;bytes:number;blocked:number;items:CleanupPlanItem[];createdAt:string}
 export interface Album { id: string; name: string; assetCount: number; cover?: string }
 export interface JobOverview { jobId:string; sourceName:string; sourcePath:string; state:string; stage:string; processedItems:number; totalItems:number; processedBytes:number; totalBytes:number; overallPercent:number; bytesPerSecond?:number; estimatedSecondsRemaining?:number; imported:number; duplicates:number; excluded:number; failed:number; createdAt:string; updatedAt:string; interruptionReason?:string }
+export interface BackgroundWorkStatus {state:"idle"|"pending"|"processing"|"attention";stage:"thumbnail"|"technical_metadata";pending:number;processing:number;completed:number;failed:number;total:number;progressPercent:number;updatedAt?:string}
+export interface DiscoveryItem {id:string;filename:string;mediaType:"photo"|"video"|"raw";capturedAt:string;camera?:string;qualityScore?:number;visualLabels?:string[]}
+export interface DiscoveryGroup {id:string;title:string;detail:string;score:number;items:DiscoveryItem[];recommendedId?:string;recommendation?:string}
+export interface DiscoveryOverview {indexed:number;indexable:number;similar:DiscoveryGroup[];sequences:DiscoveryGroup[];memories:DiscoveryGroup[]}
+export interface DiscoveryIndexResult {indexed:number;skipped:number;failed:number}
 export interface BatchResult { affected:number }

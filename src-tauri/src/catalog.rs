@@ -140,6 +140,19 @@ pub fn open(path: &Path) -> Result<Connection> {
         thumbnail_supported INTEGER NOT NULL DEFAULT 0,preview_supported INTEGER NOT NULL DEFAULT 0,enriched_at TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS idx_technical_format ON asset_technical_metadata(detected_format,support_level);
       CREATE INDEX IF NOT EXISTS idx_technical_codec ON asset_technical_metadata(codec) WHERE codec IS NOT NULL;
+      CREATE TABLE IF NOT EXISTS asset_visual_fingerprints(
+        asset_id TEXT PRIMARY KEY REFERENCES assets(id) ON DELETE CASCADE,
+        dhash INTEGER NOT NULL,band0 INTEGER NOT NULL,band1 INTEGER NOT NULL,band2 INTEGER NOT NULL,band3 INTEGER NOT NULL,
+        algorithm_version INTEGER NOT NULL DEFAULT 1,indexed_at TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS idx_visual_band0 ON asset_visual_fingerprints(band0);
+      CREATE INDEX IF NOT EXISTS idx_visual_band1 ON asset_visual_fingerprints(band1);
+      CREATE INDEX IF NOT EXISTS idx_visual_band2 ON asset_visual_fingerprints(band2);
+      CREATE INDEX IF NOT EXISTS idx_visual_band3 ON asset_visual_fingerprints(band3);
+      CREATE TABLE IF NOT EXISTS asset_visual_traits(
+        asset_id TEXT PRIMARY KEY REFERENCES assets(id) ON DELETE CASCADE,width INTEGER NOT NULL,height INTEGER NOT NULL,
+        brightness REAL NOT NULL,colorfulness REAL NOT NULL,sharpness REAL NOT NULL,quality_score REAL NOT NULL,
+        labels TEXT NOT NULL DEFAULT '',algorithm_version INTEGER NOT NULL DEFAULT 1,indexed_at TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS idx_visual_quality ON asset_visual_traits(quality_score DESC);
       CREATE TABLE IF NOT EXISTS dashboard_snapshots(
         id INTEGER PRIMARY KEY CHECK(id=1),schema_version INTEGER NOT NULL,generated_at TEXT NOT NULL,invalidated_at TEXT,
         payload TEXT NOT NULL,generation_ms INTEGER NOT NULL DEFAULT 0,catalog_items INTEGER NOT NULL DEFAULT 0);
