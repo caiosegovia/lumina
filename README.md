@@ -1,6 +1,6 @@
 # Lumina
 
-Versão em desenvolvimento: **0.17.0-beta.1**, ciclo de descoberta e curadoria local. A **0.16.0-beta.1** permanece publicada e congelada como baseline histórica. Consulte [SPEC-0.17-BETA.md](SPEC-0.17-BETA.md), [ARCHITECTURE-0.17.md](ARCHITECTURE-0.17.md) e [CLOSURE-0.16.md](CLOSURE-0.16.md).
+Versão em desenvolvimento: **0.18.0-beta.1**, ciclo de estabilidade em grandes catálogos, proteção observável e organização avançada local. A **0.17.0-beta.1** permanece publicada como baseline homologada com as ressalvas de crash durante metadados e ação silenciosa de proteção. Consulte [SPEC-0.18-BETA.md](SPEC-0.18-BETA.md), [ARCHITECTURE-0.18.md](ARCHITECTURE-0.18.md) e [RELEASE-0.18-BETA.md](RELEASE-0.18-BETA.md).
 
 A anatomia, os wireframes responsivos e os estados da nova galeria estão registrados em [DESIGN-0.15-GALLERY.md](DESIGN-0.15-GALLERY.md).
 

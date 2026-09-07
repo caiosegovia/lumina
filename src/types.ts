@@ -15,7 +15,8 @@ export interface AssetDetails{camera?:string;detectedFormat?:string;mime?:string
 export interface GalleryFilters { query:string; year?:number; dateFrom?:string; dateTo?:string; mediaType?:string; camera?:string; sourceId?:string; originalFolder?:string; extension?:string; hasLocation?:boolean; tagId?:string; albumId?:string; protectionState?:string; dateSuspicious?:boolean;favorite?:boolean;minimumRating?:number;reviewLater?:boolean }
 export type GallerySort = "captured_desc"|"captured_asc"|"name_asc"|"name_desc"|"size_desc"|"size_asc";
 export interface SavedView {id:string;name:string;filters:GalleryFilters;smartAlbum:boolean;createdAt:string;updatedAt:string}
-export interface TagInfo{id:string;name:string;assetCount:number}
+export interface TagInfo{id:string;name:string;assetCount:number;parentId?:string}
+export interface PersonInfo{id:string;name:string;assetCount:number}
 export interface FilterOption { value:string; label:string; count:number }
 export interface GallerySummary { total:number; bytes:number; photos:number; videos:number; raw:number; protected:number; withLocation:number; duplicateAssets:number; favorites?:number; incompleteMetadata?:number; pendingProtection?:number; years:{year:string;count:number;bytes:number}[] }
 export interface GalleryResult { assets:MediaAsset[]; matched:number; nextCursor?:string; summary:GallerySummary; options:{cameras:FilterOption[];sources:FilterOption[];extensions:FilterOption[];tags:FilterOption[];albums:FilterOption[]} }
@@ -41,6 +42,6 @@ export interface JobOverview { jobId:string; sourceName:string; sourcePath:strin
 export interface BackgroundWorkStatus {state:"idle"|"pending"|"processing"|"attention";stage:"thumbnail"|"technical_metadata";pending:number;processing:number;completed:number;failed:number;total:number;progressPercent:number;updatedAt?:string}
 export interface DiscoveryItem {id:string;filename:string;mediaType:"photo"|"video"|"raw";capturedAt:string;camera?:string;qualityScore?:number;visualLabels?:string[]}
 export interface DiscoveryGroup {id:string;title:string;detail:string;score:number;items:DiscoveryItem[];recommendedId?:string;recommendation?:string}
-export interface DiscoveryOverview {indexed:number;indexable:number;similar:DiscoveryGroup[];sequences:DiscoveryGroup[];memories:DiscoveryGroup[]}
+export interface DiscoveryOverview {indexed:number;indexable:number;similar:DiscoveryGroup[];sequences:DiscoveryGroup[];memories:DiscoveryGroup[];places:DiscoveryGroup[];trips:DiscoveryGroup[]}
 export interface DiscoveryIndexResult {indexed:number;skipped:number;failed:number}
 export interface BatchResult { affected:number }

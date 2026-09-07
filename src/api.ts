@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { Album, AssetDetails, BackgroundWorkStatus, BatchResult, CleanupPlan, DashboardStats, DiscoveryIndexResult, DiscoveryOverview, DuplicateGroup, DuplicateStatus, GalleryFilters, GalleryResult, GallerySort, ImportEvent, ImportSummary, JobEventPage, JobOverview, JobProgress, LibraryConfig, LibraryHealth, MediaAsset, MigrationProgress, ProtectionQueueStats, RecoverableJob, ReportExport, ReviewSummary, SavedView, SelectionResult, Source, StoragePlan, TagInfo, ThumbnailAudit, ThumbnailRepairProgress } from "./types";
+import type { Album, AssetDetails, BackgroundWorkStatus, BatchResult, CleanupPlan, DashboardStats, DiscoveryIndexResult, DiscoveryOverview, DuplicateGroup, DuplicateStatus, GalleryFilters, GalleryResult, GallerySort, ImportEvent, ImportSummary, JobEventPage, JobOverview, JobProgress, LibraryConfig, LibraryHealth, MediaAsset, MigrationProgress, PersonInfo, ProtectionQueueStats, RecoverableJob, ReportExport, ReviewSummary, SavedView, SelectionResult, Source, StoragePlan, TagInfo, ThumbnailAudit, ThumbnailRepairProgress } from "./types";
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
 const now = new Date();
@@ -33,6 +33,7 @@ async function call<T>(command: string, args?: Record<string, unknown>, fallback
 
 export const api = {
   signalReady: async () => { if (isTauri()) await invoke("frontend_ready"); },
+  heartbeat: async () => { if (isTauri()) await invoke("frontend_heartbeat"); },
   chooseFolder: async () => isTauri() ? await open({ directory: true, multiple: false }) as string | null : null,
   getLibrary: () => call<LibraryConfig | null>("get_library", undefined, () => config),
   createLibrary: (name: string, masterPath: string, backupPath: string) => call<LibraryConfig>("create_library", { name, masterPath, backupPath }, () => config = { id: crypto.randomUUID(), name, masterPath, backupPath, createdAt: new Date().toISOString() }),
@@ -56,7 +57,7 @@ export const api = {
   albums: () => call<Album[]>("list_albums", undefined, () => demoAlbums),
   jobs:()=>call<JobOverview[]>("list_jobs",undefined,()=>[...demoJobs].map(([jobId,j])=>({jobId,sourceName:"Fonte de demonstração",sourcePath:"E:\\DCIM",state:j.state,stage:j.state==="analyzing"?"validation":"copying",processedItems:120,totalItems:428,processedBytes:3_132_500_000,totalBytes:8_950_000_000,overallPercent:j.state==="ready"?100:35,bytesPerSecond:5_000_000,estimatedSecondsRemaining:1163,imported:0,duplicates:31,excluded:4,failed:0,createdAt:now.toISOString(),updatedAt:new Date().toISOString()}))),
   backgroundWork:()=>call<BackgroundWorkStatus[]>("get_background_work_status",undefined,()=>[{state:"idle",stage:"thumbnail",pending:0,processing:0,completed:18,failed:0,total:18,progressPercent:100,updatedAt:new Date().toISOString()}]),
-  discovery:()=>call<DiscoveryOverview>("get_discovery_overview",undefined,()=>({indexed:15,indexable:15,similar:[{id:"similar-demo",title:"Possível variação",detail:"94% de proximidade visual",score:.94,items:demoAssets.slice(0,2).map(({id,filename,mediaType,capturedAt,camera})=>({id,filename,mediaType,capturedAt,camera}))}],sequences:[{id:"sequence-demo",title:"Sequência de 4 registros",detail:"Canon EOS R6",score:4,items:demoAssets.slice(2,6).map(({id,filename,mediaType,capturedAt,camera})=>({id,filename,mediaType,capturedAt,camera}))}],memories:[{id:"memory-demo",title:`Memórias de ${now.getFullYear()-1}`,detail:"6 registros deste período",score:6,items:demoAssets.slice(6,12).map(({id,filename,mediaType,capturedAt,camera})=>({id,filename,mediaType,capturedAt,camera}))}]})),
+  discovery:()=>call<DiscoveryOverview>("get_discovery_overview",undefined,()=>({indexed:15,indexable:15,similar:[{id:"similar-demo",title:"Possível variação",detail:"94% de proximidade visual",score:.94,items:demoAssets.slice(0,2).map(({id,filename,mediaType,capturedAt,camera})=>({id,filename,mediaType,capturedAt,camera}))}],sequences:[{id:"sequence-demo",title:"Sequência de 4 registros",detail:"Canon EOS R6",score:4,items:demoAssets.slice(2,6).map(({id,filename,mediaType,capturedAt,camera})=>({id,filename,mediaType,capturedAt,camera}))}],memories:[{id:"memory-demo",title:`Memórias de ${now.getFullYear()-1}`,detail:"6 registros deste período",score:6,items:demoAssets.slice(6,12).map(({id,filename,mediaType,capturedAt,camera})=>({id,filename,mediaType,capturedAt,camera}))}],places:[],trips:[]})),
   buildDiscoveryIndex:()=>call<DiscoveryIndexResult>("build_discovery_index",undefined,()=>({indexed:0,skipped:0,failed:0})),
   createAlbum:(name:string)=>call<Album>("create_album",{name},()=>{const album={id:crypto.randomUUID(),name,assetCount:0};demoAlbums=[...demoAlbums,album];return album}),
   renameAlbum:(id:string,name:string)=>call<BatchResult>("rename_album",{id,name},()=>{demoAlbums=demoAlbums.map(album=>album.id===id?{...album,name}:album);return{affected:1}}),
@@ -64,6 +65,10 @@ export const api = {
   addToAlbum:(albumId:string,assetIds:string[])=>call<BatchResult>("add_assets_to_album",{albumId,assetIds},()=>({affected:assetIds.length})),
   applyTag:(tagName:string,assetIds:string[])=>call<BatchResult>("apply_tag",{tagName,assetIds},()=>{demoAssets.filter(a=>assetIds.includes(a.id)).forEach(a=>{if(!a.tags.includes(tagName))a.tags.push(tagName)});return{affected:assetIds.length}}),
   tags:()=>call<TagInfo[]>("list_tags",undefined,()=>[...new Set(demoAssets.flatMap(asset=>asset.tags))].map((name,index)=>({id:`tag-${index}`,name,assetCount:demoAssets.filter(asset=>asset.tags.includes(name)).length}))),
+  people:()=>call<PersonInfo[]>("list_people",undefined,()=>[]),
+  createPerson:(name:string)=>call<PersonInfo>("create_person",{name},()=>({id:crypto.randomUUID(),name,assetCount:0})),
+  assignPerson:(personId:string,assetIds:string[])=>call<BatchResult>("assign_person",{personId,assetIds},()=>({affected:assetIds.length})),
+  deletePerson:(id:string)=>call<BatchResult>("delete_person",{id},()=>({affected:1})),
   renameTag:(id:string,name:string)=>call<BatchResult>("rename_tag",{id,name},()=>({affected:1})),
   deleteTag:(id:string)=>call<BatchResult>("delete_tag",{id},()=>({affected:1})),
   updateCaptureDate:(assetIds:string[],capturedAt:string)=>call<BatchResult>("update_capture_date",{assetIds,capturedAt},()=>{demoAssets.filter(a=>assetIds.includes(a.id)).forEach(a=>{a.capturedAt=capturedAt;a.dateSource="user_corrected";a.dateSuspicious=false});return{affected:assetIds.length}}),
@@ -82,6 +87,7 @@ export const api = {
   protectionQueue:(jobId?:string)=>call<ProtectionQueueStats>("get_protection_queue",{jobId},()=>({pending:12,processing:0,completed:0,failed:0,pendingBytes:2_000_000_000})),
   startConsolidation:(jobId:string)=>call<void>("start_consolidation",{jobId},()=>{const job=demoJobs.get(jobId);if(job){job.started=Date.now();job.state="consolidating"}}),
   startProtection:(jobId:string)=>call<void>("start_protection",{jobId},()=>{const job=demoJobs.get(jobId);if(job){job.started=Date.now();job.state="protecting"}}),
+  protectPending:()=>call<string>("protect_pending",undefined,()=>"demo-protection"),
   updateBackupPath:(backupPath:string)=>call<LibraryConfig>("update_backup_path",{backupPath},()=>{if(!config)throw Error("Biblioteca ausente");return config={...config,backupPath}}),
   migrateMaster:(newMasterPath:string)=>call<MigrationProgress>("migrate_master_path",{newMasterPath},()=>({id:crypto.randomUUID(),oldMaster:config?.masterPath||"",newMaster:newMasterPath,state:"completed",processedItems:18,totalItems:18,processedBytes:1,totalBytes:1})),
   consolidate: (jobId: string) => call<void>("consolidate_import", { jobId }, async () => { const job=demoJobs.get(jobId); if(job){job.started=Date.now();job.state="consolidating"} await new Promise(r=>setTimeout(r,1800)); if(job?.state==="canceling") throw new Error("JOB_CANCELED"); if(job)job.state="completed" }),

@@ -12,6 +12,8 @@ use std::{
     time::Instant,
 };
 use uuid::Uuid;
+
+const TECHNICAL_METADATA_BATCH: usize = 100;
 use walkdir::{DirEntry, WalkDir};
 
 const MEDIA: &[&str] = crate::pipeline::MEDIA;
@@ -1630,41 +1632,45 @@ pub fn enrich_formats_job(
     };
     let total = rows.len() as i64;
     let total_bytes = rows.iter().map(|row| row.4).sum::<i64>();
-    let photo_paths = rows
-        .iter()
-        .filter(|row| {
-            crate::formats::descriptor(&row.3).family != crate::formats::MediaFamily::Video
-        })
-        .map(|row| PathBuf::from(&row.2))
-        .collect::<Vec<_>>();
-    let photo_metadata = technical_photo_batches(&photo_paths, cancel);
     let mut done = 0;
     let mut done_bytes = 0;
-    for (qid, asset, path, extension, bytes) in rows {
-        control_point(&conn, job)?;
-        if cancel.is_cancelled() {
-            return Err("JOB_CANCELED".into());
-        }
-        conn.execute("UPDATE work_queue SET state='processing',attempts=attempts+1,updated_at=?2 WHERE id=?1",params![qid,Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
-        let descriptor = crate::formats::descriptor(&extension);
-        let (detected, matches) = crate::formats::detected_format(Path::new(&path), &extension);
-        let mut codec = None;
-        let mut container = None;
-        let mut audio_codec: Option<String> = None;
-        let mut frame_rate: Option<f64> = None;
-        let mut bitrate: Option<i64> = None;
-        let mut pixel_format: Option<String> = None;
-        let mut lens: Option<String> = None;
-        let mut iso: Option<i64> = None;
-        let mut aperture: Option<f64> = None;
-        let mut exposure: Option<String> = None;
-        let mut focal_length: Option<f64> = None;
-        let mut orientation: Option<i64> = None;
-        let mut color_profile: Option<String> = None;
-        let mut preview_available: Option<bool> = None;
-        let mut inventory_error: Option<String> = None;
-        if descriptor.family == crate::formats::MediaFamily::Video {
-            let spec = crate::process::ProcessSpec::new("FFprobe", "ffprobe")
+    // Processa e descarta um lote por vez. Na 0.17 o mapa JSON de todas as fotos
+    // permanecia vivo durante o job inteiro; em bibliotecas grandes isso criava
+    // pressão de memória crescente e podia terminar o processo pelo sistema.
+    for batch in rows.chunks(TECHNICAL_METADATA_BATCH) {
+        let photo_paths = batch
+            .iter()
+            .filter(|row| {
+                crate::formats::descriptor(&row.3).family != crate::formats::MediaFamily::Video
+            })
+            .map(|row| PathBuf::from(&row.2))
+            .collect::<Vec<_>>();
+        let photo_metadata = technical_photo_batches(&photo_paths, cancel);
+        for (qid, asset, path, extension, bytes) in batch {
+            control_point(&conn, job)?;
+            if cancel.is_cancelled() {
+                return Err("JOB_CANCELED".into());
+            }
+            conn.execute("UPDATE work_queue SET state='processing',attempts=attempts+1,updated_at=?2 WHERE id=?1",params![qid,Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
+            let descriptor = crate::formats::descriptor(extension);
+            let (detected, matches) = crate::formats::detected_format(Path::new(path), extension);
+            let mut codec = None;
+            let mut container = None;
+            let mut audio_codec: Option<String> = None;
+            let mut frame_rate: Option<f64> = None;
+            let mut bitrate: Option<i64> = None;
+            let mut pixel_format: Option<String> = None;
+            let mut lens: Option<String> = None;
+            let mut iso: Option<i64> = None;
+            let mut aperture: Option<f64> = None;
+            let mut exposure: Option<String> = None;
+            let mut focal_length: Option<f64> = None;
+            let mut orientation: Option<i64> = None;
+            let mut color_profile: Option<String> = None;
+            let mut preview_available: Option<bool> = None;
+            let mut inventory_error: Option<String> = None;
+            if descriptor.family == crate::formats::MediaFamily::Video {
+                let spec = crate::process::ProcessSpec::new("FFprobe", "ffprobe")
                 .args([
                     "-v",
                     "error",
@@ -1676,114 +1682,119 @@ pub fn enrich_formats_job(
                 ])
                 .timeout(std::time::Duration::from_secs(30))
                 .logical("FFprobe technical inventory");
-            if let Ok(result) = crate::process::run(spec, cancel) {
-                if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&result.stdout) {
-                    codec = json
-                        .get("streams")
-                        .and_then(|v| v.as_array())
-                        .and_then(|items| {
-                            items.iter().find(|v| {
-                                v.get("codec_type").and_then(|x| x.as_str()) == Some("video")
+                if let Ok(result) = crate::process::run(spec, cancel) {
+                    if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&result.stdout) {
+                        codec = json
+                            .get("streams")
+                            .and_then(|v| v.as_array())
+                            .and_then(|items| {
+                                items.iter().find(|v| {
+                                    v.get("codec_type").and_then(|x| x.as_str()) == Some("video")
+                                })
                             })
-                        })
-                        .and_then(|v| v.get("codec_name"))
-                        .and_then(|value| value.as_str())
-                        .map(str::to_string);
-                    let video = json
-                        .get("streams")
-                        .and_then(|v| v.as_array())
-                        .and_then(|items| {
-                            items.iter().find(|v| {
-                                v.get("codec_type").and_then(|x| x.as_str()) == Some("video")
+                            .and_then(|v| v.get("codec_name"))
+                            .and_then(|value| value.as_str())
+                            .map(str::to_string);
+                        let video =
+                            json.get("streams")
+                                .and_then(|v| v.as_array())
+                                .and_then(|items| {
+                                    items.iter().find(|v| {
+                                        v.get("codec_type").and_then(|x| x.as_str())
+                                            == Some("video")
+                                    })
+                                });
+                        audio_codec = json
+                            .get("streams")
+                            .and_then(|v| v.as_array())
+                            .and_then(|items| {
+                                items.iter().find(|v| {
+                                    v.get("codec_type").and_then(|x| x.as_str()) == Some("audio")
+                                })
                             })
-                        });
-                    audio_codec = json
-                        .get("streams")
-                        .and_then(|v| v.as_array())
-                        .and_then(|items| {
-                            items.iter().find(|v| {
-                                v.get("codec_type").and_then(|x| x.as_str()) == Some("audio")
-                            })
-                        })
-                        .and_then(|v| v.get("codec_name"))
-                        .and_then(|v| v.as_str())
-                        .map(str::to_string);
-                    pixel_format = video
-                        .and_then(|v| v.get("pix_fmt"))
-                        .and_then(|v| v.as_str())
-                        .map(str::to_string);
-                    bitrate = video
-                        .and_then(|v| v.get("bit_rate"))
-                        .and_then(|v| v.as_str())
-                        .and_then(|v| v.parse().ok())
-                        .or_else(|| {
-                            json.pointer("/format/bit_rate")
-                                .and_then(|v| v.as_str())
-                                .and_then(|v| v.parse().ok())
-                        });
-                    frame_rate = video
-                        .and_then(|v| v.get("r_frame_rate"))
-                        .and_then(|v| v.as_str())
-                        .and_then(|v| {
-                            let mut p = v.split('/');
-                            let a = p.next()?.parse::<f64>().ok()?;
-                            let b = p.next().unwrap_or("1").parse::<f64>().ok()?;
-                            if b > 0.0 {
-                                Some(a / b)
-                            } else {
-                                None
-                            }
-                        });
-                    container = json
-                        .pointer("/format/format_name")
-                        .and_then(|value| value.as_str())
-                        .map(str::to_string)
-                } else {
-                    inventory_error = Some("FFprobe retornou dados técnicos inválidos".into());
+                            .and_then(|v| v.get("codec_name"))
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string);
+                        pixel_format = video
+                            .and_then(|v| v.get("pix_fmt"))
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string);
+                        bitrate = video
+                            .and_then(|v| v.get("bit_rate"))
+                            .and_then(|v| v.as_str())
+                            .and_then(|v| v.parse().ok())
+                            .or_else(|| {
+                                json.pointer("/format/bit_rate")
+                                    .and_then(|v| v.as_str())
+                                    .and_then(|v| v.parse().ok())
+                            });
+                        frame_rate = video
+                            .and_then(|v| v.get("r_frame_rate"))
+                            .and_then(|v| v.as_str())
+                            .and_then(|v| {
+                                let mut p = v.split('/');
+                                let a = p.next()?.parse::<f64>().ok()?;
+                                let b = p.next().unwrap_or("1").parse::<f64>().ok()?;
+                                if b > 0.0 {
+                                    Some(a / b)
+                                } else {
+                                    None
+                                }
+                            });
+                        container = json
+                            .pointer("/format/format_name")
+                            .and_then(|value| value.as_str())
+                            .map(str::to_string)
+                    } else {
+                        inventory_error = Some("FFprobe retornou dados técnicos inválidos".into());
+                    }
+                }
+            } else {
+                match photo_metadata.get(&cache_key(Path::new(&path))) {
+                    Some(value) => {
+                        lens = value
+                            .get("LensModel")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string);
+                        iso = value.get("ISO").and_then(|v| v.as_i64());
+                        aperture = value.get("FNumber").and_then(|v| v.as_f64());
+                        exposure = value.get("ExposureTime").map(|v| v.to_string());
+                        focal_length = value.get("FocalLength").and_then(|v| v.as_f64());
+                        orientation = value.get("Orientation").and_then(|v| v.as_i64());
+                        color_profile = value
+                            .get("ColorSpace")
+                            .map(|v| v.to_string().trim_matches('"').to_string());
+                        preview_available = value
+                            .get("PreviewImageLength")
+                            .and_then(|v| v.as_i64())
+                            .map(|v| v > 0);
+                    }
+                    None => inventory_error = Some("Metadados técnicos não retornados".into()),
                 }
             }
-        } else {
-            match photo_metadata.get(&cache_key(Path::new(&path))) {
-                Some(value) => {
-                    lens = value
-                        .get("LensModel")
-                        .and_then(|v| v.as_str())
-                        .map(str::to_string);
-                    iso = value.get("ISO").and_then(|v| v.as_i64());
-                    aperture = value.get("FNumber").and_then(|v| v.as_f64());
-                    exposure = value.get("ExposureTime").map(|v| v.to_string());
-                    focal_length = value.get("FocalLength").and_then(|v| v.as_f64());
-                    orientation = value.get("Orientation").and_then(|v| v.as_i64());
-                    color_profile = value
-                        .get("ColorSpace")
-                        .map(|v| v.to_string().trim_matches('"').to_string());
-                    preview_available = value
-                        .get("PreviewImageLength")
-                        .and_then(|v| v.as_i64())
-                        .map(|v| v > 0);
-                }
-                None => inventory_error = Some("Metadados técnicos não retornados".into()),
+            let inventory_state = if inventory_error.is_none()
+                && (descriptor.family != crate::formats::MediaFamily::Video
+                    || (codec.is_some() && container.is_some()))
+            {
+                "complete"
+            } else {
+                "partial"
+            };
+            conn.execute("INSERT INTO asset_technical_metadata(asset_id,declared_extension,detected_format,family,container,codec,audio_codec,frame_rate,bitrate,pixel_format,lens,iso,aperture,exposure,focal_length,orientation,color_profile,preview_available,inventory_state,inventory_error,support_level,extension_matches,metadata_supported,thumbnail_supported,preview_supported,enriched_at)VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26)ON CONFLICT(asset_id)DO UPDATE SET declared_extension=excluded.declared_extension,detected_format=excluded.detected_format,family=excluded.family,container=excluded.container,codec=excluded.codec,audio_codec=excluded.audio_codec,frame_rate=excluded.frame_rate,bitrate=excluded.bitrate,pixel_format=excluded.pixel_format,lens=excluded.lens,iso=excluded.iso,aperture=excluded.aperture,exposure=excluded.exposure,focal_length=excluded.focal_length,orientation=excluded.orientation,color_profile=excluded.color_profile,preview_available=excluded.preview_available,inventory_state=excluded.inventory_state,inventory_error=excluded.inventory_error,support_level=excluded.support_level,extension_matches=excluded.extension_matches,metadata_supported=excluded.metadata_supported,thumbnail_supported=excluded.thumbnail_supported,preview_supported=excluded.preview_supported,enriched_at=excluded.enriched_at",params![asset,extension,detected,descriptor.family.as_str(),container,codec,audio_codec,frame_rate,bitrate,pixel_format,lens,iso,aperture,exposure,focal_length,orientation,color_profile,preview_available,inventory_state,inventory_error,descriptor.support.as_str(),matches,descriptor.metadata,descriptor.thumbnail,descriptor.preview,Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
+            conn.execute(
+                "UPDATE work_queue SET state='completed',last_error=NULL,updated_at=?2 WHERE id=?1",
+                params![qid, Utc::now().to_rfc3339()],
+            )
+            .map_err(|e| e.to_string())?;
+            done += 1;
+            done_bytes += *bytes;
+            if progress_due(done, total) {
+                conn.execute("UPDATE jobs SET processed_items=?2,total_items=?3,processed_bytes=?4,total_bytes=?5,current_file=?6,updated_at=?7 WHERE id=?1",params![job,done,total,done_bytes,total_bytes,path,Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
             }
         }
-        let inventory_state = if inventory_error.is_none()
-            && (descriptor.family != crate::formats::MediaFamily::Video
-                || (codec.is_some() && container.is_some()))
-        {
-            "complete"
-        } else {
-            "partial"
-        };
-        conn.execute("INSERT INTO asset_technical_metadata(asset_id,declared_extension,detected_format,family,container,codec,audio_codec,frame_rate,bitrate,pixel_format,lens,iso,aperture,exposure,focal_length,orientation,color_profile,preview_available,inventory_state,inventory_error,support_level,extension_matches,metadata_supported,thumbnail_supported,preview_supported,enriched_at)VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26)ON CONFLICT(asset_id)DO UPDATE SET declared_extension=excluded.declared_extension,detected_format=excluded.detected_format,family=excluded.family,container=excluded.container,codec=excluded.codec,audio_codec=excluded.audio_codec,frame_rate=excluded.frame_rate,bitrate=excluded.bitrate,pixel_format=excluded.pixel_format,lens=excluded.lens,iso=excluded.iso,aperture=excluded.aperture,exposure=excluded.exposure,focal_length=excluded.focal_length,orientation=excluded.orientation,color_profile=excluded.color_profile,preview_available=excluded.preview_available,inventory_state=excluded.inventory_state,inventory_error=excluded.inventory_error,support_level=excluded.support_level,extension_matches=excluded.extension_matches,metadata_supported=excluded.metadata_supported,thumbnail_supported=excluded.thumbnail_supported,preview_supported=excluded.preview_supported,enriched_at=excluded.enriched_at",params![asset,extension,detected,descriptor.family.as_str(),container,codec,audio_codec,frame_rate,bitrate,pixel_format,lens,iso,aperture,exposure,focal_length,orientation,color_profile,preview_available,inventory_state,inventory_error,descriptor.support.as_str(),matches,descriptor.metadata,descriptor.thumbnail,descriptor.preview,Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
-        conn.execute(
-            "UPDATE work_queue SET state='completed',last_error=NULL,updated_at=?2 WHERE id=?1",
-            params![qid, Utc::now().to_rfc3339()],
-        )
-        .map_err(|e| e.to_string())?;
-        done += 1;
-        done_bytes += bytes;
-        if progress_due(done, total) {
-            conn.execute("UPDATE jobs SET processed_items=?2,total_items=?3,processed_bytes=?4,total_bytes=?5,current_file=?6,updated_at=?7 WHERE id=?1",params![job,done,total,done_bytes,total_bytes,path,Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
-        }
+        // WAL curto e memória temporária liberada entre lotes tornam progresso
+        // durável sem manter milhares de documentos EXIF residentes.
+        conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE)").ok();
     }
     conn.execute("UPDATE jobs SET state='completed',stage='completed',current_file=NULL,finished_at=?2,updated_at=?2 WHERE id=?1",params![job,Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
     Ok(())
@@ -2019,6 +2030,13 @@ pub fn duplicate_occurrences(conn: &rusqlite::Connection, asset: &str) -> Vec<Oc
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn technical_metadata_for_large_catalogs_is_strictly_bounded() {
+        let rows = vec![0_u8; 9_300];
+        let batches = rows.chunks(TECHNICAL_METADATA_BATCH).collect::<Vec<_>>();
+        assert_eq!(batches.len(), 93);
+        assert!(batches.iter().all(|batch| batch.len() <= 100));
+    }
     #[test]
     fn progress_persistence_is_batched_for_large_jobs() {
         let writes = (1..=1_500)

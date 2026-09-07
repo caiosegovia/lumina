@@ -30,9 +30,9 @@ fn conditions(f: &GalleryFilters) -> (Vec<String>, Vec<Value>) {
     let (mut c, mut v) = (Vec::new(), Vec::new());
     if !f.query.trim().is_empty() {
         let x = Value::Text(format!("%{}%", f.query.trim().to_lowercase()));
-        v.extend([x.clone(), x.clone(), x]);
+        v.extend([x.clone(), x.clone(), x.clone(), x]);
         let n = v.len();
-        c.push(format!("(EXISTS(SELECT 1 FROM assets_fts sf WHERE sf.asset_id=a.id AND (sf.filename LIKE ?{} OR sf.camera LIKE ?{})) OR EXISTS(SELECT 1 FROM asset_tags aq JOIN tags tq ON tq.id=aq.tag_id WHERE aq.asset_id=a.id AND LOWER(tq.name) LIKE ?{n}))",n-2,n-1));
+        c.push(format!("(EXISTS(SELECT 1 FROM assets_fts sf WHERE sf.asset_id=a.id AND (sf.filename LIKE ?{} OR sf.camera LIKE ?{})) OR EXISTS(SELECT 1 FROM asset_tags aq JOIN tags tq ON tq.id=aq.tag_id WHERE aq.asset_id=a.id AND LOWER(tq.name) LIKE ?{}) OR EXISTS(SELECT 1 FROM asset_people ap JOIN people p ON p.id=ap.person_id WHERE ap.asset_id=a.id AND LOWER(p.name) LIKE ?{n}))",n-3,n-2,n-1));
     }
     if let Some(x) = f.year {
         add(
@@ -486,6 +486,27 @@ mod tests {
         assert_eq!(result.assets[0].id, "a");
         assert_eq!(result.assets[0].rating, 5);
         assert_eq!(result.assets[0].description, "Viagem especial");
+        db.execute(
+            "INSERT INTO people(id,name,created_at)VALUES('p','Ana','2026-01-01')",
+            [],
+        )
+        .unwrap();
+        db.execute("INSERT INTO asset_people(asset_id,person_id,source,created_at)VALUES('a','p','manual','2026-01-01')",[]).unwrap();
+        let by_person = search(
+            &db,
+            &GalleryRequest {
+                filters: GalleryFilters {
+                    query: "ana".into(),
+                    ..Default::default()
+                },
+                cursor: None,
+                limit: Some(20),
+                sort: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(by_person.matched, 1);
+        assert_eq!(by_person.assets[0].id, "a");
         drop(db);
         fs::remove_dir_all(root).unwrap();
     }
@@ -601,7 +622,7 @@ mod tests {
             ..Default::default()
         });
         assert!(!where_sql(&c).contains("1=1 --"));
-        assert_eq!(v.len(), 3)
+        assert_eq!(v.len(), 4)
     }
     #[test]
     fn suspicious_date_filter_is_explicit_and_parameter_free() {

@@ -198,6 +198,119 @@ fn parse_date(value: &str) -> Option<chrono::NaiveDateTime> {
         })
 }
 
+fn location_groups(
+    conn: &rusqlite::Connection,
+    by_id: &HashMap<String, DiscoveryItem>,
+) -> Result<(Vec<DiscoveryGroup>, Vec<DiscoveryGroup>), String> {
+    let mut statement = conn
+        .prepare("SELECT id,captured_at,latitude,longitude FROM assets WHERE latitude IS NOT NULL AND longitude IS NOT NULL ORDER BY captured_at,id")
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, f64>(2)?,
+                row.get::<_, f64>(3)?,
+            ))
+        })
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    let mut buckets: HashMap<(i32, i32), Vec<String>> = HashMap::new();
+    for (id, _, latitude, longitude) in &rows {
+        buckets
+            .entry((
+                (latitude * 10.0).round() as i32,
+                (longitude * 10.0).round() as i32,
+            ))
+            .or_default()
+            .push(id.clone());
+    }
+    let mut places = buckets
+        .into_iter()
+        .map(|((lat, lon), ids)| {
+            let count = ids.len();
+            DiscoveryGroup {
+                id: format!("place-{lat}-{lon}"),
+                title: format!("Região {:.1}, {:.1}", lat as f64 / 10.0, lon as f64 / 10.0),
+                detail: format!("{count} registros com localização"),
+                score: count as f64,
+                items: ids
+                    .into_iter()
+                    .filter_map(|id| by_id.get(&id).cloned())
+                    .take(12)
+                    .collect(),
+                recommended_id: None,
+                recommendation: Some(
+                    "Agrupamento local aproximado; nenhum local foi inferido para arquivos sem GPS"
+                        .into(),
+                ),
+            }
+        })
+        .collect::<Vec<_>>();
+    places.sort_by(|a, b| b.score.total_cmp(&a.score));
+    places.truncate(30);
+
+    let mut trip_rows: Vec<(String, NaiveDateTime, f64, f64)> = rows
+        .into_iter()
+        .filter_map(|(id, date, lat, lon)| Some((id, parse_date(&date)?, lat, lon)))
+        .collect();
+    trip_rows.sort_by_key(|row| row.1);
+    let mut trips = Vec::new();
+    let mut current: Vec<(String, NaiveDateTime, f64, f64)> = Vec::new();
+    let flush = |current: &mut Vec<(String, NaiveDateTime, f64, f64)>,
+                 trips: &mut Vec<DiscoveryGroup>| {
+        if current.len() < 3 {
+            current.clear();
+            return;
+        }
+        let taken = std::mem::take(current);
+        let center_lat = taken.iter().map(|row| row.2).sum::<f64>() / taken.len() as f64;
+        let center_lon = taken.iter().map(|row| row.3).sum::<f64>() / taken.len() as f64;
+        let first = taken.first().map(|row| row.1).unwrap();
+        let last = taken.last().map(|row| row.1).unwrap();
+        trips.push(DiscoveryGroup {
+            id: format!("trip-{}", first.format("%Y%m%d")),
+            title: format!(
+                "Viagem de {} a {}",
+                first.format("%d/%m/%Y"),
+                last.format("%d/%m/%Y")
+            ),
+            detail: format!(
+                "{} registros · região {:.1}, {:.1}",
+                taken.len(),
+                center_lat,
+                center_lon
+            ),
+            score: taken.len() as f64,
+            items: taken
+                .into_iter()
+                .filter_map(|row| by_id.get(&row.0).cloned())
+                .take(12)
+                .collect(),
+            recommended_id: None,
+            recommendation: Some(
+                "Sequência sugerida por datas próximas e coordenadas presentes".into(),
+            ),
+        });
+    };
+    for row in trip_rows {
+        let joins = current
+            .last()
+            .map(|last| (row.1 - last.1).num_days() <= 3)
+            .unwrap_or(true);
+        if !joins {
+            flush(&mut current, &mut trips);
+        }
+        current.push(row);
+    }
+    flush(&mut current, &mut trips);
+    trips.sort_by(|a, b| b.id.cmp(&a.id));
+    trips.truncate(20);
+    Ok((places, trips))
+}
+
 pub fn overview(cfg: &LibraryConfig) -> Result<DiscoveryOverview, String> {
     let conn = db(cfg)?;
     let indexable = conn
@@ -403,12 +516,15 @@ pub fn overview(cfg: &LibraryConfig) -> Result<DiscoveryOverview, String> {
         .collect::<Vec<_>>();
     memories.sort_by(|a, b| b.id.cmp(&a.id));
     memories.truncate(12);
+    let (places, trips) = location_groups(&conn, &by_id)?;
     Ok(DiscoveryOverview {
         indexed,
         indexable,
         similar,
         sequences,
         memories,
+        places,
+        trips,
     })
 }
 
@@ -426,6 +542,36 @@ mod tests {
     fn date_parser_accepts_catalog_formats() {
         assert!(parse_date("2025-01-02T03:04:05+00:00").is_some());
         assert!(parse_date("2025-01-02").is_some());
+    }
+
+    #[test]
+    fn gps_records_form_local_places_and_trips_without_inference() {
+        let root = std::env::temp_dir().join(format!("lumina-places-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let cfg = LibraryConfig {
+            id: "l".into(),
+            name: "Teste".into(),
+            master_path: root.to_string_lossy().into(),
+            backup_path: root.join("backup").to_string_lossy().into(),
+            created_at: Utc::now().to_rfc3339(),
+        };
+        let conn = db(&cfg).unwrap();
+        for (index, date) in ["2026-01-01", "2026-01-02", "2026-01-03"]
+            .into_iter()
+            .enumerate()
+        {
+            conn.execute("INSERT INTO assets(id,hash,filename,media_type,extension,captured_at,date_source,bytes,latitude,longitude,master_path,created_at)VALUES(?1,?2,?3,'photo','jpg',?4,'exif',1,-23.55,-46.63,?3,?4)",params![format!("a{index}"),format!("{:064x}",index+1),format!("a{index}.jpg"),date]).unwrap();
+        }
+        let items = all_items(&conn).unwrap();
+        let by_id = items
+            .into_iter()
+            .map(|item| (item.id.clone(), item))
+            .collect();
+        let (places, trips) = location_groups(&conn, &by_id).unwrap();
+        assert_eq!(places[0].score, 3.0);
+        assert_eq!(trips[0].items.len(), 3);
+        drop(conn);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

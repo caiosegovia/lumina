@@ -270,6 +270,17 @@ pub fn run(spec: ProcessSpec, cancel: &CancellationToken) -> Result<ProcessOutco
         stdout,
         stderr: sanitize(&String::from_utf8_lossy(&stderr)),
     };
+    crate::diagnostics::append(
+        if status.success() {
+            "process_completed"
+        } else {
+            "process_failed"
+        },
+        &format!(
+            "tool={} operation={} duration_ms={} exit_code={:?}",
+            outcome.tool, outcome.logical_command, outcome.duration_ms, outcome.exit_code
+        ),
+    );
     if status.success() {
         Ok(outcome)
     } else {

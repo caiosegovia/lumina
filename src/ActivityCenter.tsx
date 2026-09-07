@@ -60,6 +60,17 @@ export default function ActivityCenter({ jobs, openJob }: { jobs: JobOverview[];
       setNotice(action === "paused" ? "Pausa solicitada" : action === "running" ? "Trabalho retomado" : "Cancelamento solicitado; aguardando a etapa atual encerrar com segurança");
     } catch (error) { setNotice(String(error)); } finally { setBusy(""); }
   };
+  const protect = async (job: JobOverview) => {
+    setBusy(job.jobId + "protect");
+    try {
+      await api.startProtection(job.jobId);
+      setNotice("Proteção adicionada à fila. Você pode continuar usando o Lumina.");
+    } catch (error) {
+      setNotice(`Não foi possível iniciar a proteção: ${String(error)}`);
+    } finally {
+      setBusy("");
+    }
+  };
   const active = jobs.filter(j => jobBucket(j.state)==="active");
   const attention = jobs.filter(j => jobBucket(j.state)==="attention");
   const history = jobs.filter(j => jobBucket(j.state)==="history");
@@ -82,7 +93,7 @@ export default function ActivityCenter({ jobs, openJob }: { jobs: JobOverview[];
         {job.state === "interrupted" && <button disabled={!!busy} onClick={async () => { setBusy(job.jobId); try { await api.resumeJob(job.jobId); setNotice("Trabalho retomado"); } finally { setBusy(""); } }}><Play/>Retomar</button>}
         {["queued", "analyzing", "consolidating", "paused"].includes(job.state) && <button className="subtle-danger" disabled={!!busy} onClick={() => act(job, "canceled")}>Cancelar</button>}
         {job.state === "canceled" && <button onClick={async () => { await api.resumeJob(job.jobId); setNotice("Nova tentativa iniciada"); }}><RotateCcw/>Tentar novamente</button>}
-        <button className="secondary" onClick={() => openJob(job.jobId)}>{job.state === "waiting_space" ? "Resolver espaço" : job.state === "ready" ? "Revisar" : job.state === "protection_pending" ? "Proteger agora" : job.state === "waiting_backup_space" ? "Resolver réplica" : "Detalhes"}</button>
+        <button className="secondary" disabled={!!busy} onClick={() => job.state === "protection_pending" ? protect(job) : openJob(job.jobId)}>{job.state === "waiting_space" ? "Resolver espaço" : job.state === "ready" ? "Revisar" : job.state === "protection_pending" ? "Proteger agora" : job.state === "waiting_backup_space" ? "Resolver réplica" : "Detalhes"}</button>
       </div>
     </article>
   );
@@ -96,6 +107,6 @@ export default function ActivityCenter({ jobs, openJob }: { jobs: JobOverview[];
     {active.length === 0 && attention.length === 0 && <div className="activity-empty"><CheckCircle2/><div><strong>Tudo em ordem</strong><p>Nenhum trabalho precisa da sua atenção.</p></div></div>}
     {background.length > 0 && <section className="background-work" aria-label="Processamento em segundo plano"><div className="background-work-heading"><Sparkles/><div><strong>Organização em segundo plano</strong><p>O Lumina prepara a biblioteca sem interromper seu uso.</p></div></div><div className="background-work-items">{background.map(work => <div className={`background-work-item ${work.state}`} key={work.stage}><span>{work.stage === "thumbnail" ? "Previews" : "Metadados"}</span><b>{work.state === "processing" ? "Processando" : work.state === "pending" ? "Na fila" : work.state === "attention" ? "Requer revisão" : "Atualizado"}</b><small>{work.failed > 0 ? `${work.failed.toLocaleString("pt-BR")} falhas` : work.pending > 0 ? `${work.pending.toLocaleString("pt-BR")} restantes` : `${work.completed.toLocaleString("pt-BR")} concluídos`}</small>{(work.state === "processing" || work.state === "pending") && <div className="background-progress"><i style={{width:`${work.progressPercent}%`}}/></div>}</div>)}</div></section>}
     {history.length > 0 && <section className="history-section"><button className="history-toggle" onClick={() => setHistoryOpen(v => !v)} aria-expanded={historyOpen}><div><h3>Histórico recente</h3><span>{history.length} trabalhos encerrados</span></div><ChevronDown/></button>{historyOpen && <div className="work-cards history-cards">{history.map(j => card(j, true))}</div>}</section>}
-    <details className="technical-tools"><summary>Diagnósticos e relatórios</summary><p>Informações para suporte e conferência da biblioteca.</p><div><button disabled={!latestJob} onClick={async () => setNotice((await api.exportReport(latestJob, "jsonl")).path)}><FileDown/>Exportar relatório completo</button><button disabled={!latestJob} onClick={async () => setNotice((await api.exportReport(latestJob, "csv")).path)}><FileDown/>Exportar planilha CSV</button></div>{events.length > 0 && <details><summary>{events.length} eventos registrados</summary><div className="diagnostic-events">{events.slice(0, 50).map(e => <p key={e.id}><time>{formatDate(e.at)}</time><span>{e.details}</span></p>)}</div></details>}</details>
+    <details className="technical-tools"><summary>Diagnósticos e relatórios</summary><p>Informações para suporte, incluindo memória, responsividade, filas e processos externos.</p><div><button onClick={async () => setNotice(`Diagnóstico completo exportado em ${(await api.exportDiagnostics()).path}`)}><FileDown/>Exportar diagnóstico do aplicativo</button><button disabled={!latestJob} onClick={async () => setNotice((await api.exportReport(latestJob, "jsonl")).path)}><FileDown/>Exportar relatório completo</button><button disabled={!latestJob} onClick={async () => setNotice((await api.exportReport(latestJob, "csv")).path)}><FileDown/>Exportar planilha CSV</button></div>{events.length > 0 && <details><summary>{events.length} eventos registrados</summary><div className="diagnostic-events">{events.slice(0, 50).map(e => <p key={e.id}><time>{formatDate(e.at)}</time><span>{e.details}</span></p>)}</div></details>}</details>
   </div>;
 }

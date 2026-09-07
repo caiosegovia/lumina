@@ -28,7 +28,7 @@ import {
 } from "lucide-react";
 import { api } from "./api";
 import { formatBytes } from "./format";
-import type { Album, AssetDetails, GalleryFilters, GalleryResult, GallerySort, MediaAsset, SavedView } from "./types";
+import type { Album, AssetDetails, GalleryFilters, GalleryResult, GallerySort, MediaAsset, PersonInfo, SavedView } from "./types";
 const thumbs = new Map<string, string | null>(),
   empty: GalleryFilters = { query: "" };
 type Mode = "grid" | "list";
@@ -85,7 +85,7 @@ export default function Gallery() {
     [sort, setSort0] = useState<GallerySort>(() => saved("lumina-sort", "captured_desc")),
     [listDensity, setListDensity0] = useState<ListDensity>(() => saved("lumina-list-density", "comfortable")),
     [selection, setSelection] = useState<Set<string>>(()=>new Set(session.selected)),
-    [action, setAction] = useState<"tag" | "album" | "date">(),
+    [action, setAction] = useState<"tag" | "album" | "person" | "date">(),
     [comparing, setComparing] = useState(()=>session.compare),
     [notice, setNotice] = useState(""),
     [undoAvailable, setUndoAvailable] = useState(false),
@@ -379,6 +379,7 @@ export default function Gallery() {
           <button onClick={() => setSelection(new Set(assets.map(asset=>asset.id)))}>Selecionar carregadas ({assets.length})</button>
           <button onClick={() => setAction("tag")}>Aplicar tag</button>
           <button onClick={() => setAction("album")}>Adicionar ao álbum</button>
+          <button onClick={() => setAction("person")}>Identificar pessoa</button>
           <button onClick={() => setAction("date")}>Corrigir data</button>
           <button onClick={async()=>{const r=await api.updateUserState({assetIds:[...selection],favorite:true});setNotice(r.affected+" favoritas");setSelection(new Set());setRefresh(v=>v+1)}}><Star/> Favoritar</button>
           <button onClick={async()=>{const r=await api.updateUserState({assetIds:[...selection],reviewLater:true});setNotice(r.affected+" marcadas para revisar");setSelection(new Set());setRefresh(v=>v+1)}}><Bookmark/> Revisar depois</button>
@@ -594,16 +595,18 @@ function Bulk({
   close,
   done,
 }: {
-  action: "tag" | "album" | "date";
+  action: "tag" | "album" | "person" | "date";
   assets: MediaAsset[];
   close: () => void;
   done: (x: string) => void;
 }) {
   const [value, setValue] = useState(""),
     [albums, setAlbums] = useState<Album[]>([]),
+    [people, setPeople] = useState<PersonInfo[]>([]),
     [error, setError] = useState("");
   useEffect(() => {
     if (action === "album") api.albums().then(setAlbums);
+    if (action === "person") api.people().then(setPeople);
   }, [action]);
   const submit = async () => {
     try {
@@ -613,6 +616,8 @@ function Bulk({
             ? await api.applyTag(value, ids)
             : action === "album"
               ? await api.addToAlbum(value, ids)
+              : action === "person"
+                ? await api.assignPerson(value, ids)
               : await api.updateCaptureDate(ids, new Date(value).toISOString());
       done(`${r.affected} mídias atualizadas`);
     } catch (e) {
@@ -630,20 +635,22 @@ function Bulk({
             ? "Aplicar tag"
             : action === "album"
               ? "Adicionar ao álbum"
+              : action === "person"
+                ? "Identificar pessoa"
               : "Corrigir data de captura"}
         </h2>
         <p>
           Aplicar a {assets.length} mídias apenas no catálogo; os originais não
           serão alterados.
         </p>
-        {action === "album" ? (
+        {action === "album" || action === "person" ? (
           <select
-            aria-label="Álbum"
+            aria-label={action === "album" ? "Álbum" : "Pessoa"}
             value={value}
             onChange={(e) => setValue(e.target.value)}
           >
-            <option value="">Escolha um álbum</option>
-            {albums.map((a) => (
+            <option value="">{action === "album" ? "Escolha um álbum" : "Escolha uma pessoa"}</option>
+            {(action === "album" ? albums : people).map((a) => (
               <option key={a.id} value={a.id}>
                 {a.name}
               </option>

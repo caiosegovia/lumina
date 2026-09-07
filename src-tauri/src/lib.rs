@@ -142,7 +142,12 @@ async fn migrate_master_path(
 }
 #[tauri::command]
 fn frontend_ready(window: tauri::Window) -> Result<(), String> {
+    diagnostics::frontend_heartbeat();
     window.set_title("Lumina Ready").map_err(|e| e.to_string())
+}
+#[tauri::command]
+fn frontend_heartbeat() {
+    diagnostics::frontend_heartbeat();
 }
 #[tauri::command]
 fn create_library(
@@ -192,6 +197,7 @@ fn create_library(
         .library_lock
         .lock()
         .map_err(|_| "Estado interno indisponível".to_string())? = Some(guard);
+    diagnostics::spawn_monitor(cfg.clone());
     Ok(cfg)
 }
 #[tauri::command]
@@ -1091,10 +1097,31 @@ fn apply_tag(
     let cfg = current(&state)?;
     let mut conn = db(&cfg)?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let hierarchy = name
+        .split(['>', '/'])
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    let parent_id = if hierarchy.len() > 1 {
+        let parent_name = hierarchy[..hierarchy.len() - 1].join(" > ");
+        let parent = Uuid::new_v4().to_string();
+        tx.execute(
+            "INSERT OR IGNORE INTO tags(id,name)VALUES(?1,?2)",
+            params![parent, parent_name],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.query_row("SELECT id FROM tags WHERE name=?1", [parent_name], |row| {
+            row.get::<_, String>(0)
+        })
+        .optional()
+        .map_err(|e| e.to_string())?
+    } else {
+        None
+    };
     let id = Uuid::new_v4().to_string();
     tx.execute(
-        "INSERT OR IGNORE INTO tags(id,name)VALUES(?1,?2)",
-        params![id, name],
+        "INSERT OR IGNORE INTO tags(id,name,parent_id)VALUES(?1,?2,?3)",
+        params![id, name, parent_id],
     )
     .map_err(|e| e.to_string())?;
     let tag_id: String = tx
@@ -1110,10 +1137,28 @@ fn apply_tag(
 #[tauri::command]
 fn list_tags(state: State<AppState>) -> Result<Vec<TagInfo>, String> {
     let conn = db(&current(&state)?)?;
-    let mut statement=conn.prepare("SELECT t.id,t.name,COUNT(at.asset_id)FROM tags t LEFT JOIN asset_tags at ON at.tag_id=t.id GROUP BY t.id ORDER BY LOWER(t.name)").map_err(|error|error.to_string())?;
+    let mut statement=conn.prepare("SELECT t.id,t.name,COUNT(at.asset_id),t.parent_id FROM tags t LEFT JOIN asset_tags at ON at.tag_id=t.id GROUP BY t.id ORDER BY LOWER(t.name)").map_err(|error|error.to_string())?;
     let rows = statement
         .query_map([], |row| {
             Ok(TagInfo {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                asset_count: row.get(2)?,
+                parent_id: row.get(3)?,
+            })
+        })
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    Ok(rows)
+}
+#[tauri::command]
+fn list_people(state: State<AppState>) -> Result<Vec<PersonInfo>, String> {
+    let conn = db(&current(&state)?)?;
+    let mut statement = conn.prepare("SELECT p.id,p.name,COUNT(ap.asset_id) FROM people p LEFT JOIN asset_people ap ON ap.person_id=p.id GROUP BY p.id ORDER BY LOWER(p.name)").map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok(PersonInfo {
                 id: row.get(0)?,
                 name: row.get(1)?,
                 asset_count: row.get(2)?,
@@ -1123,6 +1168,60 @@ fn list_tags(state: State<AppState>) -> Result<Vec<TagInfo>, String> {
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| error.to_string())?;
     Ok(rows)
+}
+#[tauri::command]
+fn create_person(name: String, state: State<AppState>) -> Result<PersonInfo, String> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 100 {
+        return Err("Nome de pessoa inválido".into());
+    }
+    let conn = db(&current(&state)?)?;
+    let id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO people(id,name,created_at)VALUES(?1,?2,?3)",
+        params![id, name, Utc::now().to_rfc3339()],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(PersonInfo {
+        id,
+        name: name.into(),
+        asset_count: 0,
+    })
+}
+#[tauri::command]
+fn assign_person(
+    person_id: String,
+    asset_ids: Vec<String>,
+    state: State<AppState>,
+) -> Result<BatchResult, String> {
+    let ids = checked_ids(asset_ids)?;
+    let mut conn = db(&current(&state)?)?;
+    let tx = conn.transaction().map_err(|error| error.to_string())?;
+    if !tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM people WHERE id=?1)",
+            [&person_id],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| error.to_string())?
+    {
+        return Err("Pessoa não encontrada".into());
+    }
+    let now = Utc::now().to_rfc3339();
+    let mut affected = 0;
+    for asset in ids {
+        affected += tx.execute("INSERT OR IGNORE INTO asset_people(asset_id,person_id,source,created_at)SELECT id,?2,'manual',?3 FROM assets WHERE id=?1",params![asset,person_id,now]).map_err(|error|error.to_string())? as i64;
+    }
+    tx.commit().map_err(|error| error.to_string())?;
+    Ok(BatchResult { affected })
+}
+#[tauri::command]
+fn delete_person(id: String, state: State<AppState>) -> Result<BatchResult, String> {
+    let conn = db(&current(&state)?)?;
+    let affected = conn
+        .execute("DELETE FROM people WHERE id=?1", [id])
+        .map_err(|error| error.to_string())? as i64;
+    Ok(BatchResult { affected })
 }
 #[tauri::command]
 fn rename_tag(id: String, name: String, state: State<AppState>) -> Result<BatchResult, String> {
@@ -1479,6 +1578,28 @@ fn start_protection(
     Ok(())
 }
 #[tauri::command]
+fn protect_pending(
+    state: State<AppState>,
+    manager: State<jobs::JobManager>,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    let cfg = current(&state)?;
+    let conn = db(&cfg)?;
+    let job = conn.query_row(
+        "SELECT j.id FROM jobs j WHERE EXISTS(SELECT 1 FROM work_queue q WHERE q.job_id=j.id AND q.kind='backup' AND q.state IN('pending','failed')) AND j.state IN('protection_pending','waiting_backup_space','backup_error','interrupted','canceled') ORDER BY j.created_at LIMIT 1",
+        [],
+        |row| row.get::<_, String>(0),
+    ).optional().map_err(|error| error.to_string())?.ok_or_else(|| "Nenhum item aguarda proteção".to_string())?;
+    drop(conn);
+    manager.start_protection(cfg.clone(), job.clone())?;
+    jobs::emit_progress(app, cfg, job.clone());
+    diagnostics::append(
+        "protection_requested",
+        &format!("job={}", &job[..job.len().min(12)]),
+    );
+    Ok(job)
+}
+#[tauri::command]
 fn list_recoverable_jobs(state: State<AppState>) -> Result<Vec<RecoverableJob>, String> {
     jobs::JobManager::recoverable(&current(&state)?)
 }
@@ -1705,6 +1826,7 @@ pub fn run() {
     if let Some(cfg) = config.as_ref() {
         let _ = jobs::JobManager::interrupt_running(cfg);
         let _ = manager.resume_background(cfg.clone());
+        diagnostics::spawn_monitor(cfg.clone());
     }
     tauri::Builder::default()
         .register_uri_scheme_protocol("lumina-thumb", |context, request| {
@@ -1883,6 +2005,7 @@ pub fn run() {
             update_backup_path,
             migrate_master_path,
             frontend_ready,
+            frontend_heartbeat,
             create_library,
             get_dashboard,
             refresh_dashboard,
@@ -1911,6 +2034,10 @@ pub fn run() {
             add_assets_to_album,
             apply_tag,
             list_tags,
+            list_people,
+            create_person,
+            assign_person,
+            delete_person,
             rename_tag,
             delete_tag,
             update_capture_date,
@@ -1936,6 +2063,7 @@ pub fn run() {
             start_format_enrichment,
             start_consolidation,
             start_protection,
+            protect_pending,
             list_recoverable_jobs,
             discard_job,
             resume_job,

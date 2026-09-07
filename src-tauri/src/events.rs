@@ -115,6 +115,34 @@ fn grouped(conn: &rusqlite::Connection, sql: &str) -> Result<Vec<serde_json::Val
     Ok(rows)
 }
 
+fn sanitize_diagnostic_line(line: &str) -> String {
+    crate::process::sanitize(line)
+        .split_whitespace()
+        .map(|part| {
+            let lower = part.to_ascii_lowercase();
+            let path = part.contains(":\\")
+                || part.contains(":/")
+                || part.starts_with("/")
+                || [
+                    ".jpg", ".jpeg", ".png", ".heic", ".dng", ".raw", ".mov", ".mp4", ".avi",
+                    ".mkv",
+                ]
+                .iter()
+                .any(|ext| {
+                    lower
+                        .trim_matches(|c: char| !c.is_alphanumeric() && c != '.')
+                        .ends_with(ext)
+                });
+            if path {
+                "[PATH]"
+            } else {
+                part
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 pub fn export_diagnostics(cfg: &LibraryConfig) -> Result<ReportExport, String> {
     let conn = catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite"))
         .map_err(|error| error.to_string())?;
@@ -132,8 +160,22 @@ pub fn export_diagnostics(cfg: &LibraryConfig) -> Result<ReportExport, String> {
         "SELECT generated_at,mode,total_ms,catalog_ms,rollups_ms,storage_ms,insights_ms,items FROM dashboard_metrics ORDER BY id DESC LIMIT 1",[],
         |row| Ok(serde_json::json!({"generatedAt":row.get::<_,String>(0)?,"mode":row.get::<_,String>(1)?,"totalMs":row.get::<_,i64>(2)?,"catalogMs":row.get::<_,i64>(3)?,"rollupsMs":row.get::<_,i64>(4)?,"storageMs":row.get::<_,i64>(5)?,"insightsMs":row.get::<_,i64>(6)?,"items":row.get::<_,i64>(7)?}))
     ).optional().map_err(|error|error.to_string())?;
+    let runtime_logs = crate::diagnostics::log_files()
+        .into_iter()
+        .flat_map(|path| {
+            fs::read_to_string(path)
+                .unwrap_or_default()
+                .lines()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .rev()
+        .take(2500)
+        .map(|line| sanitize_diagnostic_line(&line))
+        .collect::<Vec<_>>();
+    let recent_jobs = grouped(&conn,"SELECT COALESCE(job_kind,'import'),state,COUNT(*) FROM jobs GROUP BY COALESCE(job_kind,'import'),state ORDER BY 1,2")?;
     let document = serde_json::json!({
-        "schemaVersion":1,
+        "schemaVersion":2,
         "generatedAt":chrono::Utc::now().to_rfc3339(),
         "application":{"name":"Lumina","version":env!("CARGO_PKG_VERSION"),"platform":std::env::consts::OS,"architecture":std::env::consts::ARCH},
         "privacy":{"containsPaths":false,"containsFilenames":false,"containsCoordinates":false,"containsHashes":false},
@@ -143,7 +185,9 @@ pub fn export_diagnostics(cfg: &LibraryConfig) -> Result<ReportExport, String> {
         "validation":grouped(&conn,"SELECT tool,state,COUNT(*) FROM media_validation GROUP BY tool,state ORDER BY 1,2")?,
         "technicalInventory":grouped(&conn,"SELECT support_level,inventory_state,COUNT(*) FROM asset_technical_metadata GROUP BY support_level,inventory_state ORDER BY 1,2")?,
         "thumbnails":grouped(&conn,"SELECT 'thumbnail',state,COUNT(*) FROM thumbnails GROUP BY state ORDER BY state")?,
-        "dashboard":latest_dashboard
+        "dashboard":latest_dashboard,
+        "jobs":recent_jobs,
+        "runtimeLogNewestFirst":runtime_logs
     });
     let bytes = serde_json::to_vec_pretty(&document).map_err(|error| error.to_string())?;
     let dir = Path::new(&cfg.master_path).join(".lumina/reports");
@@ -168,6 +212,13 @@ mod tests {
     #[test]
     fn escapes_csv() {
         assert_eq!(csv("a\"b"), "\"a\"\"b\"")
+    }
+    #[test]
+    fn diagnostic_logs_redact_paths_and_media_names() {
+        let safe = sanitize_diagnostic_line(r#"error C:\Users\Caio\Fotos\segredo.jpg token=abc"#);
+        assert!(!safe.contains("Caio"));
+        assert!(!safe.contains("segredo"));
+        assert!(!safe.contains("abc"));
     }
     #[test]
     fn export_is_not_truncated_at_page_size() {

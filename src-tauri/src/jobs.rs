@@ -208,9 +208,17 @@ impl JobManager {
             .lock()
             .unwrap()
             .insert(job.into(), CancellationToken::default());
+        crate::diagnostics::append(
+            "job_reserved",
+            &format!("job={}", &job[..job.len().min(12)]),
+        );
         Ok(())
     }
     fn release(&self, job: &str) {
+        crate::diagnostics::append(
+            "job_released",
+            &format!("job={}", &job[..job.len().min(12)]),
+        );
         {
             let mut active = self.inner.active.lock().unwrap();
             if active.as_deref() == Some(job) {
@@ -244,6 +252,11 @@ impl JobManager {
                 self.spawn_source_sync(next.cfg.clone(), job.clone())
             } else if next.stage == "technical_enrichment" {
                 self.spawn_format_enrichment(next.cfg.clone(), job.clone())
+            } else if matches!(
+                next.stage.as_str(),
+                "protection_pending" | "backup" | "backup_space_check" | "backup_error"
+            ) {
+                self.start_protection(next.cfg.clone(), job.clone())
             } else if matches!(next.stage.as_str(), "verification" | "verification_error") {
                 self.spawn_verification(next.cfg.clone(), job.clone())
             } else {
@@ -256,6 +269,14 @@ impl JobManager {
         }
     }
     fn mark_failed(&self, cfg: &LibraryConfig, job: &str, error: &str) {
+        crate::diagnostics::append(
+            "job_failed",
+            &format!(
+                "job={} error={}",
+                &job[..job.len().min(12)],
+                crate::process::sanitize(error)
+            ),
+        );
         if let Ok(conn) = catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite"))
         {
             let now = Utc::now().to_rfc3339();
@@ -393,6 +414,21 @@ impl JobManager {
         Ok(())
     }
     pub fn start_protection(&self, cfg: LibraryConfig, job: String) -> Result<(), String> {
+        *self
+            .inner
+            .library
+            .lock()
+            .map_err(|_| "Biblioteca indisponível")? = Some(cfg.clone());
+        if self.has_active() {
+            let conn = catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite"))
+                .map_err(|error| error.to_string())?;
+            conn.execute("UPDATE jobs SET state='queued',interruption_reason='Proteção aguardando o trabalho atual',updated_at=?2 WHERE id=?1",params![job,Utc::now().to_rfc3339()]).map_err(|error|error.to_string())?;
+            crate::diagnostics::append(
+                "protection_queued",
+                &format!("job={}", &job[..job.len().min(12)]),
+            );
+            return Ok(());
+        }
         self.reserve(&job)?;
         let cancel = self.token(&job)?;
         let manager = self.clone();
@@ -849,6 +885,66 @@ mod tests {
             assert!(
                 std::time::Instant::now() < deadline,
                 "metadados permaneceram em {state}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        drop(manager);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn protection_requested_during_another_job_is_dispatched_after_it() {
+        let root =
+            std::env::temp_dir().join(format!("lumina-protection-dispatch-{}", Uuid::new_v4()));
+        let master = root.join("master");
+        let backup = root.join("backup");
+        fs::create_dir_all(&master).unwrap();
+        fs::create_dir_all(&backup).unwrap();
+        let cfg = LibraryConfig {
+            id: "l".into(),
+            name: "Teste".into(),
+            master_path: master.to_string_lossy().into(),
+            backup_path: backup.to_string_lossy().into(),
+            created_at: Utc::now().to_rfc3339(),
+        };
+        let conn = catalog::open(&master.join(".lumina/catalog.sqlite")).unwrap();
+        conn.execute(
+            "INSERT INTO sources(id,name,path,volume_label)VALUES('s','Fonte','source','v')",
+            [],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO jobs(id,source_id,source_path,state,stage,created_at,updated_at)VALUES('protect','s','source','protection_pending','protection_pending',?1,?1)",[Utc::now().to_rfc3339()]).unwrap();
+        drop(conn);
+        let manager = JobManager::new();
+        manager.reserve("busy").unwrap();
+        manager
+            .start_protection(cfg.clone(), "protect".into())
+            .unwrap();
+        let conn = catalog::open(&master.join(".lumina/catalog.sqlite")).unwrap();
+        assert_eq!(
+            conn.query_row("SELECT state FROM jobs WHERE id='protect'", [], |row| {
+                row.get::<_, String>(0)
+            })
+            .unwrap(),
+            "queued"
+        );
+        drop(conn);
+        manager.release("busy");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let conn = catalog::open(&master.join(".lumina/catalog.sqlite")).unwrap();
+            let state = conn
+                .query_row("SELECT state FROM jobs WHERE id='protect'", [], |row| {
+                    row.get::<_, String>(0)
+                })
+                .unwrap();
+            drop(conn);
+            if state == "completed" && !manager.has_active() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "proteção permaneceu em {state}"
             );
             std::thread::sleep(std::time::Duration::from_millis(25));
         }

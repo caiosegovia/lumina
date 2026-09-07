@@ -550,6 +550,14 @@ pub struct TagInfo {
     pub id: String,
     pub name: String,
     pub asset_count: i64,
+    pub parent_id: Option<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonInfo {
+    pub id: String,
+    pub name: String,
+    pub asset_count: i64,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -617,6 +625,8 @@ pub struct DiscoveryOverview {
     pub similar: Vec<DiscoveryGroup>,
     pub sequences: Vec<DiscoveryGroup>,
     pub memories: Vec<DiscoveryGroup>,
+    pub places: Vec<DiscoveryGroup>,
+    pub trips: Vec<DiscoveryGroup>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -139,12 +139,27 @@ Critérios: nenhum job visualmente preso; nenhum preview de duplicata carregado 
 
 Critérios: nenhuma manutenção interna aparenta ser job preso; índice funciona sem modificar originais; grandes catálogos não usam comparação integral quadrática; falhas são isoladas; pacote instalado passa no dispositivo oficial.
 
-## Próximo — 0.18: pessoas, lugares e organização avançada
+## Agora — 0.18: estabilidade, proteção e organização avançada
 
-- Agrupamento local e opcional de rostos, com consentimento, correção e remoção integral do índice.
+- Gate zero de estabilidade para catálogos grandes: reproduzir e corrigir a degradação progressiva de desempenho e o fechamento inesperado observado na 0.17 com aproximadamente 9.300 arquivos, investigando prioritariamente enriquecimento de metadados, filas, concorrência, memória e processos externos.
+- Teste de carga e permanência com catálogo representativo: importar, enriquecer metadados, gerar miniaturas, navegar e manter o aplicativo aberto sob processamento até demonstrar memória estabilizada, interface responsiva, filas convergentes e ausência de crash.
+- Instrumentação operacional local e sanitizada: logs estruturados e correlacionados por sessão/job/item, métricas de duração, throughput, tamanho das filas, memória, CPU, falhas e reinícios, além de breadcrumbs das últimas ações relevantes.
+- Pacote de diagnóstico exportável em um clique, contendo logs rotativos, versão/build, configuração operacional não sensível, resumo do catálogo, estados das filas e relatório de crash/travamento, sem copiar mídias, credenciais ou metadados pessoais desnecessários.
+- Captura de falhas no frontend, backend e processos auxiliares, com encerramentos incompletos detectados na abertura seguinte e orientação clara para exportar o diagnóstico.
+- Corrigir `Proteger agora` de ponta a ponta: comando, fila durável, progresso observável, validação do destino, verificação por hash, retomada e falhas acionáveis.
+- Pessoas locais e opcionais, com associação deliberada, correção e remoção integral do índice. Reconhecimento facial automático fica condicionado a um modelo local auditado; não será simulado nesta beta.
 - Exploração por mapa, cidade, região e viagem para mídias com GPS.
 - Tags hierárquicas, álbuns por regras e operações em lote reversíveis.
 - Busca visual semântica local será avaliada somente com modelo, desempenho e privacidade validados; não será simulada por palavras-chave.
+
+Critérios adicionais de saída da 0.18:
+
+- O cenário de aproximadamente 9.300 arquivos não apresenta crescimento contínuo e injustificado de memória, perda sustentada de responsividade ou fechamento inesperado durante o processamento de metadados.
+- Filas de metadados convergem, podem ser pausadas e retomadas e não duplicam trabalho após reinício.
+- Todo crash ou encerramento incompleto deixa evidência local suficiente para correlacionar sessão, job, etapa e último item processado, inclusive no dispositivo de homologação.
+- O diagnóstico pode ser exportado sem ferramentas de desenvolvimento e contém dados suficientes para análise remota, respeitando os controles de privacidade.
+- Logs possuem rotação e limite de armazenamento; a observabilidade não pode degradar perceptivelmente o desempenho nem crescer sem limite.
+- A candidata passa por teste prolongado no aplicativo empacotado, além dos testes automatizados, build, auditoria e smoke usuais.
 
 ## Trilhas contínuas
 

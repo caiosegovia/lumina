@@ -87,6 +87,11 @@ pub fn open(path: &Path) -> Result<Connection> {
         [],
         |row| row.get::<_, bool>(0),
     )?;
+    let needs_v15 = db.query_row(
+        "SELECT NOT EXISTS(SELECT 1 FROM schema_migrations WHERE version=15)",
+        [],
+        |row| row.get::<_, bool>(0),
+    )?;
     db.execute_batch("BEGIN IMMEDIATE;
       CREATE TABLE IF NOT EXISTS job_items(
         id INTEGER PRIMARY KEY AUTOINCREMENT,job_id TEXT NOT NULL REFERENCES jobs(id),source_path TEXT NOT NULL,filename TEXT NOT NULL,extension TEXT NOT NULL,media_type TEXT NOT NULL,
@@ -342,6 +347,18 @@ pub fn open(path: &Path) -> Result<Connection> {
           INSERT INTO schema_migrations(version,applied_at)VALUES(14,datetime('now'));
           COMMIT;")?;
     }
+    if needs_v15 {
+        db.execute_batch("BEGIN IMMEDIATE;
+          ALTER TABLE tags ADD COLUMN parent_id TEXT REFERENCES tags(id) ON DELETE SET NULL;
+          CREATE INDEX idx_tags_parent ON tags(parent_id,name);
+          CREATE TABLE people(id TEXT PRIMARY KEY,name TEXT NOT NULL UNIQUE,created_at TEXT NOT NULL);
+          CREATE TABLE asset_people(asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,person_id TEXT NOT NULL REFERENCES people(id) ON DELETE CASCADE,source TEXT NOT NULL DEFAULT 'manual',confidence REAL,created_at TEXT NOT NULL,PRIMARY KEY(asset_id,person_id));
+          CREATE INDEX idx_asset_people_person ON asset_people(person_id,asset_id);
+          CREATE TABLE feature_settings(key TEXT PRIMARY KEY,enabled INTEGER NOT NULL DEFAULT 0,updated_at TEXT NOT NULL);
+          INSERT INTO feature_settings(key,enabled,updated_at)VALUES('people',0,datetime('now'));
+          INSERT INTO schema_migrations(version,applied_at)VALUES(15,datetime('now'));
+          COMMIT;")?;
+    }
     if needs_v11 {
         db.execute_batch("DROP TRIGGER IF EXISTS dashboard_asset_shape_invalidate; DROP TRIGGER IF EXISTS dashboard_asset_shape_rollup;
       CREATE TRIGGER dashboard_asset_shape_rollup AFTER UPDATE OF captured_at,media_type,extension,camera,bytes ON assets BEGIN
@@ -436,7 +453,7 @@ pub fn open(path: &Path) -> Result<Connection> {
             )?;
         }
     }
-    db.pragma_update(None, "user_version", 14)?;
+    db.pragma_update(None, "user_version", 15)?;
     db.execute_batch("PRAGMA optimize;")?;
     db.execute(
         "UPDATE jobs SET state='waiting_space',stage='space_check',finished_at=NULL WHERE state='failed' AND processed_items=0 AND interruption_reason LIKE 'Espaço insuficiente:%'",
@@ -706,13 +723,13 @@ mod tests {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            14
+            15
         );
         assert_eq!(
             db.query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row
                 .get::<_, i64>(0))
                 .unwrap(),
-            14
+            15
         );
         let technical_columns = db
             .prepare("PRAGMA table_info(asset_technical_metadata)")
@@ -845,6 +862,25 @@ mod tests {
         assert!(
             started.elapsed().as_secs() < 5,
             "consultas principais excederam cinco segundos"
+        );
+        drop(db);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn v15_adds_reversible_local_people_index() {
+        let root = std::env::temp_dir().join(Uuid::new_v4().to_string());
+        fs::create_dir_all(&root).unwrap();
+        let db = open(&root.join("people.sqlite")).unwrap();
+        let tables: i64 = db.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN('people','asset_people','feature_settings')",[],|row|row.get(0)).unwrap();
+        assert_eq!(tables, 3);
+        assert_eq!(
+            db.query_row(
+                "SELECT enabled FROM feature_settings WHERE key='people'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
         );
         drop(db);
         fs::remove_dir_all(root).unwrap();

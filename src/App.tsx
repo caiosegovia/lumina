@@ -22,6 +22,7 @@ import {
   Search,
   Sparkles,
   ShieldCheck,
+  UserRound,
   X,
 } from "lucide-react";
 import { api } from "./api";
@@ -43,6 +44,7 @@ import type {
   JobProgress,
   LibraryConfig,
   LibraryHealth,
+  PersonInfo,
   RecoverableJob,
   Source,
   SavedView,
@@ -85,6 +87,12 @@ export default function App() {
     window.addEventListener("unhandledrejection",rejection);
     return()=>{window.removeEventListener("error",error);window.removeEventListener("unhandledrejection",rejection)};
   },[]);
+  useEffect(() => {
+    const beat = () => void api.heartbeat();
+    beat();
+    const timer = setInterval(beat, 5000);
+    return () => clearInterval(timer);
+  }, []);
   useEffect(() => {
     if (!library) return;
     const load = () =>
@@ -829,6 +837,7 @@ function Albums({navigate}:{navigate:(view:View)=>void}) {
   const [items, setItems] = useState<Album[]>([]),
     [smart, setSmart] = useState<SavedView[]>([]),
     [tags, setTags] = useState<TagInfo[]>([]),
+    [people, setPeople] = useState<PersonInfo[]>([]),
     [name, setName] = useState(""),
     [creating, setCreating] = useState(false);
   const load = () => api.albums().then(setItems);
@@ -836,6 +845,7 @@ function Albums({navigate}:{navigate:(view:View)=>void}) {
     load();
     api.savedViews().then(views=>setSmart(views.filter(view=>view.smartAlbum)));
     api.tags().then(setTags);
+    api.people().then(setPeople);
   }, []);
   return (
     <>
@@ -891,6 +901,7 @@ function Albums({navigate}:{navigate:(view:View)=>void}) {
         ))}
       </div>
       <section className="tag-manager"><h3>Tags</h3><p>Renomeie ou remova classificações do catálogo sem alterar as mídias.</p><div>{tags.map(tag=><span key={tag.id}><button onClick={async()=>{const name=prompt("Novo nome da tag",tag.name);if(name){await api.renameTag(tag.id,name);setTags(await api.tags())}}}>{tag.name} · {tag.assetCount}</button><button aria-label={`Excluir tag ${tag.name}`} onClick={async()=>{if(confirm(`Remover a tag ${tag.name} do catálogo?`)){await api.deleteTag(tag.id);setTags(current=>current.filter(item=>item.id!==tag.id))}}}><X/></button></span>)}</div></section>
+      <section className="tag-manager people-manager"><h3><UserRound/> Pessoas</h3><p>Identidades organizadas somente no catálogo local. Selecione mídias na galeria para associá-las; nenhum dado é enviado para a nuvem.</p><button onClick={async()=>{const name=prompt("Nome da pessoa");if(name){await api.createPerson(name);setPeople(await api.people())}}}><Plus/>Adicionar pessoa</button><div>{people.map(person=><span key={person.id}><button>{person.name} · {person.assetCount}</button><button aria-label={`Excluir pessoa ${person.name}`} onClick={async()=>{if(confirm(`Remover ${person.name} do índice local? As mídias não serão alteradas.`)){await api.deletePerson(person.id);setPeople(await api.people())}}}><X/></button></span>)}</div></section>
     </>
   );
 }
@@ -1054,6 +1065,7 @@ function Protection() {
             {formatBytes(queue?.pendingBytes ?? 0)} ·{" "}
             <strong>{queue?.failed ?? 0}</strong> falhas
           </p>
+          <button className="primary" disabled={!queue?.pending && !queue?.failed} onClick={async()=>{try{await api.protectPending();setResult("Proteção iniciada em segundo plano. O progresso está disponível em Atividade.");setQueue(await api.protectionQueue())}catch(error){setResult(String(error))}}}><ShieldCheck/>Proteger agora</button>
         </article>
         <article>
           <h3>Alterar réplica</h3>
