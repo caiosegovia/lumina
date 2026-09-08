@@ -124,11 +124,13 @@ pub fn validate(path: &Path, extension: &str, cancel: &CancellationToken) -> Val
         };
     }
     if INTERNAL_IMAGE.contains(&ext.as_str()) {
-        return match ImageReader::open(path)
-            .and_then(|reader| reader.with_guessed_format())
-            .map_err(|e| e.to_string())
-            .and_then(|reader| reader.decode().map_err(|e| e.to_string()))
-        {
+        // Validation remains in-process because it is a hot import path, but
+        // unlike the old unbounded decode it now rejects excessive dimensions
+        // and allocations before they can exhaust the application.
+        let result = fs::File::open(path)
+            .map_err(|error| error.to_string())
+            .and_then(|file| decode_bounded(std::io::BufReader::new(file)));
+        return match result {
             Ok(_) => ValidationResult {
                 state: ValidationState::Valid,
                 tool: "image".into(),
@@ -339,13 +341,30 @@ pub fn generate_thumbnail(
     let temporary = destination.with_extension("job-part.jpg");
     let ext = extension.to_ascii_lowercase();
     if INTERNAL_IMAGE.contains(&ext.as_str()) {
-        let source_file = fs::File::open(source).map_err(|error| error.to_string())?;
-        let mut image = decode_bounded(std::io::BufReader::new(source_file))?;
-        image = apply_orientation(image, read_orientation(source, cancel));
-        image
-            .thumbnail(640, 640)
-            .save_with_format(&temporary, image::ImageFormat::Jpeg)
-            .map_err(|e| e.to_string())?;
+        // Isolate raster codecs from the long-lived desktop process. Besides
+        // protecting against decoder aborts/OOM, the timeout guarantees that a
+        // single pathological image cannot hold the only thumbnail worker.
+        process::run(
+            ProcessSpec::new("FFmpeg", "ffmpeg")
+                .args([
+                    "-y",
+                    "-v",
+                    "error",
+                    "-i",
+                    source.to_string_lossy().as_ref(),
+                    "-frames:v",
+                    "1",
+                    "-vf",
+                    "scale=640:640:force_original_aspect_ratio=decrease",
+                    "-q:v",
+                    "3",
+                    temporary.to_string_lossy().as_ref(),
+                ])
+                .timeout(Duration::from_secs(45))
+                .logical("FFmpeg raster thumbnail"),
+            cancel,
+        )
+        .map_err(|error| error.message)?;
     } else if crate::formats::family(&ext) == crate::formats::MediaFamily::Raw {
         let preview = process::run(
             ProcessSpec::new("ExifTool", "exiftool")

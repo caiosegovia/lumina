@@ -1,6 +1,6 @@
 # Lumina
 
-Versão em desenvolvimento: **0.18.2-beta.1**, hotfix de backpressure e consistência dos previews HD durante navegação rápida. Consulte [HOTFIX-0.18.2-BETA.md](HOTFIX-0.18.2-BETA.md), [SPEC-0.18-BETA.md](SPEC-0.18-BETA.md) e [ARCHITECTURE-0.18.md](ARCHITECTURE-0.18.md).
+Versão em desenvolvimento: **0.18.3-beta.1**, hotfix de isolamento dos decodificadores de miniaturas e diagnóstico pós-crash confiável. Consulte [HOTFIX-0.18.3-BETA.md](HOTFIX-0.18.3-BETA.md), [SPEC-0.18-BETA.md](SPEC-0.18-BETA.md) e [ARCHITECTURE-0.18.md](ARCHITECTURE-0.18.md).
 
 A anatomia, os wireframes responsivos e os estados da nova galeria estão registrados em [DESIGN-0.15-GALLERY.md](DESIGN-0.15-GALLERY.md).
 

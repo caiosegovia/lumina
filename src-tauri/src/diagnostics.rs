@@ -9,6 +9,16 @@ use std::{
 
 static FRONTEND_HEARTBEAT_MS: AtomicU64 = AtomicU64::new(0);
 
+pub struct ActiveOperation {
+    marker: PathBuf,
+}
+
+impl Drop for ActiveOperation {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.marker);
+    }
+}
+
 fn epoch_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -25,6 +35,24 @@ fn root() -> PathBuf {
     dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("Lumina/diagnostics")
+}
+
+pub fn begin_operation(kind: &str, detail: &str) -> ActiveOperation {
+    let directory = root();
+    let _ = fs::create_dir_all(&directory);
+    let marker = directory.join("active.operation");
+    let safe_detail = detail
+        .replace(['\r', '\n'], " ")
+        .chars()
+        .take(500)
+        .collect::<String>();
+    let record = format!("{}\t{}\t{}", Utc::now().to_rfc3339(), kind, safe_detail);
+    let _ = fs::write(&marker, record);
+    ActiveOperation { marker }
+}
+
+pub fn active_operation() -> Option<String> {
+    fs::read_to_string(root().join("active.operation")).ok()
 }
 
 pub fn append(kind: &str, detail: &str) {
@@ -221,6 +249,10 @@ pub fn start_session() {
             "previous_session_abnormal",
             "O aplicativo não registrou encerramento normal",
         );
+    }
+    if let Some(operation) = active_operation() {
+        append("previous_operation_incomplete", &operation);
+        let _ = fs::remove_file(root().join("active.operation"));
     }
     let _ = fs::create_dir_all(&directory);
     let _ = fs::write(&marker, Utc::now().to_rfc3339());

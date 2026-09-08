@@ -1456,8 +1456,8 @@ pub fn process_thumbnail_queue(
         };
         conn.execute("UPDATE work_queue SET state='processing',attempts=attempts+1,updated_at=?2 WHERE id=?1",params![qid,Utc::now().to_rfc3339()]).ok();
         drop(conn);
-        crate::diagnostics::append(
-            "thumbnail_started",
+        let operation = crate::diagnostics::begin_operation(
+            "thumbnail",
             &format!("asset={} extension={}", &asset[..asset.len().min(12)], ext),
         );
         let _io = crate::resource::io(crate::resource::Priority::Interactive);
@@ -1472,6 +1472,7 @@ pub fn process_thumbnail_queue(
         }))
         .unwrap_or_else(|_| Err("Falha interna isolada ao gerar miniatura".into()));
         drop(_io);
+        drop(operation);
         let conn = catalog::open(&db_path).map_err(|e| e.to_string())?;
         match result {
             Ok(thumb) => {
@@ -1488,6 +1489,10 @@ pub fn process_thumbnail_queue(
                 )
                 .ok();
                 conn.execute("UPDATE thumbnails SET state='failed',last_error=?2,updated_at=?3 WHERE asset_id=?1",params![asset,error,Utc::now().to_rfc3339()]).ok();
+                crate::diagnostics::append(
+                    "thumbnail_failed",
+                    &format!("asset={} error={error}", &asset[..asset.len().min(12)]),
+                );
             }
         }
         std::thread::sleep(std::time::Duration::from_millis(10));

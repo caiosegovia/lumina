@@ -7,7 +7,7 @@ use rusqlite::{params, OptionalExtension};
 use std::{
     fs::{self, File},
     io::Write,
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 pub fn page(
@@ -143,6 +143,23 @@ fn sanitize_diagnostic_line(line: &str) -> String {
         .join(" ")
 }
 
+fn recent_runtime_logs(paths: Vec<PathBuf>, limit: usize) -> Vec<String> {
+    paths
+        .into_iter()
+        .flat_map(|path| {
+            let mut lines = fs::read_to_string(path)
+                .unwrap_or_default()
+                .lines()
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            lines.reverse();
+            lines
+        })
+        .take(limit)
+        .map(|line| sanitize_diagnostic_line(&line))
+        .collect()
+}
+
 pub fn export_diagnostics(cfg: &LibraryConfig) -> Result<ReportExport, String> {
     let conn = catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite"))
         .map_err(|error| error.to_string())?;
@@ -160,22 +177,13 @@ pub fn export_diagnostics(cfg: &LibraryConfig) -> Result<ReportExport, String> {
         "SELECT generated_at,mode,total_ms,catalog_ms,rollups_ms,storage_ms,insights_ms,items FROM dashboard_metrics ORDER BY id DESC LIMIT 1",[],
         |row| Ok(serde_json::json!({"generatedAt":row.get::<_,String>(0)?,"mode":row.get::<_,String>(1)?,"totalMs":row.get::<_,i64>(2)?,"catalogMs":row.get::<_,i64>(3)?,"rollupsMs":row.get::<_,i64>(4)?,"storageMs":row.get::<_,i64>(5)?,"insightsMs":row.get::<_,i64>(6)?,"items":row.get::<_,i64>(7)?}))
     ).optional().map_err(|error|error.to_string())?;
-    let runtime_logs = crate::diagnostics::log_files()
-        .into_iter()
-        .flat_map(|path| {
-            fs::read_to_string(path)
-                .unwrap_or_default()
-                .lines()
-                .map(str::to_owned)
-                .collect::<Vec<_>>()
-        })
-        .rev()
-        .take(2500)
-        .map(|line| sanitize_diagnostic_line(&line))
-        .collect::<Vec<_>>();
+    // `log_files` returns the current file before the rotated predecessor.
+    // Reverse each file independently so the newest current events cannot be
+    // displaced by a full older file.
+    let runtime_logs = recent_runtime_logs(crate::diagnostics::log_files(), 5000);
     let recent_jobs = grouped(&conn,"SELECT COALESCE(job_kind,'import'),state,COUNT(*) FROM jobs GROUP BY COALESCE(job_kind,'import'),state ORDER BY 1,2")?;
     let document = serde_json::json!({
-        "schemaVersion":2,
+        "schemaVersion":3,
         "generatedAt":chrono::Utc::now().to_rfc3339(),
         "application":{"name":"Lumina","version":env!("CARGO_PKG_VERSION"),"platform":std::env::consts::OS,"architecture":std::env::consts::ARCH},
         "privacy":{"containsPaths":false,"containsFilenames":false,"containsCoordinates":false,"containsHashes":false},
@@ -187,7 +195,8 @@ pub fn export_diagnostics(cfg: &LibraryConfig) -> Result<ReportExport, String> {
         "thumbnails":grouped(&conn,"SELECT 'thumbnail',state,COUNT(*) FROM thumbnails GROUP BY state ORDER BY state")?,
         "dashboard":latest_dashboard,
         "jobs":recent_jobs,
-        "runtimeLogNewestFirst":runtime_logs
+        "runtimeLogNewestFirst":runtime_logs,
+        "activeOperation":crate::diagnostics::active_operation().map(|line|sanitize_diagnostic_line(&line))
     });
     let bytes = serde_json::to_vec_pretty(&document).map_err(|error| error.to_string())?;
     let dir = Path::new(&cfg.master_path).join(".lumina/reports");
@@ -219,6 +228,20 @@ mod tests {
         assert!(!safe.contains("Caio"));
         assert!(!safe.contains("segredo"));
         assert!(!safe.contains("abc"));
+    }
+    #[test]
+    fn diagnostic_export_keeps_current_log_ahead_of_rotated_history() {
+        let root = std::env::temp_dir().join(Uuid::new_v4().to_string());
+        fs::create_dir_all(&root).unwrap();
+        let current = root.join("session.log");
+        let previous = root.join("session.previous.log");
+        fs::write(&current, "current-old\ncurrent-new\n").unwrap();
+        fs::write(&previous, "previous-old\nprevious-new\n").unwrap();
+        assert_eq!(
+            recent_runtime_logs(vec![current, previous], 3),
+            vec!["current-new", "current-old", "previous-new"]
+        );
+        fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn export_is_not_truncated_at_page_size() {
