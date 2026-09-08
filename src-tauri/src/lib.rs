@@ -28,7 +28,10 @@ use std::{
     fs,
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    },
 };
 use tauri::{Manager, State};
 use uuid::Uuid;
@@ -37,6 +40,26 @@ struct AppState {
     library: Mutex<Option<LibraryConfig>>,
     config_path: PathBuf,
     library_lock: Mutex<Option<library::LibraryLock>>,
+}
+
+static PHOTO_PREVIEW_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+#[derive(Debug)]
+struct PhotoPreviewPermit;
+
+impl PhotoPreviewPermit {
+    fn acquire() -> Result<Self, String> {
+        PHOTO_PREVIEW_ACTIVE
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| Self)
+            .map_err(|_| "PREVIEW_BUSY".to_string())
+    }
+}
+
+impl Drop for PhotoPreviewPermit {
+    fn drop(&mut self) {
+        PHOTO_PREVIEW_ACTIVE.store(false, Ordering::Release);
+    }
 }
 fn db(cfg: &LibraryConfig) -> Result<rusqlite::Connection, String> {
     catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite"))
@@ -1750,11 +1773,22 @@ async fn prepare_photo_preview(
     if !valid_thumbnail_asset_id(&asset_id) {
         return Err("Identificador inválido".into());
     }
+    // Acquire before spawn_blocking. Otherwise rapid navigation creates a large
+    // pool of blocking threads which only wait for the process limiter.
+    let _permit = PhotoPreviewPermit::acquire()?;
     let cfg = current(&state)?;
     let requested = asset_id.clone();
+    diagnostics::append(
+        "photo_preview_started",
+        &format!("asset={}", &asset_id[..asset_id.len().min(12)]),
+    );
     tauri::async_runtime::spawn_blocking(move || media::viewer_preview_file(&cfg, &requested))
         .await
         .map_err(|error| error.to_string())??;
+    diagnostics::append(
+        "photo_preview_completed",
+        &format!("asset={}", &asset_id[..asset_id.len().min(12)]),
+    );
     #[cfg(windows)]
     {
         Ok(format!("http://lumina-preview.localhost/{asset_id}"))
@@ -2093,7 +2127,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod protocol_tests {
-    use super::{compute_dashboard, quick_dashboard, valid_thumbnail_asset_id};
+    use super::{compute_dashboard, quick_dashboard, valid_thumbnail_asset_id, PhotoPreviewPermit};
     use crate::{catalog, models::LibraryConfig};
     use std::{
         fs,
@@ -2110,6 +2144,16 @@ mod protocol_tests {
         assert!(!valid_thumbnail_asset_id("../catalog.sqlite"));
         assert!(!valid_thumbnail_asset_id("folder/asset"));
         assert!(!valid_thumbnail_asset_id(""));
+    }
+
+    #[test]
+    fn photo_preview_backpressure_allows_only_one_blocking_generation() {
+        let first = PhotoPreviewPermit::acquire().unwrap();
+        for _ in 0..10_000 {
+            assert_eq!(PhotoPreviewPermit::acquire().unwrap_err(), "PREVIEW_BUSY");
+        }
+        drop(first);
+        assert!(PhotoPreviewPermit::acquire().is_ok());
     }
 
     #[test]

@@ -903,6 +903,8 @@ function Preview({
   const drag = useRef<{ x: number; y: number; left: number; top: number }>();
 
   useEffect(() => {
+    let live = true;
+    let previewTimer: number | undefined;
     setDescription(asset.description);
     setPreviewZoom(1);
     setPan({ x: 0, y: 0 });
@@ -911,13 +913,15 @@ function Preview({
     setDetails(undefined);
     setDetailsLoading(true);
     if (asset.mediaType !== "raw") {
-      api.mediaUrl(asset.id).then(setMediaUrl).catch(() => setMediaUrl(""));
+      api.mediaUrl(asset.id).then((url)=>{if(live)setMediaUrl(url)}).catch(() => {if(live)setMediaUrl("")});
     }
     if (asset.mediaType === "photo" || asset.mediaType === "raw") {
       setQualityState("loading");
-      api.photoPreview(asset.id).then((url)=>{setHighQualityUrl(url);setQualityState("ready")}).catch((cause)=>{setQualityState("error");void api.recordClientError("media_error",cause instanceof Error?cause.message:String(cause))});
+      const loadPreview=()=>api.photoPreview(asset.id).then((url)=>{if(!live)return;setHighQualityUrl(url);setQualityState("ready")}).catch((cause)=>{if(!live)return;const message=cause instanceof Error?cause.message:String(cause);if(message.includes("PREVIEW_BUSY")){previewTimer=window.setTimeout(loadPreview,300);return}setQualityState("error");void api.recordClientError("media_error",message)});
+      previewTimer=window.setTimeout(loadPreview,150);
     } else setQualityState("idle");
-    api.assetDetails(asset.id).then(setDetails).catch(() => setDetails(undefined)).finally(()=>setDetailsLoading(false));
+    api.assetDetails(asset.id).then((value)=>{if(live)setDetails(value)}).catch(() => {if(live)setDetails(undefined)}).finally(()=>{if(live)setDetailsLoading(false)});
+    return()=>{live=false;if(previewTimer!==undefined)window.clearTimeout(previewTimer)};
   }, [asset.id, asset.description]);
 
   useEffect(() => {

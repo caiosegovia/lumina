@@ -10,10 +10,29 @@ use rusqlite::{params, OptionalExtension};
 use serde::Serialize;
 use std::{
     fs,
+    io::Cursor,
     path::{Path, PathBuf},
     sync::atomic::{AtomicI64, AtomicU8, Ordering},
     time::Duration,
 };
+
+const MAX_EMBEDDED_PREVIEW_BYTES: usize = 64 * 1024 * 1024;
+const MAX_DECODED_EDGE: u32 = 32_768;
+const MAX_DECODED_BYTES: u64 = 256 * 1024 * 1024;
+
+fn decode_bounded<R: std::io::BufRead + std::io::Seek>(
+    reader: R,
+) -> Result<image::DynamicImage, String> {
+    let mut reader = ImageReader::new(reader)
+        .with_guessed_format()
+        .map_err(|error| error.to_string())?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_DECODED_EDGE);
+    limits.max_image_height = Some(MAX_DECODED_EDGE);
+    limits.max_alloc = Some(MAX_DECODED_BYTES);
+    reader.limits(limits);
+    reader.decode().map_err(|error| error.to_string())
+}
 
 pub const THUMBNAIL_VERSION: i64 = 2;
 pub const VIEWER_PREVIEW_VERSION: i64 = 1;
@@ -310,10 +329,6 @@ pub fn generate_thumbnail(
     cache_root: &Path,
     cancel: &CancellationToken,
 ) -> Result<PathBuf, String> {
-    const MAX_EMBEDDED_PREVIEW_BYTES: usize = 64 * 1024 * 1024;
-    const MAX_DECODED_EDGE: u32 = 32_768;
-    const MAX_DECODED_BYTES: u64 = 256 * 1024 * 1024;
-
     let destination = thumbnail_path(cache_root, hash);
     if destination.exists() {
         return Ok(destination);
@@ -324,16 +339,8 @@ pub fn generate_thumbnail(
     let temporary = destination.with_extension("job-part.jpg");
     let ext = extension.to_ascii_lowercase();
     if INTERNAL_IMAGE.contains(&ext.as_str()) {
-        let mut reader = ImageReader::open(source)
-            .map_err(|e| e.to_string())?
-            .with_guessed_format()
-            .map_err(|e| e.to_string())?;
-        let mut limits = image::Limits::default();
-        limits.max_image_width = Some(MAX_DECODED_EDGE);
-        limits.max_image_height = Some(MAX_DECODED_EDGE);
-        limits.max_alloc = Some(MAX_DECODED_BYTES);
-        reader.limits(limits);
-        let mut image = reader.decode().map_err(|e| e.to_string())?;
+        let source_file = fs::File::open(source).map_err(|error| error.to_string())?;
+        let mut image = decode_bounded(std::io::BufReader::new(source_file))?;
         image = apply_orientation(image, read_orientation(source, cancel));
         image
             .thumbnail(640, 640)
@@ -360,16 +367,8 @@ pub fn generate_thumbnail(
         let preview_path = temporary.with_extension("preview.jpg");
         fs::write(&preview_path, &preview.stdout).map_err(|e| e.to_string())?;
         let orientation = read_orientation(source, cancel);
-        let mut reader = ImageReader::open(&preview_path)
-            .map_err(|e| e.to_string())?
-            .with_guessed_format()
-            .map_err(|e| e.to_string())?;
-        let mut limits = image::Limits::default();
-        limits.max_image_width = Some(MAX_DECODED_EDGE);
-        limits.max_image_height = Some(MAX_DECODED_EDGE);
-        limits.max_alloc = Some(MAX_DECODED_BYTES);
-        reader.limits(limits);
-        let result = reader.decode().map_err(|e| e.to_string())?;
+        let preview_file = fs::File::open(&preview_path).map_err(|error| error.to_string())?;
+        let result = decode_bounded(std::io::BufReader::new(preview_file))?;
         let result = apply_orientation(result, orientation)
             .thumbnail(640, 640)
             .save_with_format(&temporary, image::ImageFormat::Jpeg)
@@ -516,8 +515,13 @@ pub fn viewer_preview_file(cfg: &LibraryConfig, asset: &str) -> Result<PathBuf, 
         if preview.stdout.is_empty() {
             return Err("RAW sem prévia embarcada".into());
         }
-        let decoded =
-            image::load_from_memory(&preview.stdout).map_err(|error| error.to_string())?;
+        if preview.stdout.len() > MAX_EMBEDDED_PREVIEW_BYTES {
+            return Err(format!(
+                "Prévia RAW excede o limite seguro de {} MiB",
+                MAX_EMBEDDED_PREVIEW_BYTES / 1024 / 1024
+            ));
+        }
+        let decoded = decode_bounded(Cursor::new(&preview.stdout))?;
         decoded
             .thumbnail(VIEWER_PREVIEW_EDGE, VIEWER_PREVIEW_EDGE)
             .save_with_format(&temporary, image::ImageFormat::Jpeg)
