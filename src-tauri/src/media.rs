@@ -310,6 +310,10 @@ pub fn generate_thumbnail(
     cache_root: &Path,
     cancel: &CancellationToken,
 ) -> Result<PathBuf, String> {
+    const MAX_EMBEDDED_PREVIEW_BYTES: usize = 64 * 1024 * 1024;
+    const MAX_DECODED_EDGE: u32 = 32_768;
+    const MAX_DECODED_BYTES: u64 = 256 * 1024 * 1024;
+
     let destination = thumbnail_path(cache_root, hash);
     if destination.exists() {
         return Ok(destination);
@@ -320,12 +324,16 @@ pub fn generate_thumbnail(
     let temporary = destination.with_extension("job-part.jpg");
     let ext = extension.to_ascii_lowercase();
     if INTERNAL_IMAGE.contains(&ext.as_str()) {
-        let mut image = ImageReader::open(source)
+        let mut reader = ImageReader::open(source)
             .map_err(|e| e.to_string())?
             .with_guessed_format()
-            .map_err(|e| e.to_string())?
-            .decode()
             .map_err(|e| e.to_string())?;
+        let mut limits = image::Limits::default();
+        limits.max_image_width = Some(MAX_DECODED_EDGE);
+        limits.max_image_height = Some(MAX_DECODED_EDGE);
+        limits.max_alloc = Some(MAX_DECODED_BYTES);
+        reader.limits(limits);
+        let mut image = reader.decode().map_err(|e| e.to_string())?;
         image = apply_orientation(image, read_orientation(source, cancel));
         image
             .thumbnail(640, 640)
@@ -343,15 +351,25 @@ pub fn generate_thumbnail(
         if preview.stdout.is_empty() {
             return Err("RAW sem prévia embarcada".into());
         }
+        if preview.stdout.len() > MAX_EMBEDDED_PREVIEW_BYTES {
+            return Err(format!(
+                "Prévia RAW excede o limite seguro de {} MiB",
+                MAX_EMBEDDED_PREVIEW_BYTES / 1024 / 1024
+            ));
+        }
         let preview_path = temporary.with_extension("preview.jpg");
         fs::write(&preview_path, &preview.stdout).map_err(|e| e.to_string())?;
         let orientation = read_orientation(source, cancel);
-        let result = ImageReader::open(&preview_path)
+        let mut reader = ImageReader::open(&preview_path)
             .map_err(|e| e.to_string())?
             .with_guessed_format()
-            .map_err(|e| e.to_string())?
-            .decode()
             .map_err(|e| e.to_string())?;
+        let mut limits = image::Limits::default();
+        limits.max_image_width = Some(MAX_DECODED_EDGE);
+        limits.max_image_height = Some(MAX_DECODED_EDGE);
+        limits.max_alloc = Some(MAX_DECODED_BYTES);
+        reader.limits(limits);
+        let result = reader.decode().map_err(|e| e.to_string())?;
         let result = apply_orientation(result, orientation)
             .thumbnail(640, 640)
             .save_with_format(&temporary, image::ImageFormat::Jpeg)
