@@ -43,6 +43,7 @@ struct AppState {
 }
 
 static PHOTO_PREVIEW_ACTIVE: AtomicBool = AtomicBool::new(false);
+static ON_DEMAND_METADATA_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug)]
 struct PhotoPreviewPermit;
@@ -59,6 +60,24 @@ impl PhotoPreviewPermit {
 impl Drop for PhotoPreviewPermit {
     fn drop(&mut self) {
         PHOTO_PREVIEW_ACTIVE.store(false, Ordering::Release);
+    }
+}
+
+#[derive(Debug)]
+struct MetadataPermit;
+
+impl MetadataPermit {
+    fn try_acquire() -> Option<Self> {
+        ON_DEMAND_METADATA_ACTIVE
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| Self)
+    }
+}
+
+impl Drop for MetadataPermit {
+    fn drop(&mut self) {
+        ON_DEMAND_METADATA_ACTIVE.store(false, Ordering::Release);
     }
 }
 fn db(cfg: &LibraryConfig) -> Result<rusqlite::Connection, String> {
@@ -1808,9 +1827,32 @@ async fn get_asset_details(
         return Err("Identificador inválido".into());
     }
     let cfg = current(&state)?;
-    tauri::async_runtime::spawn_blocking(move || metadata::details(&cfg, &asset_id))
-        .await
-        .map_err(|error| error.to_string())?
+    let requested = asset_id.clone();
+    // Rapid navigation must not fill Tokio's blocking pool with ExifTool tasks.
+    // When enrichment is already running, return the catalog snapshot at once.
+    let permit = MetadataPermit::try_acquire();
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Some(_permit) = permit {
+            diagnostics::append(
+                "metadata_ondemand_started",
+                &format!("asset={}", &requested[..requested.len().min(12)]),
+            );
+            let result = metadata::details(&cfg, &requested);
+            diagnostics::append(
+                "metadata_ondemand_finished",
+                &format!("asset={}", &requested[..requested.len().min(12)]),
+            );
+            result
+        } else {
+            diagnostics::append(
+                "metadata_ondemand_coalesced",
+                &format!("asset={}", &requested[..requested.len().min(12)]),
+            );
+            metadata::cached_details(&cfg, &requested)
+        }
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 fn valid_thumbnail_asset_id(asset: &str) -> bool {
@@ -1907,7 +1949,7 @@ pub fn run() {
                     .map_err(|_| "Estado indisponível".to_string())?
                     .clone()
                     .ok_or_else(|| "Biblioteca não configurada".to_string())?;
-                fs::read(media::viewer_preview_file(&cfg, asset)?)
+                fs::read(media::existing_viewer_preview_file(&cfg, asset)?)
                     .map_err(|error| error.to_string())
             };
             match response() {
@@ -2127,7 +2169,10 @@ pub fn run() {
 
 #[cfg(test)]
 mod protocol_tests {
-    use super::{compute_dashboard, quick_dashboard, valid_thumbnail_asset_id, PhotoPreviewPermit};
+    use super::{
+        compute_dashboard, quick_dashboard, valid_thumbnail_asset_id, MetadataPermit,
+        PhotoPreviewPermit,
+    };
     use crate::{catalog, models::LibraryConfig};
     use std::{
         fs,
@@ -2154,6 +2199,16 @@ mod protocol_tests {
         }
         drop(first);
         assert!(PhotoPreviewPermit::acquire().is_ok());
+    }
+
+    #[test]
+    fn on_demand_metadata_backpressure_coalesces_rapid_navigation() {
+        let first = MetadataPermit::try_acquire().unwrap();
+        for _ in 0..10_000 {
+            assert!(MetadataPermit::try_acquire().is_none());
+        }
+        drop(first);
+        assert!(MetadataPermit::try_acquire().is_some());
     }
 
     #[test]

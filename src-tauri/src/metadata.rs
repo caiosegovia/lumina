@@ -49,6 +49,15 @@ fn read_details(conn: &rusqlite::Connection, asset_id: &str) -> Result<AssetDeta
     })).map_err(|_|"Mídia não encontrada".to_string())
 }
 
+pub fn cached_details(
+    cfg: &crate::models::LibraryConfig,
+    asset_id: &str,
+) -> Result<AssetDetails, String> {
+    let conn = catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite"))
+        .map_err(|error| error.to_string())?;
+    read_details(&conn, asset_id)
+}
+
 pub fn details(cfg: &crate::models::LibraryConfig, asset_id: &str) -> Result<AssetDetails, String> {
     let conn = catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite"))
         .map_err(|error| error.to_string())?;

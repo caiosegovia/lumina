@@ -10,7 +10,6 @@ use rusqlite::{params, OptionalExtension};
 use serde::Serialize;
 use std::{
     fs,
-    io::Cursor,
     path::{Path, PathBuf},
     sync::atomic::{AtomicI64, AtomicU8, Ordering},
     time::Duration,
@@ -35,7 +34,7 @@ fn decode_bounded<R: std::io::BufRead + std::io::Seek>(
 }
 
 pub const THUMBNAIL_VERSION: i64 = 2;
-pub const VIEWER_PREVIEW_VERSION: i64 = 1;
+pub const VIEWER_PREVIEW_VERSION: i64 = 2;
 const VIEWER_PREVIEW_EDGE: u32 = 2560;
 const VIEWER_CACHE_LIMIT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const INTERNAL_IMAGE: &[&str] = &["jpg", "jpeg", "png", "gif", "webp", "tif", "tiff", "bmp"];
@@ -311,6 +310,7 @@ fn read_orientation(source: &Path, cancel: &CancellationToken) -> u8 {
     .unwrap_or(1)
 }
 
+#[cfg(test)]
 fn apply_orientation(image: image::DynamicImage, orientation: u8) -> image::DynamicImage {
     match orientation {
         2 => image.fliph(),
@@ -322,6 +322,58 @@ fn apply_orientation(image: image::DynamicImage, orientation: u8) -> image::Dyna
         8 => image.rotate270(),
         _ => image,
     }
+}
+
+fn ffmpeg_orientation_filter(orientation: u8, edge: u32) -> String {
+    let transform = match orientation {
+        2 => "hflip,",
+        3 => "hflip,vflip,",
+        4 => "vflip,",
+        5 => "transpose=1,hflip,",
+        6 => "transpose=1,",
+        7 => "transpose=2,hflip,",
+        8 => "transpose=2,",
+        _ => "",
+    };
+    format!("{transform}scale={edge}:{edge}:force_original_aspect_ratio=decrease")
+}
+
+/// Normalizes an embedded RAW preview in a disposable FFmpeg process. RAW
+/// payloads are untrusted input and must never be decoded in Lumina's process.
+fn normalize_embedded_preview(
+    input: &Path,
+    output: &Path,
+    orientation: u8,
+    edge: u32,
+    cancel: &CancellationToken,
+    logical: &str,
+) -> Result<(), String> {
+    process::run(
+        ProcessSpec::new("FFmpeg", "ffmpeg")
+            .args([
+                "-y",
+                "-v",
+                "error",
+                "-i",
+                input.to_string_lossy().as_ref(),
+                "-frames:v",
+                "1",
+                "-vf",
+                &ffmpeg_orientation_filter(orientation, edge),
+                "-q:v",
+                "2",
+                "-pix_fmt",
+                "yuvj420p",
+                "-strict",
+                "unofficial",
+                output.to_string_lossy().as_ref(),
+            ])
+            .timeout(Duration::from_secs(45))
+            .logical(logical),
+        cancel,
+    )
+    .map(|_| ())
+    .map_err(|error| error.message)
 }
 
 pub fn generate_thumbnail(
@@ -390,12 +442,14 @@ pub fn generate_thumbnail(
         let preview_path = temporary.with_extension("preview.jpg");
         fs::write(&preview_path, &preview.stdout).map_err(|e| e.to_string())?;
         let orientation = read_orientation(source, cancel);
-        let preview_file = fs::File::open(&preview_path).map_err(|error| error.to_string())?;
-        let result = decode_bounded(std::io::BufReader::new(preview_file))?;
-        let result = apply_orientation(result, orientation)
-            .thumbnail(640, 640)
-            .save_with_format(&temporary, image::ImageFormat::Jpeg)
-            .map_err(|e| e.to_string());
+        let result = normalize_embedded_preview(
+            &preview_path,
+            &temporary,
+            orientation,
+            640,
+            cancel,
+            "FFmpeg embedded RAW thumbnail",
+        );
         let _ = fs::remove_file(preview_path);
         result?;
     } else {
@@ -501,7 +555,11 @@ pub fn viewer_preview_file(cfg: &LibraryConfig, asset: &str) -> Result<PathBuf, 
         .join(format!("v{VIEWER_PREVIEW_VERSION}"));
     fs::create_dir_all(&cache_root).map_err(|error| error.to_string())?;
     let destination = cache_root.join(format!("{}-{}.jpg", &hash[..16.min(hash.len())], asset));
-    if destination.is_file() && image::image_dimensions(&destination).is_ok() {
+    if destination
+        .metadata()
+        .map(|value| value.len() > 0)
+        .unwrap_or(false)
+    {
         return Ok(destination);
     }
     let temporary = destination.with_extension("part.jpg");
@@ -552,11 +610,18 @@ pub fn viewer_preview_file(cfg: &LibraryConfig, asset: &str) -> Result<PathBuf, 
                 MAX_EMBEDDED_PREVIEW_BYTES / 1024 / 1024
             ));
         }
-        let decoded = decode_bounded(Cursor::new(&preview.stdout))?;
-        decoded
-            .thumbnail(VIEWER_PREVIEW_EDGE, VIEWER_PREVIEW_EDGE)
-            .save_with_format(&temporary, image::ImageFormat::Jpeg)
-            .map_err(|error| error.to_string())?;
+        let embedded = temporary.with_extension("embedded.jpg");
+        fs::write(&embedded, &preview.stdout).map_err(|error| error.to_string())?;
+        let result = normalize_embedded_preview(
+            &embedded,
+            &temporary,
+            read_orientation(Path::new(&source), &cancel),
+            VIEWER_PREVIEW_EDGE,
+            &cancel,
+            "FFmpeg embedded RAW viewer preview",
+        );
+        let _ = fs::remove_file(embedded);
+        result?;
     }
     if !temporary.is_file() {
         return Err("Não foi possível gerar a prévia em alta qualidade".into());
@@ -567,6 +632,36 @@ pub fn viewer_preview_file(cfg: &LibraryConfig, asset: &str) -> Result<PathBuf, 
     fs::rename(&temporary, &destination).map_err(|error| error.to_string())?;
     trim_viewer_cache(&cache_root, &destination);
     Ok(destination)
+}
+
+/// Resolves only an already generated viewer preview. Protocol handlers must
+/// remain read-only and cannot run decoders on the WebView request thread.
+pub fn existing_viewer_preview_file(cfg: &LibraryConfig, asset: &str) -> Result<PathBuf, String> {
+    let conn = catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite"))
+        .map_err(|error| error.to_string())?;
+    let (hash, media_type): (String, String) = conn
+        .query_row(
+            "SELECT hash,media_type FROM assets WHERE id=?1",
+            [asset],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|_| "Midia nao encontrada".to_string())?;
+    if media_type == "video" {
+        return Err("Preview fotografico solicitado para um video".into());
+    }
+    let path = Path::new(&cfg.master_path)
+        .join(".lumina/cache/viewer")
+        .join(format!("v{VIEWER_PREVIEW_VERSION}"))
+        .join(format!("{}-{}.jpg", &hash[..16.min(hash.len())], asset));
+    if path
+        .metadata()
+        .map(|value| value.len() > 0)
+        .unwrap_or(false)
+    {
+        Ok(path)
+    } else {
+        Err("Previa ainda nao foi preparada".into())
+    }
 }
 
 fn trim_viewer_cache(root: &Path, keep: &Path) {
@@ -832,11 +927,47 @@ mod tests {
         let hash = crate::storage::sha256(&source).unwrap();
         conn.execute("INSERT INTO assets(id,hash,filename,media_type,extension,captured_at,date_source,bytes,master_path,created_at)VALUES('large',?1,'large.png','photo','png',?2,'file',1,?3,?2)",params![hash,chrono::Utc::now().to_rfc3339(),source.to_string_lossy()]).unwrap();
         drop(conn);
+        assert!(existing_viewer_preview_file(&cfg, "large").is_err());
         let first = viewer_preview_file(&cfg, "large").unwrap();
         let second = viewer_preview_file(&cfg, "large").unwrap();
         assert_eq!(first, second);
+        assert_eq!(existing_viewer_preview_file(&cfg, "large").unwrap(), second);
         let (width, height) = image::image_dimensions(first).unwrap();
         assert_eq!((width, height), (2560, 1536));
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    #[cfg(windows)]
+    fn raw_viewer_preview_is_normalized_out_of_process_and_protocol_is_read_only() {
+        let root = std::env::temp_dir().join(Uuid::new_v4().to_string());
+        let backup = root.join("backup");
+        fs::create_dir_all(root.join(".lumina")).unwrap();
+        fs::create_dir_all(&backup).unwrap();
+        let source = root.join("sample.dng");
+        fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample.dng"),
+            &source,
+        )
+        .unwrap();
+        let cfg = LibraryConfig {
+            id: "raw-viewer".into(),
+            name: "RAW viewer".into(),
+            master_path: root.to_string_lossy().into_owned(),
+            backup_path: backup.to_string_lossy().into_owned(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+        let conn = catalog::open(&root.join(".lumina/catalog.sqlite")).unwrap();
+        let hash = crate::storage::sha256(&source).unwrap();
+        conn.execute("INSERT INTO assets(id,hash,filename,media_type,extension,captured_at,date_source,bytes,master_path,created_at)VALUES('raw',?1,'sample.dng','raw','dng',?2,'file',1,?3,?2)",params![hash,chrono::Utc::now().to_rfc3339(),source.to_string_lossy()]).unwrap();
+        drop(conn);
+        assert!(existing_viewer_preview_file(&cfg, "raw").is_err());
+        let generated = viewer_preview_file(&cfg, "raw").unwrap();
+        assert_eq!(
+            existing_viewer_preview_file(&cfg, "raw").unwrap(),
+            generated
+        );
+        let (width, height) = image::image_dimensions(generated).unwrap();
+        assert!(width <= VIEWER_PREVIEW_EDGE && height <= VIEWER_PREVIEW_EDGE);
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
