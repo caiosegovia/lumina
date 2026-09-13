@@ -358,6 +358,10 @@ pub fn generate_thumbnail(
                     "scale=640:640:force_original_aspect_ratio=decrease",
                     "-q:v",
                     "3",
+                    "-pix_fmt",
+                    "yuvj420p",
+                    "-strict",
+                    "unofficial",
                     temporary.to_string_lossy().as_ref(),
                 ])
                 .timeout(Duration::from_secs(45))
@@ -406,6 +410,10 @@ pub fn generate_thumbnail(
             "1".into(),
             "-vf".into(),
             "scale=640:640:force_original_aspect_ratio=decrease".into(),
+            "-pix_fmt".into(),
+            "yuvj420p".into(),
+            "-strict".into(),
+            "unofficial".into(),
             temporary.to_string_lossy().into_owned(),
         ]);
         let refs = args.iter().map(String::as_str);
@@ -515,6 +523,10 @@ pub fn viewer_preview_file(cfg: &LibraryConfig, asset: &str) -> Result<PathBuf, 
             ),
             "-q:v",
             "2",
+            "-pix_fmt",
+            "yuvj420p",
+            "-strict",
+            "unofficial",
             temporary.to_string_lossy().as_ref(),
         ])
         .timeout(Duration::from_secs(90))
@@ -598,33 +610,48 @@ pub fn thumbnail_data(cfg: &LibraryConfig, asset: &str) -> Result<Option<String>
         .transpose()
 }
 
-pub fn enqueue_thumbnail(cfg: &LibraryConfig, asset: &str, priority: i64) -> Result<(), String> {
+pub fn enqueue_thumbnail(cfg: &LibraryConfig, asset: &str, priority: i64) -> Result<bool, String> {
     let conn = catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite"))
         .map_err(|e| e.to_string())?;
+    let terminal: Option<String> = conn
+        .query_row(
+            "SELECT state FROM thumbnails WHERE asset_id=?1 AND generator_version=?2 AND state IN('ready','failed')",
+            params![asset, THUMBNAIL_VERSION],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    if terminal.is_some() {
+        return Ok(false);
+    }
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute("INSERT OR IGNORE INTO sources(id,name,path,volume_label,available)VALUES('_lumina_maintenance','Manutenção da biblioteca','lumina://maintenance','internal',1)",[]).map_err(|e|e.to_string())?;
     conn.execute("INSERT OR IGNORE INTO jobs(id,source_id,source_path,state,stage,created_at,updated_at,library_state,backup_state)VALUES('_thumbnail_background','_lumina_maintenance','lumina://thumbnails','queued','thumbnail',?1,?1,'verified','pending')",[&now]).map_err(|e|e.to_string())?;
-    conn.execute("INSERT INTO thumbnails(asset_id,generator_version,path,state,updated_at)VALUES(?1,?2,'','pending',?3)ON CONFLICT(asset_id)DO UPDATE SET generator_version=excluded.generator_version,state=CASE WHEN thumbnails.state='ready' AND thumbnails.generator_version=?2 THEN 'ready' ELSE 'pending' END,updated_at=excluded.updated_at",params![asset,THUMBNAIL_VERSION,now]).map_err(|e|e.to_string())?;
-    let ready: bool = conn
+    conn.execute("INSERT INTO thumbnails(asset_id,generator_version,path,state,updated_at)VALUES(?1,?2,'','pending',?3)ON CONFLICT(asset_id)DO UPDATE SET generator_version=excluded.generator_version,state=CASE WHEN thumbnails.state='ready' AND thumbnails.generator_version=?2 THEN 'ready' WHEN thumbnails.state='failed' AND thumbnails.generator_version=?2 THEN 'failed' ELSE 'pending' END,updated_at=excluded.updated_at",params![asset,THUMBNAIL_VERSION,now]).map_err(|e|e.to_string())?;
+    let thumbnail_state: String = conn
         .query_row(
-            "SELECT state='ready' AND generator_version=?2 FROM thumbnails WHERE asset_id=?1",
+            "SELECT state FROM thumbnails WHERE asset_id=?1 AND generator_version=?2",
             params![asset, THUMBNAIL_VERSION],
             |row| row.get(0),
         )
         .map_err(|e| e.to_string())?;
+    let ready = thumbnail_state == "ready";
+    let permanently_failed = thumbnail_state == "failed";
     let existing: Option<i64> = conn.query_row("SELECT id FROM work_queue WHERE asset_id=?1 AND kind='thumbnail' ORDER BY CASE state WHEN 'processing' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END,id LIMIT 1",[asset],|row|row.get(0)).optional().map_err(|e|e.to_string())?;
     if let Some(id) = existing {
-        conn.execute("UPDATE work_queue SET state=CASE WHEN ?2 THEN 'completed' WHEN state='processing' THEN state ELSE 'pending' END,last_error=CASE WHEN ?2 THEN NULL ELSE last_error END,priority=MAX(priority,?3),updated_at=?4 WHERE id=?1",params![id,ready,priority,now]).map_err(|e|e.to_string())?;
+        conn.execute("UPDATE work_queue SET state=CASE WHEN ?2 THEN 'completed' WHEN ?3 OR state='failed' THEN 'failed' WHEN state='processing' THEN state ELSE 'pending' END,last_error=CASE WHEN ?2 THEN NULL ELSE last_error END,priority=MAX(priority,?4),updated_at=?5 WHERE id=?1",params![id,ready,permanently_failed,priority,now]).map_err(|e|e.to_string())?;
         conn.execute("DELETE FROM work_queue WHERE asset_id=?1 AND kind='thumbnail' AND id<>?2 AND state<>'processing'",params![asset,id]).map_err(|e|e.to_string())?;
     } else {
         let state = if ready {
             crate::pipeline::WorkState::Completed.as_str()
+        } else if permanently_failed {
+            crate::pipeline::WorkState::Failed.as_str()
         } else {
             crate::pipeline::WorkState::Pending.as_str()
         };
         conn.execute("INSERT INTO work_queue(job_id,asset_id,kind,state,priority,created_at,updated_at)VALUES('_thumbnail_background',?1,'thumbnail',?2,?3,?4,?4)",params![asset,state,priority,now]).map_err(|e|e.to_string())?;
     }
-    Ok(())
+    Ok(!ready && !permanently_failed)
 }
 pub fn clear_cache(cfg: &LibraryConfig) -> Result<i64, String> {
     let cache = Path::new(&cfg.master_path).join(".lumina/cache/thumbnails");
@@ -1102,6 +1129,39 @@ mod tests {
             .unwrap(),
             180
         );
+        drop(conn);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn permanently_failed_thumbnail_is_not_requeued_by_gallery_requests() {
+        let root = std::env::temp_dir().join(Uuid::new_v4().to_string());
+        let master = root.join("master");
+        let backup = root.join("backup");
+        fs::create_dir_all(master.join(".lumina")).unwrap();
+        fs::create_dir_all(&backup).unwrap();
+        let cfg = LibraryConfig {
+            id: "l".into(),
+            name: "t".into(),
+            master_path: master.to_string_lossy().into(),
+            backup_path: backup.to_string_lossy().into(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+        let conn = catalog::open(&master.join(".lumina/catalog.sqlite")).unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute("INSERT INTO sources(id,name,path,volume_label)VALUES('_lumina_maintenance','maintenance','lumina://maintenance','internal')",[]).unwrap();
+        conn.execute("INSERT INTO jobs(id,source_id,source_path,state,stage,created_at,updated_at)VALUES('_thumbnail_background','_lumina_maintenance','lumina://thumbnails','queued','thumbnail',?1,?1)",[&now]).unwrap();
+        conn.execute("INSERT INTO assets(id,hash,filename,media_type,extension,captured_at,date_source,bytes,master_path,created_at)VALUES('failed',?1,'failed.dng','raw','dng',?2,'file',1,'failed.dng',?2)",params!["f".repeat(64),&now]).unwrap();
+        conn.execute("INSERT INTO thumbnails(asset_id,generator_version,path,state,last_error,updated_at)VALUES('failed',?1,'','failed','RAW sem previa',?2)",params![THUMBNAIL_VERSION,&now]).unwrap();
+        conn.execute("INSERT INTO work_queue(job_id,asset_id,kind,state,attempts,last_error,created_at,updated_at)VALUES('_thumbnail_background','failed','thumbnail','failed',7,'RAW sem previa',?1,?1)",[&now]).unwrap();
+        drop(conn);
+
+        for _ in 0..100 {
+            enqueue_thumbnail(&cfg, "failed", 200).unwrap();
+        }
+
+        let conn = catalog::open(&master.join(".lumina/catalog.sqlite")).unwrap();
+        let state: (String, i64, i64) = conn.query_row("SELECT state,attempts,(SELECT COUNT(*) FROM work_queue WHERE asset_id='failed' AND kind='thumbnail') FROM work_queue WHERE asset_id='failed' AND kind='thumbnail'",[],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).unwrap();
+        assert_eq!(state, ("failed".into(), 7, 1));
         drop(conn);
         fs::remove_dir_all(root).unwrap();
     }

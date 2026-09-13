@@ -118,7 +118,10 @@ impl JobManager {
                     }
                     break;
                 };
-                if crate::media::enqueue_thumbnail(&cfg, &asset, priority).is_ok() {
+                if matches!(
+                    crate::media::enqueue_thumbnail(&cfg, &asset, priority),
+                    Ok(true)
+                ) {
                     let _ = manager.start_thumbnail_worker(cfg);
                 }
             })
@@ -180,7 +183,7 @@ impl JobManager {
         )
         .map_err(|e| e.to_string())?;
         conn.execute(
-            "UPDATE work_queue SET state='pending',updated_at=?1 WHERE kind='thumbnail' AND NOT EXISTS(SELECT 1 FROM thumbnails t WHERE t.asset_id=work_queue.asset_id AND t.state='ready' AND t.generator_version=?2)",
+            "UPDATE work_queue SET state='pending',updated_at=?1 WHERE kind='thumbnail' AND state<>'failed' AND NOT EXISTS(SELECT 1 FROM thumbnails t WHERE t.asset_id=work_queue.asset_id AND t.state IN('ready','failed') AND t.generator_version=?2)",
             params![&now, crate::media::THUMBNAIL_VERSION],
         )
         .map_err(|e| e.to_string())?;
@@ -837,6 +840,38 @@ mod tests {
             .unwrap(),
             "completed"
         );
+        drop(conn);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn thumbnail_maintenance_does_not_retry_permanent_failures_on_restart() {
+        let root = std::env::temp_dir().join(format!("lumina-thumbs-failed-{}", Uuid::new_v4()));
+        let master = root.join("master");
+        let backup = root.join("backup");
+        fs::create_dir_all(master.join(".lumina")).unwrap();
+        fs::create_dir_all(&backup).unwrap();
+        let cfg = LibraryConfig {
+            id: "l".into(),
+            name: "t".into(),
+            master_path: master.to_string_lossy().into(),
+            backup_path: backup.to_string_lossy().into(),
+            created_at: Utc::now().to_rfc3339(),
+        };
+        let conn = catalog::open(&master.join(".lumina/catalog.sqlite")).unwrap();
+        let now = Utc::now().to_rfc3339();
+        conn.execute("INSERT INTO sources(id,name,path,volume_label)VALUES('_lumina_maintenance','maintenance','lumina://maintenance','internal')",[]).unwrap();
+        conn.execute("INSERT INTO jobs(id,source_id,source_path,state,stage,created_at,updated_at)VALUES('_thumbnail_background','_lumina_maintenance','lumina://thumbnails','queued','thumbnail',?1,?1)",[&now]).unwrap();
+        conn.execute("INSERT INTO assets(id,hash,filename,media_type,extension,captured_at,date_source,bytes,master_path,created_at)VALUES('failed',?1,'failed.dng','raw','dng',?2,'file',1,'failed.dng',?2)",params!["f".repeat(64),&now]).unwrap();
+        conn.execute("INSERT INTO thumbnails(asset_id,generator_version,path,state,last_error,updated_at)VALUES('failed',?1,'','failed','unsupported',?2)",params![crate::media::THUMBNAIL_VERSION,&now]).unwrap();
+        conn.execute("INSERT INTO work_queue(job_id,asset_id,kind,state,attempts,last_error,created_at,updated_at)VALUES('_thumbnail_background','failed','thumbnail','failed',5,'unsupported',?1,?1)",[&now]).unwrap();
+        drop(conn);
+
+        JobManager::new().resume_background(cfg.clone()).unwrap();
+
+        let conn = catalog::open(&master.join(".lumina/catalog.sqlite")).unwrap();
+        let state: (String, i64) = conn.query_row("SELECT state,attempts FROM work_queue WHERE asset_id='failed' AND kind='thumbnail'",[],|row|Ok((row.get(0)?,row.get(1)?))).unwrap();
+        assert_eq!(state, ("failed".into(), 5));
         drop(conn);
         fs::remove_dir_all(root).unwrap();
     }
