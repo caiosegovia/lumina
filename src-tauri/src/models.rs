@@ -498,6 +498,7 @@ pub struct DuplicateGroup {
     pub additional_bytes: i64,
     pub reclaimable_bytes: i64,
     pub safety: String,
+    pub occurrence_count: i64,
     pub occurrences: Vec<Occurrence>,
     pub decision: Option<String>,
 }

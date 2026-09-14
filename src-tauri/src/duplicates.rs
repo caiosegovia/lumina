@@ -42,10 +42,69 @@ pub fn list(cfg: &LibraryConfig) -> Result<Vec<DuplicateGroup>, String> {
             } else {
                 "protection_required".into()
             },
-            occurrences: crate::engine::duplicate_occurrences(&conn, &row.0),
+            occurrence_count: row.5,
+            // Details are fetched only when a group is expanded. This keeps
+            // the initial duplicate list bounded for large catalogs.
+            occurrences: Vec::new(),
             decision: row.6,
         })
         .collect())
+}
+
+pub fn occurrences(cfg: &LibraryConfig, asset_id: &str) -> Result<Vec<Occurrence>, String> {
+    let conn = catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite"))
+        .map_err(|error| error.to_string())?;
+    let exists = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM assets a WHERE a.id=?1 AND (SELECT COUNT(*) FROM active_occurrences o WHERE o.asset_id=a.id)>1)",
+            [asset_id],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if !exists {
+        return Err("Grupo de duplicatas nao encontrado".into());
+    }
+    Ok(crate::engine::duplicate_occurrences(&conn, asset_id))
+}
+
+pub fn decide_groups(
+    cfg: &LibraryConfig,
+    asset_ids: &[String],
+    decision: &str,
+) -> Result<BatchResult, String> {
+    if asset_ids.is_empty() || asset_ids.len() > 5_000 {
+        return Err("Selecao de duplicatas invalida".into());
+    }
+    if !matches!(decision, "keep_all" | "review" | "remove_candidates") {
+        return Err("Decisao de duplicata invalida".into());
+    }
+    let mut conn = catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite"))
+        .map_err(|error| error.to_string())?;
+    let tx = conn.transaction().map_err(|error| error.to_string())?;
+    let now = Utc::now().to_rfc3339();
+    let mut affected = 0;
+    for asset_id in asset_ids {
+        let eligibility = tx
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM active_occurrences WHERE asset_id=assets.id)>1,protection_state='replica_verified' FROM assets WHERE id=?1",
+                [asset_id],
+                |row| Ok((row.get::<_, bool>(0)?,row.get::<_, bool>(1)?)),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        let Some((is_duplicate, replica_verified)) = eligibility else {
+            return Err("Grupo de duplicatas nao encontrado".into());
+        };
+        if !is_duplicate {
+            return Err("O item selecionado nao e um grupo de duplicatas".into());
+        }
+        if decision == "remove_candidates" && !replica_verified {
+            return Err("Todos os grupos selecionados precisam de replica verificada".into());
+        }
+        affected += tx.execute("INSERT INTO duplicate_decisions(asset_id,decision,reason,decided_at)SELECT id,?2,'bulk_user_review',?3 FROM assets WHERE id=?1 ON CONFLICT(asset_id)DO UPDATE SET decision=excluded.decision,reason=excluded.reason,decided_at=excluded.decided_at",params![asset_id,decision,now]).map_err(|error|error.to_string())? as i64;
+    }
+    tx.commit().map_err(|error| error.to_string())?;
+    Ok(BatchResult { affected })
 }
 
 pub fn status(cfg: &LibraryConfig) -> Result<DuplicateStatus, String> {
@@ -270,11 +329,19 @@ mod tests {
                 .affected,
             1
         );
-        let groups = list(&cfg).unwrap();
-        assert_eq!(groups[0].decision.as_deref(), Some("review"));
         assert_eq!(
-            groups[0]
-                .occurrences
+            decide_groups(&cfg, &["a".to_string()], "keep_all")
+                .unwrap()
+                .affected,
+            1
+        );
+        let groups = list(&cfg).unwrap();
+        assert_eq!(groups[0].decision.as_deref(), Some("keep_all"));
+        assert_eq!(groups[0].occurrence_count, 2);
+        assert!(groups[0].occurrences.is_empty());
+        let occurrences = occurrences(&cfg, "a").unwrap();
+        assert_eq!(
+            occurrences
                 .iter()
                 .find(|item| item.id == "o2")
                 .unwrap()

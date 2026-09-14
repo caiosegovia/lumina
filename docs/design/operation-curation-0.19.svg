@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="520" viewBox="0 0 1200 520" role="img" aria-labelledby="title desc">
+  <title id="title">Fluxo operacional e de curadoria do Lumina 0.19</title>
+  <desc id="desc">Galeria, atividade e duplicatas usam consultas responsivas; trabalhos passam por fila durável e proteção verificada.</desc>
+  <rect width="1200" height="520" rx="28" fill="#f4f3ed"/>
+  <style>.box{fill:#fff;stroke:#cad2cc;stroke-width:2}.core{fill:#173d32;stroke:#173d32}.t{font:700 20px system-ui;fill:#173d32}.s{font:14px system-ui;fill:#657169}.w{fill:#fff}.a{stroke:#729486;stroke-width:3;fill:none;marker-end:url(#m)}</style>
+  <defs><marker id="m" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#729486"/></marker></defs>
+  <text x="55" y="55" class="t">Lumina 0.19 · operação observável, curadoria progressiva</text>
+  <rect class="box" x="55" y="105" width="240" height="95" rx="16"/><text class="t" x="78" y="140">Galeria e inspetor</text><text class="s" x="78" y="168">Virtualização · HD · comparação</text>
+  <rect class="box" x="55" y="225" width="240" height="95" rx="16"/><text class="t" x="78" y="260">Atividade</text><text class="s" x="78" y="288">Heartbeat · ações · histórico</text>
+  <rect class="box" x="55" y="345" width="240" height="95" rx="16"/><text class="t" x="78" y="380">Duplicatas</text><text class="s" x="78" y="408">Resumo · expansão sob demanda</text>
+  <rect class="core" x="440" y="185" width="290" height="175" rx="22"/><text class="t w" x="475" y="230">Tauri + domínio Rust</text><text class="s w" x="475" y="265">Regras de integridade</text><text class="s w" x="475" y="292">SQLite WAL + fila durável</text><text class="s w" x="475" y="319">Logs e métricas sanitizados</text>
+  <rect class="box" x="875" y="105" width="270" height="95" rx="16"/><text class="t" x="900" y="140">Processamento invisível</text><text class="s" x="900" y="168">Lotes limitados · backpressure</text>
+  <rect class="box" x="875" y="245" width="270" height="95" rx="16"/><text class="t" x="900" y="280">Acervo mestre</text><text class="s" x="900" y="308">Cópia atômica · SHA-256</text>
+  <rect class="box" x="875" y="385" width="270" height="95" rx="16"/><text class="t" x="900" y="420">Réplica local</text><text class="s" x="900" y="448">Protegido só após verificação</text>
+  <path class="a" d="M295 152 C365 152 370 225 440 225"/><path class="a" d="M295 272 L440 272"/><path class="a" d="M295 392 C365 392 370 315 440 315"/>
+  <path class="a" d="M730 225 C800 225 805 152 875 152"/><path class="a" d="M730 272 L875 292"/><path class="a" d="M1010 340 L1010 385"/>
+</svg>

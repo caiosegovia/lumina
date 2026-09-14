@@ -3,7 +3,7 @@ import { AlertTriangle, CheckCircle2, ChevronDown, Clock3, FileDown, Pause, Play
 import { api } from "./api";
 import { formatBytes, formatDate } from "./format";
 import type { BackgroundWorkStatus, ImportEvent, JobOverview } from "./types";
-import { jobBucket, jobNextStep, jobStateLabel } from "./jobState";
+import { heartbeatLabel, jobBucket, jobHeartbeat, jobNextStep, jobStateLabel } from "./jobState";
 import "./activity.css";
 
 const stageLabel: Record<string, string> = {
@@ -40,6 +40,7 @@ export default function ActivityCenter({ jobs, openJob }: { jobs: JobOverview[];
   const [historyOpen, setHistoryOpen] = useState(false);
   const [storageWarning, setStorageWarning] = useState("");
   const [background, setBackground] = useState<BackgroundWorkStatus[]>([]);
+  const [clock, setClock] = useState(()=>Date.now());
   const jobRevision=jobs.map(job=>`${job.jobId}:${job.state}:${job.updatedAt}`).join("|");
   useEffect(() => { api.events().then(setEvents); }, [jobRevision]);
   useEffect(() => {
@@ -51,6 +52,7 @@ export default function ActivityCenter({ jobs, openJob }: { jobs: JobOverview[];
   }, []);
   useEffect(() => { api.getLibrary().then(library => { if (!library) return; const master=library.masterPath.match(/^[A-Za-z]:/)?.[0].toUpperCase(),backup=library.backupPath.match(/^[A-Za-z]:/)?.[0].toUpperCase(); if(master&&master===backup)setStorageWarning(`O acervo e a réplica estão na mesma unidade ${master}. Isso reduz a velocidade e não protege contra falha física do disco.`); }); }, []);
   useEffect(() => { if (!notice) return; const id = setTimeout(() => setNotice(""), 4500); return () => clearTimeout(id); }, [notice]);
+  useEffect(() => { const id=setInterval(()=>setClock(Date.now()),15_000); return()=>clearInterval(id); },[]);
 
   const act = async (job: JobOverview, action: "paused" | "running" | "canceled") => {
     if (action === "canceled" && !confirm("Cancelar este trabalho? As mídias de origem não serão alteradas.")) return;
@@ -76,8 +78,10 @@ export default function ActivityCenter({ jobs, openJob }: { jobs: JobOverview[];
   const history = jobs.filter(j => jobBucket(j.state)==="history");
   const latestJob = jobs[0]?.jobId || events[0]?.jobId || "";
 
-  const card = (job: JobOverview, compact = false) => (
-    <article className={`work-card state-${job.state} ${compact ? "compact" : ""}`} key={job.jobId}>
+  const card = (job: JobOverview, compact = false) => {
+    const heartbeat=jobHeartbeat(job,clock);
+    return (
+    <article className={`work-card state-${job.state} heartbeat-${heartbeat} ${compact ? "compact" : ""}`} key={job.jobId}>
       <div className="work-icon">{job.state === "completed" ? <CheckCircle2/> : job.state === "failed" ? <AlertTriangle/> : job.state === "canceled" ? <XCircle/> : <Clock3/>}</div>
       <div className="work-main">
         <div className="work-title"><strong>{stageLabel[job.stage] || "Processando suas mídias"}</strong><span className={`work-state ${job.state}`}>{jobStateLabel[job.state] || job.state}</span></div>
@@ -85,6 +89,7 @@ export default function ActivityCenter({ jobs, openJob }: { jobs: JobOverview[];
         {jobBucket(job.state)==="active"&&<div className="work-progress" role="progressbar" aria-label={`Progresso de ${job.sourceName}`} aria-valuenow={Math.round(job.overallPercent)}><i style={{ width: `${job.overallPercent}%` }}/></div>}
         <div className="work-meta"><span>{formatBytes(job.processedBytes)} de {formatBytes(job.totalBytes)}</span><span>{Math.round(job.overallPercent)}%</span><span>{job.bytesPerSecond?`${formatBytes(job.bytesPerSecond)}/s · ${eta(job.estimatedSecondsRemaining)}`:`${job.processedItems.toLocaleString("pt-BR")} de ${job.totalItems.toLocaleString("pt-BR")} arquivos`}</span><span>{job.state==="completed"?elapsed(job):formatDate(job.updatedAt)}</span></div>
         <p className="work-next">{jobNextStep(job)}</p>
+        {heartbeat!=="current"&&<p className={`work-heartbeat ${heartbeat}`}><AlertTriangle/>{heartbeatLabel(job,clock)}. {heartbeat==="stalled"?"Abra os detalhes para identificar a etapa antes de decidir pausar ou cancelar.":"O trabalho começará assim que houver capacidade."}</p>}
         {job.interruptionReason && <p className="work-reason">{job.interruptionReason}</p>}
       </div>
       <div className="work-actions">
@@ -93,10 +98,11 @@ export default function ActivityCenter({ jobs, openJob }: { jobs: JobOverview[];
         {job.state === "interrupted" && <button disabled={!!busy} onClick={async () => { setBusy(job.jobId); try { await api.resumeJob(job.jobId); setNotice("Trabalho retomado"); } finally { setBusy(""); } }}><Play/>Retomar</button>}
         {["queued", "analyzing", "consolidating", "paused"].includes(job.state) && <button className="subtle-danger" disabled={!!busy} onClick={() => act(job, "canceled")}>Cancelar</button>}
         {job.state === "canceled" && <button onClick={async () => { await api.resumeJob(job.jobId); setNotice("Nova tentativa iniciada"); }}><RotateCcw/>Tentar novamente</button>}
+        {(job.state==="failed"||job.state==="backup_error")&&job.failed>0&&<button disabled={!!busy} onClick={async()=>{setBusy(job.jobId+"retry");try{const count=await api.retryFailed(job.jobId);setNotice(`${count} itens reenviados para processamento`)}catch(error){setNotice(String(error))}finally{setBusy("")}}}><RotateCcw/>Reprocessar falhas</button>}
         <button className="secondary" disabled={!!busy} onClick={() => job.state === "protection_pending" ? protect(job) : openJob(job.jobId)}>{job.state === "waiting_space" ? "Resolver espaço" : job.state === "ready" ? "Revisar" : job.state === "protection_pending" ? "Proteger agora" : job.state === "waiting_backup_space" ? "Resolver réplica" : "Detalhes"}</button>
       </div>
     </article>
-  );
+  )};
 
   return <div className="activity-center">
     <div className="activity-hero"><div><p className="eyebrow">TRABALHOS E IMPORTAÇÕES</p><h2>Atividade da biblioteca</h2><p>Acompanhe o que está acontecendo e o que precisa da sua atenção.</p></div><div className="activity-summary"><span><strong>{active.length}</strong> em andamento</span><span><strong>{attention.length}</strong> aguardando você</span></div></div>

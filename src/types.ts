@@ -33,7 +33,8 @@ export interface RecoverableJob { jobId:string; sourcePath:string; state:string;
 export interface JobEventPage { events:ImportEvent[]; nextCursor:number }
 export interface ReportExport { path:string; rows:number }
 export interface ImportEvent { id: number; jobId: string; at: string; path: string; state: string; details: string }
-export interface DuplicateGroup { assetId:string;hash: string; filename: string; bytes: number; additionalBytes: number; reclaimableBytes: number; safety: "eligible_for_review"|"protection_required"; occurrences: { id:string;source: string; path: string;decision?:"keep"|"review"|"remove_candidate" }[];decision?:"keep_all"|"review"|"remove_candidates" }
+export interface DuplicateOccurrence {id:string;source:string;path:string;decision?:"keep"|"review"|"remove_candidate"}
+export interface DuplicateGroup { assetId:string;hash: string; filename: string; bytes: number; additionalBytes: number; reclaimableBytes: number; safety: "eligible_for_review"|"protection_required"; occurrenceCount:number; occurrences: DuplicateOccurrence[];decision?:"keep_all"|"review"|"remove_candidates" }
 export interface DuplicateStatus{state:"not_analyzed"|"none_found"|"found"|"failed";catalogAssets:number;exactGroups:number;occurrences:number;connectedSources:number;totalSources:number;lastScan?:string}
 export interface CleanupPlanItem{occurrenceId:string;assetId:string;filename:string;source:string;path:string;bytes:number;eligibility:"eligible"|"blocked";reason:string}
 export interface CleanupPlan{id:string;state:string;groups:number;candidates:number;bytes:number;blocked:number;items:CleanupPlanItem[];createdAt:string}

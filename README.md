@@ -1,6 +1,6 @@
 # Lumina
 
-Versão em desenvolvimento: **0.18.5-beta.1**, isolamento do inspetor para catálogos grandes após a correção da tempestade de miniaturas. Consulte [HOTFIX-0.18.5-BETA.md](HOTFIX-0.18.5-BETA.md), [SPEC-0.18-BETA.md](SPEC-0.18-BETA.md) e [ARCHITECTURE-0.18.md](ARCHITECTURE-0.18.md).
+Versão em desenvolvimento: **0.19.0-beta.1**, pacote de operação e curadoria sobre a base estável da 0.18.5. Consulte [SPEC-0.19-BETA.md](SPEC-0.19-BETA.md), [ARCHITECTURE-0.19.md](ARCHITECTURE-0.19.md), [RELEASE-0.19-BETA.md](RELEASE-0.19-BETA.md) e [VALIDATION-0.19-BETA.md](VALIDATION-0.19-BETA.md).
 
 A anatomia, os wireframes responsivos e os estados da nova galeria estão registrados em [DESIGN-0.15-GALLERY.md](DESIGN-0.15-GALLERY.md).
 

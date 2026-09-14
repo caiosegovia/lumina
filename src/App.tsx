@@ -5,6 +5,7 @@ import {
   Album as AlbumIcon,
   Archive,
   ClipboardCheck,
+  Check,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -45,6 +46,7 @@ import type {
   LibraryConfig,
   LibraryHealth,
   PersonInfo,
+  ProtectionQueueStats,
   RecoverableJob,
   Source,
   SavedView,
@@ -686,6 +688,8 @@ function Duplicates() {
   const [error, setError] = useState("");
   const [plan, setPlan] = useState<CleanupPlan>();
   const [expanded,setExpanded]=useState<Set<string>>(new Set());
+  const [selected,setSelected]=useState<Set<string>>(new Set());
+  const [loadingDetails,setLoadingDetails]=useState<Set<string>>(new Set());
   const [filter,setFilter]=useState("all");
   const [sort,setSort]=useState("space");
   const [visible,setVisible]=useState(50);
@@ -717,10 +721,37 @@ function Duplicates() {
     );
     setNotice(message);
   }
+  async function toggleGroup(group:DuplicateGroup) {
+    if (expanded.has(group.assetId)) {
+      setExpanded(current=>{const next=new Set(current);next.delete(group.assetId);return next});
+      return;
+    }
+    setExpanded(current=>new Set(current).add(group.assetId));
+    if (group.occurrences.length > 0) return;
+    setLoadingDetails(current=>new Set(current).add(group.assetId));
+    try {
+      const occurrences=await api.duplicateOccurrences(group.assetId);
+      setItems(current=>current.map(item=>item.assetId===group.assetId?{...item,occurrences}:item));
+    } catch (cause) {
+      setNotice(`Não foi possível carregar as ocorrências: ${String(cause)}`);
+    } finally {
+      setLoadingDetails(current=>{const next=new Set(current);next.delete(group.assetId);return next});
+    }
+  }
+  async function decideSelected(decision:"keep_all"|"review"|"remove_candidates") {
+    try {
+      const result=await api.updateDuplicateDecisions([...selected],decision);
+      setItems(current=>current.map(item=>selected.has(item.assetId)?{...item,decision}:item));
+      setSelected(new Set());
+      setNotice(`${result.affected} grupos atualizados. Nenhum arquivo foi removido.`);
+    } catch (cause) {
+      setNotice(String(cause));
+    }
+  }
   useEffect(() => {
     loadDuplicates();
   }, []);
-  const filtered=items.filter(group=>filter==="all"||filter==="pending"&&!group.decision||filter==="protected"&&group.safety==="eligible_for_review"||filter==="review"&&group.decision==="review"||filter==="eligible"&&group.safety==="eligible_for_review").sort((a,b)=>sort==="name"?a.filename.localeCompare(b.filename):sort==="copies"?b.occurrences.length-a.occurrences.length:b.additionalBytes-a.additionalBytes);
+  const filtered=items.filter(group=>filter==="all"||filter==="pending"&&!group.decision||filter==="protected"&&group.safety==="eligible_for_review"||filter==="review"&&group.decision==="review"||filter==="eligible"&&group.safety==="eligible_for_review").sort((a,b)=>sort==="name"?a.filename.localeCompare(b.filename):sort==="copies"?b.occurrenceCount-a.occurrenceCount:b.additionalBytes-a.additionalBytes);
   return (
     <>
       <div className="section-heading">
@@ -751,6 +782,7 @@ function Duplicates() {
         <button className="primary" onClick={async()=>setPlan(await api.createCleanupPlan())}>Gerar plano</button>
         {plan&&<><div className="cleanup-summary"><span><strong>{plan.groups}</strong> grupos</span><span><strong>{plan.candidates}</strong> candidatas elegíveis</span><span><strong>{formatBytes(plan.bytes)}</strong> potencial</span><span><strong>{plan.blocked}</strong> bloqueadas</span></div><button onClick={async()=>{const report=await api.exportCleanupPlan(plan.id);setNotice(`Relatório exportado em ${report.path}`)}}>Exportar relatório do plano</button></>}
       </section>
+      {selected.size>0&&<div className="duplicate-bulk-bar" role="toolbar" aria-label="Ações nos grupos selecionados"><strong>{selected.size} grupos selecionados</strong><button onClick={()=>void decideSelected("keep_all")}>Manter todas</button><button onClick={()=>void decideSelected("review")}>Revisar depois</button><button disabled={[...selected].some(id=>items.find(item=>item.assetId===id)?.safety!=="eligible_for_review")} onClick={()=>void decideSelected("remove_candidates")}>Marcar candidatas</button><button className="ghost" onClick={()=>setSelected(new Set())}>Limpar seleção</button></div>}
       {!loading && !error && items.length === 0 && (
         <div className="empty-duplicates">
           <Copy />
@@ -765,10 +797,11 @@ function Duplicates() {
       <div className="duplicate-list">
         {filtered.slice(0,visible).map((g) => {
           const open=expanded.has(g.assetId);
-          return <article className={`duplicate-group ${open?"expanded":""}`} key={g.hash}>
-            <button className="duplicate-summary" aria-expanded={open} onClick={()=>setExpanded(current=>{const next=new Set(current);next.has(g.assetId)?next.delete(g.assetId):next.add(g.assetId);return next})}>
+          return <article className={`duplicate-group ${open?"expanded":""} ${selected.has(g.assetId)?"selected":""}`} key={g.hash}>
+            <button className="duplicate-select" aria-label={`${selected.has(g.assetId)?"Desmarcar":"Selecionar"} grupo ${g.filename}`} aria-pressed={selected.has(g.assetId)} onClick={()=>setSelected(current=>{const next=new Set(current);next.has(g.assetId)?next.delete(g.assetId):next.add(g.assetId);return next})}><Check/></button>
+            <button className="duplicate-summary" aria-expanded={open} onClick={()=>void toggleGroup(g)}>
               <span className="duplicate-name"><Copy/><span><strong>{g.filename}</strong><small>{formatBytes(g.bytes)} por arquivo</small></span></span>
-              <span className="duplicate-pill">{g.occurrences.length} cópias</span>
+              <span className="duplicate-pill">{g.occurrenceCount} cópias</span>
               <span className="duplicate-pill space">+ {formatBytes(g.additionalBytes)}</span>
               <span className={`duplicate-pill ${g.safety==="eligible_for_review"?"success":"warning"}`}>{g.safety==="eligible_for_review"?"Protegida":"Proteção pendente"}</span>
               <span className={`duplicate-pill decision ${g.decision||"pending"}`}>{g.decision==="keep_all"?"Manter todas":g.decision==="review"?"Revisar":g.decision==="remove_candidates"?"Candidatas":"Sem decisão"}</span>
@@ -778,6 +811,7 @@ function Duplicates() {
               <DuplicateThumb assetId={g.assetId} filename={g.filename} />
               <div className="duplicate-main">
               <p>{formatBytes(g.additionalBytes)} em ocorrências adicionais · {g.safety==="eligible_for_review"?`${formatBytes(g.reclaimableBytes)} aptos para futura revisão`:"proteja o acervo antes de decidir"}</p>
+              {loadingDetails.has(g.assetId)&&<p className="duplicate-loading"><LoaderCircle className="spin"/> Carregando ocorrências sob demanda…</p>}
               <div className="occurrence-comparison" aria-label={`Comparação de ${g.filename}`}>
                 {g.occurrences.map((o, i) => (
                   <section key={o.id}>
@@ -914,11 +948,7 @@ function Protection() {
     [repairing, setRepairing] = useState(false),
     [repairProgress,setRepairProgress]=useState<ThumbnailRepairProgress>(),
     [health,setHealth]=useState<LibraryHealth>(),
-    [queue, setQueue] = useState<{
-      pending: number;
-      failed: number;
-      pendingBytes: number;
-    }>();
+    [queue, setQueue] = useState<ProtectionQueueStats>();
   useEffect(() => {
     api.getLibrary().then((x) => {
       if (x) {
@@ -938,6 +968,11 @@ function Protection() {
     const timer=window.setInterval(poll,350);
     return()=>window.clearInterval(timer);
   },[repairing]);
+  useEffect(()=>{
+    if(!queue?.processing)return;
+    const timer=window.setInterval(()=>api.protectionQueue().then(setQueue).catch(()=>{}),2000);
+    return()=>window.clearInterval(timer);
+  },[queue?.processing]);
   const choose = async (set: (x: string) => void) => {
     const p = await api.chooseFolder();
     if (p) set(p);
@@ -1060,11 +1095,14 @@ function Protection() {
         </article>
         <article>
           <h3>Fila de proteção</h3>
-          <p>
-            <strong>{queue?.pending ?? 0}</strong> pendentes ·{" "}
-            {formatBytes(queue?.pendingBytes ?? 0)} ·{" "}
-            <strong>{queue?.failed ?? 0}</strong> falhas
-          </p>
+          <div className="protection-queue-stats">
+            <span><strong>{queue?.pending ?? 0}</strong><small>Pendentes</small></span>
+            <span><strong>{queue?.processing ?? 0}</strong><small>Em cópia</small></span>
+            <span><strong>{queue?.completed ?? 0}</strong><small>Protegidos</small></span>
+            <span className={(queue?.failed??0)>0?"attention":""}><strong>{queue?.failed ?? 0}</strong><small>Falhas</small></span>
+          </div>
+          <div className="protection-queue-progress" role="progressbar" aria-label="Cobertura da fila de proteção" aria-valuenow={queue&&(queue.pending+queue.processing+queue.completed+queue.failed)>0?Math.round(queue.completed/(queue.pending+queue.processing+queue.completed+queue.failed)*100):100}><i style={{width:`${queue&&(queue.pending+queue.processing+queue.completed+queue.failed)>0?Math.round(queue.completed/(queue.pending+queue.processing+queue.completed+queue.failed)*100):100}%`}}/></div>
+          <p>{formatBytes(queue?.pendingBytes ?? 0)} aguardando proteção{queue?.processing?" · atualização automática a cada 2 segundos":""}</p>
           <button className="primary" disabled={!queue?.pending && !queue?.failed} onClick={async()=>{try{await api.protectPending();setResult("Proteção iniciada em segundo plano. O progresso está disponível em Atividade.");setQueue(await api.protectionQueue())}catch(error){setResult(String(error))}}}><ShieldCheck/>Proteger agora</button>
         </article>
         <article>

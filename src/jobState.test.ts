@@ -1,5 +1,5 @@
 import { describe,expect,it } from "vitest";
-import { isJobPollingFast,jobBucket,jobNextStep } from "./jobState";
+import { heartbeatLabel,isJobPollingFast,jobBucket,jobHeartbeat,jobNextStep } from "./jobState";
 import type { JobOverview } from "./types";
 
 const job=(state:string):JobOverview=>({jobId:"j",sourceName:"Fonte",sourcePath:"E:\\DCIM",state,stage:state,processedItems:10,totalItems:10,processedBytes:100,totalBytes:100,overallPercent:100,imported:10,duplicates:0,excluded:0,failed:0,createdAt:"2026-01-01T00:00:00Z",updatedAt:"2026-01-01T00:01:00Z"});
@@ -20,5 +20,12 @@ describe("ciclo operacional dos jobs",()=>{
     expect(jobBucket("paused")).toBe("attention");
     expect(isJobPollingFast([job("paused")])).toBe(false);
     expect(jobNextStep(job("paused"))).toContain("Retome ou cancele");
+  });
+  it("sinaliza execução ativa sem atualização sem confundir fila e pausa",()=>{
+    const now=new Date("2026-01-01T00:04:00Z").getTime();
+    expect(jobHeartbeat(job("analyzing"),now)).toBe("stalled");
+    expect(heartbeatLabel(job("analyzing"),now)).toContain("3 min");
+    expect(jobHeartbeat(job("queued"),now)).toBe("waiting");
+    expect(jobHeartbeat(job("paused"),now)).toBe("current");
   });
 });

@@ -1,174 +1,57 @@
-# Roadmap do Lumina após a 0.12
+# Roadmap do Lumina
 
-Este roadmap traduz a visão de produto em ciclos verificáveis. Datas são definidas somente quando capacidade e escopo estiverem confirmados; segurança, integridade e retomada não são negociadas para cumprir prazo.
+O Lumina preserva quatro inegociáveis em toda entrega: fontes permanecem somente leitura; nenhuma proteção é declarada sem verificação; todo trabalho longo é retomável e observável; a galeria continua responsiva durante processamento.
 
-## Agora — 0.13: robustez de produto
+## Concluído — 0.18.5: estabilidade em catálogo real
 
-Objetivo: transformar a base tecnicamente segura em uma experiência previsível sob uso real.
+- Pipeline de metadados limitado por lotes, backpressure de previews e decodificação isolada.
+- Filas duráveis, retomada após interrupção, diagnósticos sanitizados e cache reconstruível invisível.
+- Galeria virtualizada, preview HD progressivo, vídeo fluido, inspeção, comparação, tags, favoritos e organização local.
+- Homologação do usuário com aproximadamente 9.300 arquivos sem novo travamento.
 
-- Tornar miniaturas transparentes: sob demanda para itens visíveis, prefetch curto e preenchimento silencioso em background.
-- Recuperar filas internas sem modal, eliminar trabalho duplicado e priorizar interação.
-- Separar claramente trabalhos iniciados pelo usuário de manutenção reconstruível.
-- Cobrir restart, falta de espaço, volumes offline e falhas de ferramentas em E2E do aplicativo empacotado.
-- Alinhar CI ao gate de release: formato, testes, build, Clippy, auditorias e smoke.
-- Produzir diagnóstico exportável sem caminhos pessoais ou metadados sensíveis.
-- Reduzir os maiores pontos de acoplamento no backend e frontend sem reescrita ampla.
+O histórico detalhado permanece em `RELEASE-0.18-BETA.md` e nos hotfixes 0.18.1–0.18.5.
 
-Critérios de saída:
+## Entrega atual — 0.19: operação e curadoria
 
-- Nenhuma manutenção de cache exige decisão do usuário ao abrir o app.
-- Uma tarefa efetiva de miniatura por mídia, independentemente da importação que a originou.
-- Itens visíveis recebem prioridade e a galeria permanece interativa sob carga.
-- Fechar e reabrir não perde trabalho nem cria trabalho redundante.
-- Gate automatizado e roteiro funcional passam em pacote portátil, EXE e MSI.
+### Atividade compreensível
 
-## Depois — 0.14: revisão segura de duplicatas
+- Separar execução, atenção e histórico.
+- Diferenciar espera legítima de job ativo sem heartbeat.
+- Exibir última evolução, próxima ação, progresso, pausa, retomada, cancelamento e repetição de falhas.
+- Mostrar manutenção de metadados e previews como trabalho silencioso, sem bloquear a abertura.
 
-Objetivo: ajudar a decidir, sem transformar estimativas em exclusão automática.
+### Duplicatas progressivas e seguras
 
-- Agrupar ocorrências idênticas e explicar origem, proteção e espaço potencial.
-- Persistir decisões por ocorrência: manter, revisar e candidata a remoção.
-- Exigir réplica verificada e confirmação explícita antes de qualquer remoção futura.
-- Oferecer simulação, relatório e plano de recuperação antes de executar.
-- Manter fontes somente leitura por padrão; qualquer exceção será um modo separado e deliberado.
+- Listagem compacta com pills de quantidade, espaço, proteção e decisão.
+- Buscar ocorrências somente quando o grupo for expandido, evitando N+1 no catálogo grande.
+- Seleção múltipla e decisão transacional em lote.
+- Bloquear candidatas à remoção sem réplica verificada; manter simulação e relatório sem excluir originais.
 
-O ciclo foi ampliado para a beta de revisão e descoberta descrita em [SPEC-0.14-BETA.md](SPEC-0.14-BETA.md): sincronização incremental, Central de Revisão, visualizador avançado, álbuns inteligentes e saúde operacional fazem parte do mesmo gate de produto.
+### Produtividade da galeria
 
-A beta.4 acrescenta o fechamento do ciclo de homologação: preview HD progressivo, EXIF sob demanda, observabilidade de crashes, estados explícitos de duplicatas, progresso real de reparos e redesign do sistema de interação.
+- Preservar grade/lista virtualizadas, segmentação fixa, filtros agregadores e seleção destacada.
+- Manter inspeção embutida, preview HD, zoom, tela cheia, vídeo e comparação lado a lado.
+- Manter tags, favoritos, pessoas e álbuns reversíveis no catálogo.
 
-## Próxima evolução de UX — galeria unificada
+### Proteção operacional
 
-Feedback registrado após a beta.4:
+- Apresentar pendentes, em cópia, protegidos, falhas, volume restante e cobertura.
+- Atualizar o estado enquanto a proteção executa e tornar falhas acionáveis na Atividade.
 
-- Redesenhar a visualização em lista para oferecer hierarquia, densidade e leitura de metadados compatíveis com a grade.
-- Substituir a dependência da barra lateral por uma faixa fixa de segmentação dentro da galeria.
-- Fazer a segmentação conviver com grade e lista, preservando a maior área possível para as mídias.
-- Manter filtros, agregadores, busca, ordenação, seleção e contagens no mesmo contexto em ambas as visualizações.
-- Preservar posição, seleção e filtros ao alternar entre grade e lista.
-- Tratar responsividade, navegação por teclado, foco, estados vazios e grandes catálogos como critérios de aceite do redesign.
+### Gate da beta
 
-Essa evolução será especificada e prototipada depois da homologação da beta.4; ela não altera o escopo binário desta candidata.
+- Testes frontend e Rust, TypeScript/Vite, formatação, Clippy, build release e smoke do pacote portátil.
+- Instalação NSIS/MSI e roteiro manual em catálogo de homologação com carga concorrente.
 
-Situação em `0.15.0-beta.1`:
+## Próximo — 0.20: automação assistida
 
-- Homologados: workspace dividido, inspetor embutido, segmentação fixa, lista operacional responsiva, sequência recolhível e comportamento com grande quantidade de arquivos.
+- Regras de curadoria salvas e filas de revisão configuráveis.
+- Busca combinada por data, câmera, local, pessoa, tag e qualidade técnica.
+- Comparação orientada a sequências e escolha assistida, sempre explicável e reversível.
+- Perfis explícitos de consumo para bateria, CPU e disco.
 
-## Próximas entregas — ciclo 0.15
+## Depois — 1.0: prontidão de produção
 
-### Beta.2 — produtividade da galeria
-
-- Ordenação persistente no backend, com paginação por cursor coerente para data, nome e tamanho.
-- Densidade confortável e compacta específica para a lista.
-- Seleção por intervalo, selecionar itens carregados e ações em lote mais claras.
-- Cabeçalhos acionáveis com direção de ordenação e descrição acessível.
-- Preservação de posição, seleção e item inspecionado durante as mudanças de representação.
-
-Critérios de saída:
-
-- Nenhuma ordenação é simulada apenas sobre a página já carregada.
-- Grade e lista retornam exatamente a mesma ordem e conjunto.
-- Operações em lote informam escopo, resultado e possibilidade de desfazer.
-- Testes cobrem troca de modo, paginação, seleção por intervalo e catálogos grandes.
-
-### Beta.3 — inspeção e comparação
-
-- Organizar metadados em seções recolhíveis: captura, arquivo, mídia, localização e catálogo.
-- Copiar valores e abrir a localização do arquivo com ação explícita.
-- Comparação lado a lado acionável a partir da galeria e integrada às duplicatas.
-- Sincronizar zoom, navegação e metadados das duas mídias quando fizer sentido.
-- Refinar feedback de preview imediato, geração HD e indisponibilidade.
-
-Critérios de saída:
-
-- Navegação nunca exibe preview ou metadados da mídia anterior.
-- Comparação não infere duplicidade nem permite remoção automática.
-- Valores ausentes são explicados e seções mantêm sua preferência.
-
-### Beta.4 — trabalho invisível e confiabilidade
-
-- Priorizar miniaturas do viewport e aplicar prefetch curto na direção da navegação.
-- Consolidar trabalhos duplicados e retomar manutenção reconstruível sem modal.
-- Controles de impacto para CPU, disco e bateria durante processamento em segundo plano.
-- Histórico local de sincronização, reparo e falhas acionáveis.
-- Diagnóstico exportável sanitizado e roteiro de recuperação validado.
-
-Critérios de saída:
-
-- Abrir o aplicativo nunca exige decisão sobre cache reconstruível.
-- A interação continua prioritária sob carga.
-- Reinício, fonte offline, pouco espaço e falha de ferramenta passam no aplicativo empacotado.
-
-### Fechamento 0.15
-
-- Regressão completa da biblioteca, benchmark de grande volume e validação no dispositivo oficial.
-- Revisão de acessibilidade em 100%, 125% e 150% de escala do Windows.
-- Atualização da baseline visual com capturas aprovadas.
-- MSI, instalador, portátil, hashes, documentação e release publicados juntos.
-
-Situação da candidata consolidada `0.15.0-beta.2`: os temas Beta.2, Beta.3 e Beta.4 acima foram reunidos em um único pacote por decisão do responsável pelo produto. Os itens permanecem separados neste documento como trilhas de aceite, não como releases independentes.
-
-Refinamento incorporado à mesma candidata, sem reiniciar o ciclo: visão geral orientada a memórias; datas extremas de fotos e vídeos; capacidade e proteção consolidadas; composição fotos/vídeos; inventário técnico separado e normalizado; insights em cards; comparação de desempenho entre jobs; seleção mais evidente; preview sem faixa inferior; metadados focados nas decisões do usuário.
-
-## Agora — 0.16: clareza operacional e lapidação
-
-- `0.15.0-beta.2` homologada como baseline estável.
-- Atividade passa a distinguir execução, ação necessária e histórico, com próximo passo explícito e atualização adaptativa.
-- Duplicatas passam a usar lista compacta, pills, filtros, ordenação, expansão sob demanda e carregamento progressivo.
-- Estados de jobs são centralizados e implementações legadas removidas.
-- Todas as seções permanecem no gate de regressão antes de novas funcionalidades de descoberta.
-
-Critérios: nenhum job visualmente preso; nenhum preview de duplicata carregado antes da expansão; estados e ações coerentes; pacote instalado aprovado no dispositivo oficial.
-
-## Exploração — 0.16+: descoberta e portabilidade
-
-- Similaridade visual local e explicável.
-- Pessoas/rostos com processamento local, consentimento e controles de privacidade.
-- Ingestão assistida de Google Takeout e exportações equivalentes.
-- Confirmação de backup remoto por integração verificável, sem inferir upload por pasta sincronizada.
-- Portabilidade de catálogo, backup de configuração e migração entre computadores.
-- Acesso remoto somente depois de um modelo de ameaças e autenticação adequados.
-
-## Agora — 0.17: descoberta e curadoria local
-
-- A `v0.16.0-beta.1` foi congelada como baseline histórica; a incerteza de jobs técnicos foi carregada como bloqueador, não ocultada por uma promoção estável.
-- Atividades humanas e manutenção reconstruível passam a ter representações independentes.
-- Índice visual perceptual, incremental e local sustenta sugestões de imagens parecidas.
-- Memórias e sequências temporais transformam datas e equipamentos já catalogados em navegação útil.
-- Descobertas abrem diretamente a galeria e a comparação avançada.
-- Similaridade permanece explicável, não equivale a duplicidade e nunca autoriza exclusão.
-
-Critérios: nenhuma manutenção interna aparenta ser job preso; índice funciona sem modificar originais; grandes catálogos não usam comparação integral quadrática; falhas são isoladas; pacote instalado passa no dispositivo oficial.
-
-## Agora — 0.18: estabilidade, proteção e organização avançada
-
-- Gate zero de estabilidade para catálogos grandes: reproduzir e corrigir a degradação progressiva de desempenho e o fechamento inesperado observado na 0.17 com aproximadamente 9.300 arquivos, investigando prioritariamente enriquecimento de metadados, filas, concorrência, memória e processos externos.
-- Teste de carga e permanência com catálogo representativo: importar, enriquecer metadados, gerar miniaturas, navegar e manter o aplicativo aberto sob processamento até demonstrar memória estabilizada, interface responsiva, filas convergentes e ausência de crash.
-- Instrumentação operacional local e sanitizada: logs estruturados e correlacionados por sessão/job/item, métricas de duração, throughput, tamanho das filas, memória, CPU, falhas e reinícios, além de breadcrumbs das últimas ações relevantes.
-- Pacote de diagnóstico exportável em um clique, contendo logs rotativos, versão/build, configuração operacional não sensível, resumo do catálogo, estados das filas e relatório de crash/travamento, sem copiar mídias, credenciais ou metadados pessoais desnecessários.
-- Captura de falhas no frontend, backend e processos auxiliares, com encerramentos incompletos detectados na abertura seguinte e orientação clara para exportar o diagnóstico.
-- Corrigir `Proteger agora` de ponta a ponta: comando, fila durável, progresso observável, validação do destino, verificação por hash, retomada e falhas acionáveis.
-- Pessoas locais e opcionais, com associação deliberada, correção e remoção integral do índice. Reconhecimento facial automático fica condicionado a um modelo local auditado; não será simulado nesta beta.
-- Exploração por mapa, cidade, região e viagem para mídias com GPS.
-- Tags hierárquicas, álbuns por regras e operações em lote reversíveis.
-- Busca visual semântica local será avaliada somente com modelo, desempenho e privacidade validados; não será simulada por palavras-chave.
-
-Critérios adicionais de saída da 0.18:
-
-- O cenário de aproximadamente 9.300 arquivos não apresenta crescimento contínuo e injustificado de memória, perda sustentada de responsividade ou fechamento inesperado durante o processamento de metadados.
-- Filas de metadados convergem, podem ser pausadas e retomadas e não duplicam trabalho após reinício.
-- Todo crash ou encerramento incompleto deixa evidência local suficiente para correlacionar sessão, job, etapa e último item processado, inclusive no dispositivo de homologação.
-- O diagnóstico pode ser exportado sem ferramentas de desenvolvimento e contém dados suficientes para análise remota, respeitando os controles de privacidade.
-- Logs possuem rotação e limite de armazenamento; a observabilidade não pode degradar perceptivelmente o desempenho nem crescer sem limite.
-- A candidata passa por teste prolongado no aplicativo empacotado, além dos testes automatizados, build, auditoria e smoke usuais.
-
-## Trilhas contínuas
-
-- Compatibilidade real de formatos e fixtures RAW/vídeo.
-- Acessibilidade, linguagem clara e operações reversíveis.
-- Performance medida em catálogos e arquivos reais: latência, throughput, CPU e memória.
-- Segurança de dependências, protocolo local, caminhos e processos externos.
-- Documentação de decisões arquiteturais e redução incremental de módulos grandes.
-
-## Fora de compromisso atual
-
-Aplicativo móvel, edição de imagem, rede social, nuvem própria e exclusão autônoma não fazem parte do plano vigente.
+- Telemetria local longitudinal de SLOs, migração e recuperação validadas em múltiplos dispositivos.
+- Assinatura e distribuição do instalador, política de atualização e compatibilidade documentada.
+- Fechamento dos critérios de segurança, acessibilidade, desempenho e suporte definidos para produção.

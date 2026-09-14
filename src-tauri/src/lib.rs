@@ -909,6 +909,16 @@ fn list_duplicates(state: State<AppState>) -> Result<Vec<DuplicateGroup>, String
     duplicates::list(&current(&state)?)
 }
 #[tauri::command]
+fn get_duplicate_occurrences(
+    asset_id: String,
+    state: State<AppState>,
+) -> Result<Vec<Occurrence>, String> {
+    if !valid_thumbnail_asset_id(&asset_id) {
+        return Err("Identificador invalido".into());
+    }
+    duplicates::occurrences(&current(&state)?, &asset_id)
+}
+#[tauri::command]
 fn get_duplicate_status(state: State<AppState>) -> Result<DuplicateStatus, String> {
     duplicates::status(&current(&state)?)
 }
@@ -920,6 +930,15 @@ fn update_duplicate_decision(
     state: State<AppState>,
 ) -> Result<BatchResult, String> {
     duplicates::decide_group(&current(&state)?, &asset_id, &decision, &reason)
+}
+#[tauri::command]
+fn update_duplicate_decisions(
+    asset_ids: Vec<String>,
+    decision: String,
+    state: State<AppState>,
+) -> Result<BatchResult, String> {
+    let ids = checked_ids(asset_ids)?;
+    duplicates::decide_groups(&current(&state)?, &ids, &decision)
 }
 #[tauri::command]
 fn update_occurrence_decision(
@@ -2094,8 +2113,10 @@ pub fn run() {
             list_assets,
             search_gallery,
             list_duplicates,
+            get_duplicate_occurrences,
             get_duplicate_status,
             update_duplicate_decision,
+            update_duplicate_decisions,
             update_occurrence_decision,
             create_cleanup_plan,
             export_cleanup_plan,
