@@ -617,6 +617,7 @@ pub struct DiscoveryGroup {
     pub items: Vec<DiscoveryItem>,
     pub recommended_id: Option<String>,
     pub recommendation: Option<String>,
+    pub place_key: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -628,6 +629,23 @@ pub struct DiscoveryOverview {
     pub memories: Vec<DiscoveryGroup>,
     pub places: Vec<DiscoveryGroup>,
     pub trips: Vec<DiscoveryGroup>,
+    pub location_status: LocationStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocationStatus {
+    pub geotagged: i64,
+    pub named: i64,
+    pub approximate: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocationResolveResult {
+    pub resolved: i64,
+    pub named: i64,
+    pub approximate: i64,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

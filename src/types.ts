@@ -42,7 +42,9 @@ export interface Album { id: string; name: string; assetCount: number; cover?: s
 export interface JobOverview { jobId:string; sourceName:string; sourcePath:string; state:string; stage:string; processedItems:number; totalItems:number; processedBytes:number; totalBytes:number; overallPercent:number; bytesPerSecond?:number; estimatedSecondsRemaining?:number; imported:number; duplicates:number; excluded:number; failed:number; createdAt:string; updatedAt:string; interruptionReason?:string }
 export interface BackgroundWorkStatus {state:"idle"|"pending"|"processing"|"attention";stage:"thumbnail"|"technical_metadata";pending:number;processing:number;completed:number;failed:number;total:number;progressPercent:number;updatedAt?:string}
 export interface DiscoveryItem {id:string;filename:string;mediaType:"photo"|"video"|"raw";capturedAt:string;camera?:string;qualityScore?:number;visualLabels?:string[]}
-export interface DiscoveryGroup {id:string;title:string;detail:string;score:number;items:DiscoveryItem[];recommendedId?:string;recommendation?:string}
-export interface DiscoveryOverview {indexed:number;indexable:number;similar:DiscoveryGroup[];sequences:DiscoveryGroup[];memories:DiscoveryGroup[];places:DiscoveryGroup[];trips:DiscoveryGroup[]}
+export interface DiscoveryGroup {id:string;title:string;detail:string;score:number;items:DiscoveryItem[];recommendedId?:string;recommendation?:string;placeKey?:string}
+export interface LocationStatus {geotagged:number;named:number;approximate:number}
+export interface LocationResolveResult {resolved:number;named:number;approximate:number}
+export interface DiscoveryOverview {indexed:number;indexable:number;similar:DiscoveryGroup[];sequences:DiscoveryGroup[];memories:DiscoveryGroup[];places:DiscoveryGroup[];trips:DiscoveryGroup[];locationStatus:LocationStatus}
 export interface DiscoveryIndexResult {indexed:number;skipped:number;failed:number}
 export interface BatchResult { affected:number }

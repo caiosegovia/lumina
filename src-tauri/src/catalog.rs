@@ -92,6 +92,11 @@ pub fn open(path: &Path) -> Result<Connection> {
         [],
         |row| row.get::<_, bool>(0),
     )?;
+    let needs_v16 = db.query_row(
+        "SELECT NOT EXISTS(SELECT 1 FROM schema_migrations WHERE version=16)",
+        [],
+        |row| row.get::<_, bool>(0),
+    )?;
     db.execute_batch("BEGIN IMMEDIATE;
       CREATE TABLE IF NOT EXISTS job_items(
         id INTEGER PRIMARY KEY AUTOINCREMENT,job_id TEXT NOT NULL REFERENCES jobs(id),source_path TEXT NOT NULL,filename TEXT NOT NULL,extension TEXT NOT NULL,media_type TEXT NOT NULL,
@@ -359,6 +364,25 @@ pub fn open(path: &Path) -> Result<Connection> {
           INSERT INTO schema_migrations(version,applied_at)VALUES(15,datetime('now'));
           COMMIT;")?;
     }
+    if needs_v16 {
+        db.execute_batch(
+            "BEGIN IMMEDIATE;
+          CREATE TABLE location_cells(
+            cell_key TEXT PRIMARY KEY,latitude REAL NOT NULL,longitude REAL NOT NULL,
+            city TEXT,region TEXT,country TEXT,display_name TEXT NOT NULL,
+            source TEXT NOT NULL CHECK(source IN('offline','manual','approximate')),
+            precision_km REAL NOT NULL,resolved_at TEXT NOT NULL);
+          CREATE TABLE asset_locations(
+            asset_id TEXT PRIMARY KEY REFERENCES assets(id) ON DELETE CASCADE,
+            cell_key TEXT NOT NULL REFERENCES location_cells(cell_key) ON DELETE CASCADE);
+          CREATE INDEX idx_asset_locations_cell ON asset_locations(cell_key,asset_id);
+          CREATE TABLE location_overrides(
+            cell_key TEXT PRIMARY KEY REFERENCES location_cells(cell_key) ON DELETE CASCADE,
+            display_name TEXT NOT NULL,updated_at TEXT NOT NULL);
+          INSERT INTO schema_migrations(version,applied_at)VALUES(16,datetime('now'));
+          COMMIT;",
+        )?;
+    }
     if needs_v11 {
         db.execute_batch("DROP TRIGGER IF EXISTS dashboard_asset_shape_invalidate; DROP TRIGGER IF EXISTS dashboard_asset_shape_rollup;
       CREATE TRIGGER dashboard_asset_shape_rollup AFTER UPDATE OF captured_at,media_type,extension,camera,bytes ON assets BEGIN
@@ -453,7 +477,7 @@ pub fn open(path: &Path) -> Result<Connection> {
             )?;
         }
     }
-    db.pragma_update(None, "user_version", 15)?;
+    db.pragma_update(None, "user_version", 16)?;
     db.execute_batch("PRAGMA optimize;")?;
     db.execute(
         "UPDATE jobs SET state='waiting_space',stage='space_check',finished_at=NULL WHERE state='failed' AND processed_items=0 AND interruption_reason LIKE 'Espaço insuficiente:%'",
@@ -723,13 +747,13 @@ mod tests {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            15
+            16
         );
         assert_eq!(
             db.query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row
                 .get::<_, i64>(0))
                 .unwrap(),
-            15
+            16
         );
         let technical_columns = db
             .prepare("PRAGMA table_info(asset_technical_metadata)")
@@ -881,6 +905,21 @@ mod tests {
             )
             .unwrap(),
             0
+        );
+        drop(db);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn v16_adds_private_location_cache_and_overrides() {
+        let root = std::env::temp_dir().join(Uuid::new_v4().to_string());
+        fs::create_dir_all(&root).unwrap();
+        let db = open(&root.join("places.sqlite")).unwrap();
+        let tables: i64 = db.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN('location_cells','asset_locations','location_overrides')",[],|row|row.get(0)).unwrap();
+        assert_eq!(tables, 3);
+        assert_eq!(
+            db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            16
         );
         drop(db);
         fs::remove_dir_all(root).unwrap();

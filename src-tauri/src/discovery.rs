@@ -2,6 +2,7 @@ use crate::{
     catalog,
     models::{
         DiscoveryGroup, DiscoveryIndexResult, DiscoveryItem, DiscoveryOverview, LibraryConfig,
+        LocationResolveResult, LocationStatus,
     },
 };
 use chrono::{Datelike, NaiveDateTime, Utc};
@@ -13,6 +14,137 @@ use std::{
 };
 
 const ALGORITHM_VERSION: i64 = 1;
+
+const CITIES: &[(&str, &str, &str, f64, f64)] = &[
+    ("São Paulo", "SP", "Brasil", -23.5505, -46.6333),
+    ("Rio de Janeiro", "RJ", "Brasil", -22.9068, -43.1729),
+    ("Brasília", "DF", "Brasil", -15.7939, -47.8828),
+    ("Salvador", "BA", "Brasil", -12.9777, -38.5016),
+    ("Fortaleza", "CE", "Brasil", -3.7319, -38.5267),
+    ("Belo Horizonte", "MG", "Brasil", -19.9167, -43.9345),
+    ("Curitiba", "PR", "Brasil", -25.4284, -49.2733),
+    ("Recife", "PE", "Brasil", -8.0476, -34.8770),
+    ("Porto Alegre", "RS", "Brasil", -30.0346, -51.2177),
+    ("Manaus", "AM", "Brasil", -3.1190, -60.0217),
+    ("Belém", "PA", "Brasil", -1.4558, -48.4902),
+    ("Goiânia", "GO", "Brasil", -16.6869, -49.2648),
+    ("Campinas", "SP", "Brasil", -22.9056, -47.0608),
+    ("Santos", "SP", "Brasil", -23.9608, -46.3336),
+    ("Florianópolis", "SC", "Brasil", -27.5954, -48.5480),
+    ("Vitória", "ES", "Brasil", -20.3155, -40.3128),
+    ("Natal", "RN", "Brasil", -5.7793, -35.2009),
+    ("Maceió", "AL", "Brasil", -9.6498, -35.7089),
+    ("João Pessoa", "PB", "Brasil", -7.1195, -34.8450),
+    ("São Luís", "MA", "Brasil", -2.5307, -44.3068),
+    ("Lisboa", "Lisboa", "Portugal", 38.7223, -9.1393),
+    ("Porto", "Porto", "Portugal", 41.1579, -8.6291),
+    ("Nova York", "NY", "Estados Unidos", 40.7128, -74.0060),
+    ("Miami", "FL", "Estados Unidos", 25.7617, -80.1918),
+    ("Paris", "Île-de-France", "França", 48.8566, 2.3522),
+    ("Londres", "Inglaterra", "Reino Unido", 51.5074, -0.1278),
+    ("Roma", "Lácio", "Itália", 41.9028, 12.4964),
+    (
+        "Buenos Aires",
+        "Buenos Aires",
+        "Argentina",
+        -34.6037,
+        -58.3816,
+    ),
+];
+
+fn distance_km(a: f64, b: f64, c: f64, d: f64) -> f64 {
+    let r = 6371.0;
+    let x = (c - a).to_radians();
+    let y = (d - b).to_radians();
+    let h = (x / 2.0).sin().powi(2)
+        + a.to_radians().cos() * c.to_radians().cos() * (y / 2.0).sin().powi(2);
+    2.0 * r * h.sqrt().asin()
+}
+fn cell_key(lat: f64, lon: f64) -> String {
+    format!(
+        "{:.2}:{:.2}",
+        (lat * 20.0).round() / 20.0,
+        (lon * 20.0).round() / 20.0
+    )
+}
+
+pub fn resolve_locations(cfg: &LibraryConfig) -> Result<LocationResolveResult, String> {
+    let mut conn = db(cfg)?;
+    let rows = {
+        let mut s=conn.prepare("SELECT id,latitude,longitude FROM assets WHERE latitude IS NOT NULL AND longitude IS NOT NULL").map_err(|e|e.to_string())?;
+        let values = s
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, f64>(1)?,
+                    r.get::<_, f64>(2)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        values
+    };
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let now = Utc::now().to_rfc3339();
+    let mut named = 0;
+    let mut approximate = 0;
+    for (id, lat, lon) in &rows {
+        let key = cell_key(*lat, *lon);
+        let nearest = CITIES
+            .iter()
+            .map(|city| (city, distance_km(*lat, *lon, city.3, city.4)))
+            .min_by(|a, b| a.1.total_cmp(&b.1));
+        let (city, region, country, label, source, precision) = match nearest {
+            Some((c, d)) if d <= 100.0 => (
+                Some(c.0),
+                Some(c.1),
+                Some(c.2),
+                format!("{}, {} · {}", c.0, c.1, c.2),
+                "offline",
+                d,
+            ),
+            _ => (
+                None,
+                None,
+                None,
+                format!("Região {:.2}, {:.2}", lat, lon),
+                "approximate",
+                8.0,
+            ),
+        };
+        if source == "offline" {
+            named += 1
+        } else {
+            approximate += 1
+        };
+        tx.execute("INSERT INTO location_cells(cell_key,latitude,longitude,city,region,country,display_name,source,precision_km,resolved_at)VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)ON CONFLICT(cell_key)DO NOTHING",params![key,lat,lon,city,region,country,label,source,precision,now]).map_err(|e|e.to_string())?;
+        tx.execute("INSERT INTO asset_locations(asset_id,cell_key)VALUES(?1,?2)ON CONFLICT(asset_id)DO UPDATE SET cell_key=excluded.cell_key",params![id,key]).map_err(|e|e.to_string())?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(LocationResolveResult {
+        resolved: rows.len() as i64,
+        named,
+        approximate,
+    })
+}
+
+pub fn rename_location(cfg: &LibraryConfig, key: &str, name: &str) -> Result<(), String> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 120 {
+        return Err("Nome do lugar inválido".into());
+    }
+    let conn = db(cfg)?;
+    let affected=conn.execute("INSERT INTO location_overrides(cell_key,display_name,updated_at)SELECT cell_key,?2,?3 FROM location_cells WHERE cell_key=?1 ON CONFLICT(cell_key)DO UPDATE SET display_name=excluded.display_name,updated_at=excluded.updated_at",params![key,name,Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
+    if affected == 0 {
+        return Err("Lugar não encontrado".into());
+    }
+    Ok(())
+}
+
+fn location_status(conn: &rusqlite::Connection) -> Result<LocationStatus, String> {
+    conn.query_row("SELECT (SELECT COUNT(*) FROM assets WHERE latitude IS NOT NULL AND longitude IS NOT NULL),(SELECT COUNT(*) FROM asset_locations al JOIN location_cells c ON c.cell_key=al.cell_key WHERE c.source='offline' OR EXISTS(SELECT 1 FROM location_overrides o WHERE o.cell_key=c.cell_key)),(SELECT COUNT(*) FROM asset_locations al JOIN location_cells c ON c.cell_key=al.cell_key WHERE c.source='approximate' AND NOT EXISTS(SELECT 1 FROM location_overrides o WHERE o.cell_key=c.cell_key))",[],|r|Ok(LocationStatus{geotagged:r.get(0)?,named:r.get(1)?,approximate:r.get(2)?})).map_err(|e|e.to_string())
+}
 
 fn db(cfg: &LibraryConfig) -> Result<rusqlite::Connection, String> {
     catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite"))
@@ -202,8 +334,9 @@ fn location_groups(
     conn: &rusqlite::Connection,
     by_id: &HashMap<String, DiscoveryItem>,
 ) -> Result<(Vec<DiscoveryGroup>, Vec<DiscoveryGroup>), String> {
+    type PlaceEntry = (String, Option<String>, Option<String>, f64, f64);
     let mut statement = conn
-        .prepare("SELECT id,captured_at,latitude,longitude FROM assets WHERE latitude IS NOT NULL AND longitude IS NOT NULL ORDER BY captured_at,id")
+        .prepare("SELECT a.id,a.captured_at,a.latitude,a.longitude,al.cell_key,COALESCE(o.display_name,c.display_name) FROM assets a LEFT JOIN asset_locations al ON al.asset_id=a.id LEFT JOIN location_cells c ON c.cell_key=al.cell_key LEFT JOIN location_overrides o ON o.cell_key=al.cell_key WHERE a.latitude IS NOT NULL AND a.longitude IS NOT NULL ORDER BY a.captured_at,a.id")
         .map_err(|error| error.to_string())?;
     let rows = statement
         .query_map([], |row| {
@@ -212,28 +345,41 @@ fn location_groups(
                 row.get::<_, String>(1)?,
                 row.get::<_, f64>(2)?,
                 row.get::<_, f64>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
             ))
         })
         .map_err(|error| error.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| error.to_string())?;
-    let mut buckets: HashMap<(i32, i32), Vec<String>> = HashMap::new();
-    for (id, _, latitude, longitude) in &rows {
-        buckets
-            .entry((
+    let mut buckets: HashMap<String, Vec<PlaceEntry>> = HashMap::new();
+    for (id, _, latitude, longitude, key, label) in &rows {
+        let group_key = key.clone().unwrap_or_else(|| {
+            format!(
+                "approx:{}:{}",
                 (latitude * 10.0).round() as i32,
-                (longitude * 10.0).round() as i32,
-            ))
-            .or_default()
-            .push(id.clone());
+                (longitude * 10.0).round() as i32
+            )
+        });
+        buckets.entry(group_key).or_default().push((
+            id.clone(),
+            key.clone(),
+            label.clone(),
+            *latitude,
+            *longitude,
+        ));
     }
     let mut places = buckets
         .into_iter()
-        .map(|((lat, lon), ids)| {
+        .map(|(group_key, entries)| {
+            let ids = entries.iter().map(|x| x.0.clone()).collect::<Vec<_>>();
             let count = ids.len();
             DiscoveryGroup {
-                id: format!("place-{lat}-{lon}"),
-                title: format!("Região {:.1}, {:.1}", lat as f64 / 10.0, lon as f64 / 10.0),
+                id: format!("place-{group_key}"),
+                title: entries
+                    .iter()
+                    .find_map(|x| x.2.clone())
+                    .unwrap_or_else(|| format!("Região {:.1}, {:.1}", entries[0].3, entries[0].4)),
                 detail: format!("{count} registros com localização"),
                 score: count as f64,
                 items: ids
@@ -246,6 +392,7 @@ fn location_groups(
                     "Agrupamento local aproximado; nenhum local foi inferido para arquivos sem GPS"
                         .into(),
                 ),
+                place_key: entries.iter().find_map(|x| x.1.clone()),
             }
         })
         .collect::<Vec<_>>();
@@ -254,7 +401,7 @@ fn location_groups(
 
     let mut trip_rows: Vec<(String, NaiveDateTime, f64, f64)> = rows
         .into_iter()
-        .filter_map(|(id, date, lat, lon)| Some((id, parse_date(&date)?, lat, lon)))
+        .filter_map(|(id, date, lat, lon, _, _)| Some((id, parse_date(&date)?, lat, lon)))
         .collect();
     trip_rows.sort_by_key(|row| row.1);
     let mut trips = Vec::new();
@@ -293,6 +440,7 @@ fn location_groups(
             recommendation: Some(
                 "Sequência sugerida por datas próximas e coordenadas presentes".into(),
             ),
+            place_key: None,
         });
     };
     for row in trip_rows {
@@ -402,6 +550,7 @@ pub fn overview(cfg: &LibraryConfig) -> Result<DiscoveryOverview, String> {
                     recommendation: Some(
                         "Melhor equilíbrio estimado entre detalhe, resolução e luminosidade".into(),
                     ),
+                    place_key: None,
                 })
             }
         }
@@ -438,6 +587,7 @@ pub fn overview(cfg: &LibraryConfig) -> Result<DiscoveryOverview, String> {
                 items: taken,
                 recommended_id: None,
                 recommendation: None,
+                place_key: None,
             });
             if let Some(group) = sequences.last_mut() {
                 group.recommended_id = group
@@ -469,6 +619,7 @@ pub fn overview(cfg: &LibraryConfig) -> Result<DiscoveryOverview, String> {
             items: current,
             recommended_id: None,
             recommendation: None,
+            place_key: None,
         });
         if let Some(group) = sequences.last_mut() {
             group.recommended_id = group
@@ -511,6 +662,7 @@ pub fn overview(cfg: &LibraryConfig) -> Result<DiscoveryOverview, String> {
                 items,
                 recommended_id: None,
                 recommendation: None,
+                place_key: None,
             }
         })
         .collect::<Vec<_>>();
@@ -525,6 +677,7 @@ pub fn overview(cfg: &LibraryConfig) -> Result<DiscoveryOverview, String> {
         memories,
         places,
         trips,
+        location_status: location_status(&conn)?,
     })
 }
 
@@ -571,6 +724,16 @@ mod tests {
         assert_eq!(places[0].score, 3.0);
         assert_eq!(trips[0].items.len(), 3);
         drop(conn);
+        let resolved = resolve_locations(&cfg).unwrap();
+        assert_eq!(resolved.named, 3);
+        let found = overview(&cfg).unwrap();
+        assert_eq!(found.places[0].title, "São Paulo, SP · Brasil");
+        assert_eq!(found.location_status.named, 3);
+        rename_location(&cfg, found.places[0].place_key.as_deref().unwrap(), "Casa").unwrap();
+        assert_eq!(overview(&cfg).unwrap().places[0].title, "Casa");
+        let resolved_again = resolve_locations(&cfg).unwrap();
+        assert_eq!(resolved_again.resolved, 3);
+        assert_eq!(overview(&cfg).unwrap().places[0].title, "Casa");
         std::fs::remove_dir_all(root).unwrap();
     }
 

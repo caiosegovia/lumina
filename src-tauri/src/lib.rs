@@ -1066,6 +1066,19 @@ async fn get_discovery_overview(state: State<'_, AppState>) -> Result<DiscoveryO
         .await
         .map_err(|e| e.to_string())?
 }
+#[tauri::command]
+async fn resolve_location_names(
+    state: State<'_, AppState>,
+) -> Result<LocationResolveResult, String> {
+    let cfg = current(&state)?;
+    tauri::async_runtime::spawn_blocking(move || discovery::resolve_locations(&cfg))
+        .await
+        .map_err(|e| e.to_string())?
+}
+#[tauri::command]
+fn rename_location(place_key: String, name: String, state: State<AppState>) -> Result<(), String> {
+    discovery::rename_location(&current(&state)?, &place_key, &name)
+}
 fn checked_ids(ids: Vec<String>) -> Result<Vec<String>, String> {
     if ids.is_empty() || ids.len() > 5000 {
         return Err("Selecione entre 1 e 5.000 mídias".into());
@@ -2125,6 +2138,8 @@ pub fn run() {
             get_background_work_status,
             build_discovery_index,
             get_discovery_overview,
+            resolve_location_names,
+            rename_location,
             create_album,
             rename_album,
             delete_album,

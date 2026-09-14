@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="430" viewBox="0 0 1200 430" role="img" aria-labelledby="title desc">
+  <title id="title">Arquitetura de lugares do Lumina 0.20</title><desc id="desc">Fluxo local entre GPS, resolução, correção manual, descoberta e galeria.</desc>
+  <style>.bg{fill:#f7f5ef}.box{fill:#fff;stroke:#c9d3cc;stroke-width:2}.accent{fill:#e8f3ed;stroke:#39845c;stroke-width:2}.t{font:600 18px system-ui;fill:#183128}.s{font:14px system-ui;fill:#52635c}.a{stroke:#6b7b74;stroke-width:2;fill:none;marker-end:url(#m)}</style>
+  <defs><marker id="m" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4 0 8z" fill="#6b7b74"/></marker></defs>
+  <rect class="bg" width="1200" height="430" rx="24"/><text class="t" x="45" y="48">Lumina 0.20 · lugares privados, úteis e corrigíveis</text>
+  <g transform="translate(45 100)"><rect class="box" width="190" height="90" rx="14"/><text class="t" x="20" y="35">GPS catalogado</text><text class="s" x="20" y="62">sem alterar o EXIF</text></g>
+  <path class="a" d="M235 145H300"/><g transform="translate(300 100)"><rect class="accent" width="210" height="90" rx="14"/><text class="t" x="20" y="35">Resolvedor local</text><text class="s" x="20" y="62">Haversine + confiança</text></g>
+  <path class="a" d="M510 145H575"/><g transform="translate(575 75)"><rect class="box" width="225" height="140" rx="14"/><text class="t" x="20" y="35">Cache derivado</text><text class="s" x="20" y="64">cidade confiável</text><text class="s" x="20" y="88">ou região aproximada</text><text class="s" x="20" y="112">vínculo idempotente</text></g>
+  <path class="a" d="M800 145H865"/><g transform="translate(865 100)"><rect class="accent" width="290" height="90" rx="14"/><text class="t" x="20" y="35">Descoberta e Galeria</text><text class="s" x="20" y="62">agrupar, buscar e inspecionar</text></g>
+  <g transform="translate(575 285)"><rect class="box" width="225" height="90" rx="14"/><text class="t" x="20" y="35">Nome manual</text><text class="s" x="20" y="62">decisão humana soberana</text></g><path class="a" d="M688 285V220"/>
+  <text class="s" x="45" y="400">Sem rede · sem escrita nas fontes · sem inferência para arquivos sem GPS</text>
+</svg>

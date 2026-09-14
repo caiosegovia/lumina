@@ -11,7 +11,7 @@ O Lumina preserva quatro inegociáveis em toda entrega: fontes permanecem soment
 
 O histórico detalhado permanece em `RELEASE-0.18-BETA.md` e nos hotfixes 0.18.1–0.18.5.
 
-## Entrega atual — 0.19: operação e curadoria
+## Concluído — 0.19: operação e curadoria
 
 ### Atividade compreensível
 
@@ -43,12 +43,19 @@ O histórico detalhado permanece em `RELEASE-0.18-BETA.md` e nos hotfixes 0.18.1
 - Testes frontend e Rust, TypeScript/Vite, formatação, Clippy, build release e smoke do pacote portátil.
 - Instalação NSIS/MSI e roteiro manual em catálogo de homologação com carga concorrente.
 
-## Próximo — 0.20: automação assistida
+## Entrega atual — 0.20: lugares e curadoria privada
+
+- Resolução local de coordenadas em cidades, com fallback honesto para região aproximada.
+- Cache derivado e idempotente, correções manuais persistentes e nenhuma escrita em EXIF.
+- Contadores e ações de lugares em Descoberta, abertura do conjunto e busca textual integrada na Galeria.
+- Migração v16, testes de privacidade e regressão completa em instaladores Windows.
+
+## Próximo — 0.21: automação assistida
 
 - Regras de curadoria salvas e filas de revisão configuráveis.
-- Busca combinada por data, câmera, local, pessoa, tag e qualidade técnica.
+- Filtros explícitos por lugar, combinações salvas e navegação de viagens aprimorada.
 - Comparação orientada a sequências e escolha assistida, sempre explicável e reversível.
-- Perfis explícitos de consumo para bateria, CPU e disco.
+- Perfis explícitos de consumo para bateria, CPU e disco e expansão versionada da base geográfica.
 
 ## Depois — 1.0: prontidão de produção
 
