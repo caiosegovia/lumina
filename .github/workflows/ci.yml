@@ -35,7 +35,10 @@ jobs:
       - name: Check Rust formatting
         run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
       - name: Test Rust core
-        run: cargo test --manifest-path src-tauri/Cargo.toml
+        # The suite includes large-catalog stress tests and process timeout
+        # tests. Serial execution prevents CPU-starved Windows runners from
+        # turning the process assertions into timing flakes.
+        run: cargo test --manifest-path src-tauri/Cargo.toml -- --test-threads=1
       - name: Verify bundled media tools
         shell: powershell
         run: |

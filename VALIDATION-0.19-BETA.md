@@ -6,7 +6,7 @@
 |---|---|---|
 | Frontend | `npm.cmd test -- --run` | todos os testes passam |
 | Build web | `npm.cmd run build` | TypeScript e Vite sem erro |
-| Backend | `cargo test --manifest-path src-tauri/Cargo.toml` | todos passam; fixtures opcionais podem ficar ignoradas |
+| Backend | `cargo test --manifest-path src-tauri/Cargo.toml -- --test-threads=1` | todos passam; fixtures opcionais podem ficar ignoradas |
 | Formato | `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` | nenhuma diferença |
 | Lints | `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings` | nenhum warning |
 | Release | `cargo tauri build` | EXE, NSIS e MSI gerados |
@@ -20,6 +20,7 @@
 - TypeScript/Vite, `cargo fmt --check` e Clippy com `-D warnings` aprovados.
 - Release Windows gerado em EXE, MSI e NSIS.
 - Smoke portátil: 568 entradas validadas pelo manifesto, frontend pronto, processo responsivo, encerramento limpo, marcador de sessão removido e working set inicial de 32.796.672 bytes.
+- CI Windows serializa a suíte Rust para não disputar CPU entre testes de estresse e asserções de timeout de processos externos.
 
 ## Artefatos
 
