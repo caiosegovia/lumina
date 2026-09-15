@@ -1,4 +1,7 @@
-use std::sync::{Condvar, Mutex, OnceLock};
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Condvar, Mutex, OnceLock,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Priority {
@@ -10,7 +13,7 @@ struct State {
     interactive_waiters: usize,
 }
 pub struct Gate {
-    limit: usize,
+    limit: AtomicUsize,
     state: Mutex<State>,
     wake: Condvar,
 }
@@ -28,7 +31,7 @@ impl Gate {
         if priority == Priority::Interactive {
             state.interactive_waiters += 1;
         }
-        while state.active >= self.limit
+        while state.active >= self.limit.load(Ordering::Relaxed)
             || (priority == Priority::Background && state.interactive_waiters > 0)
         {
             state = self.wake.wait(state).unwrap_or_else(|e| e.into_inner());
@@ -41,16 +44,27 @@ impl Gate {
     }
 }
 static IO: OnceLock<Gate> = OnceLock::new();
-pub fn io(priority: Priority) -> Permit {
+fn io_gate() -> &'static Gate {
     IO.get_or_init(|| Gate {
-        limit: 2,
+        limit: AtomicUsize::new(2),
         state: Mutex::new(State {
             active: 0,
             interactive_waiters: 0,
         }),
         wake: Condvar::new(),
     })
-    .acquire(priority)
+}
+pub fn set_profile(profile: &str) {
+    let limit = match profile {
+        "economy" => 1,
+        "performance" => 4,
+        _ => 2,
+    };
+    io_gate().limit.store(limit, Ordering::Relaxed);
+    io_gate().wake.notify_all();
+}
+pub fn io(priority: Priority) -> Permit {
+    io_gate().acquire(priority)
 }
 
 #[cfg(test)]
@@ -87,7 +101,7 @@ mod tests {
     fn interactive_io_precedes_background_waiters() {
         use std::sync::mpsc;
         let gate: &'static Gate = Box::leak(Box::new(Gate {
-            limit: 1,
+            limit: AtomicUsize::new(1),
             state: Mutex::new(State {
                 active: 0,
                 interactive_waiters: 0,

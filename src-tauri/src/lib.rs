@@ -1079,6 +1079,55 @@ async fn resolve_location_names(
 fn rename_location(place_key: String, name: String, state: State<AppState>) -> Result<(), String> {
     discovery::rename_location(&current(&state)?, &place_key, &name)
 }
+#[tauri::command]
+fn get_app_preferences(state: State<AppState>) -> Result<AppPreferences, String> {
+    let conn = db(&current(&state)?)?;
+    let read = |key: &str, fallback: &str| {
+        conn.query_row(
+            "SELECT value FROM app_preferences WHERE key=?1",
+            [key],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map(|value| value.unwrap_or_else(|| fallback.to_string()))
+        .map_err(|error| error.to_string())
+    };
+    let preferences = AppPreferences {
+        resource_profile: read("resource_profile", "balanced")?,
+        curation_rule: read("curation_rule", "balanced")?,
+    };
+    resource::set_profile(&preferences.resource_profile);
+    Ok(preferences)
+}
+#[tauri::command]
+fn update_app_preferences(
+    preferences: AppPreferences,
+    state: State<AppState>,
+) -> Result<AppPreferences, String> {
+    if !matches!(
+        preferences.resource_profile.as_str(),
+        "economy" | "balanced" | "performance"
+    ) {
+        return Err("Perfil de recursos inválido".into());
+    }
+    if !matches!(
+        preferences.curation_rule.as_str(),
+        "balanced" | "quality" | "review_all"
+    ) {
+        return Err("Regra de curadoria inválida".into());
+    }
+    let mut conn = db(&current(&state)?)?;
+    let transaction = conn.transaction().map_err(|error| error.to_string())?;
+    for (key, value) in [
+        ("resource_profile", &preferences.resource_profile),
+        ("curation_rule", &preferences.curation_rule),
+    ] {
+        transaction.execute("INSERT INTO app_preferences(key,value,updated_at)VALUES(?1,?2,?3)ON CONFLICT(key)DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at", params![key,value,Utc::now().to_rfc3339()]).map_err(|error| error.to_string())?;
+    }
+    transaction.commit().map_err(|error| error.to_string())?;
+    resource::set_profile(&preferences.resource_profile);
+    Ok(preferences)
+}
 fn checked_ids(ids: Vec<String>) -> Result<Vec<String>, String> {
     if ids.is_empty() || ids.len() > 5000 {
         return Err("Selecione entre 1 e 5.000 mídias".into());
@@ -1782,12 +1831,18 @@ fn reveal_asset_in_folder(asset_id: String, state: State<AppState>) -> Result<()
     }
     #[cfg(windows)]
     std::process::Command::new("explorer.exe")
-        .arg(format!("/select,{path}"))
+        .args(explorer_selection_args(
+            &std::fs::canonicalize(&path).map_err(|error| error.to_string())?,
+        ))
         .spawn()
         .map_err(|error| error.to_string())?;
     #[cfg(not(windows))]
     return Err("Abrir localização ainda não é suportado neste sistema".into());
     Ok(())
+}
+#[cfg(windows)]
+fn explorer_selection_args(path: &Path) -> [std::ffi::OsString; 2] {
+    ["/select,".into(), path.as_os_str().to_owned()]
 }
 #[tauri::command]
 fn get_media_url(asset_id: String, state: State<AppState>) -> Result<String, String> {
@@ -2140,6 +2195,8 @@ pub fn run() {
             get_discovery_overview,
             resolve_location_names,
             rename_location,
+            get_app_preferences,
+            update_app_preferences,
             create_album,
             rename_album,
             delete_album,
@@ -2205,6 +2262,8 @@ pub fn run() {
 
 #[cfg(test)]
 mod protocol_tests {
+    #[cfg(windows)]
+    use super::explorer_selection_args;
     use super::{
         compute_dashboard, quick_dashboard, valid_thumbnail_asset_id, MetadataPermit,
         PhotoPreviewPermit,
@@ -2212,6 +2271,7 @@ mod protocol_tests {
     use crate::{catalog, models::LibraryConfig};
     use std::{
         fs,
+        path::Path,
         sync::{
             atomic::{AtomicBool, Ordering},
             Arc,
@@ -2225,6 +2285,15 @@ mod protocol_tests {
         assert!(!valid_thumbnail_asset_id("../catalog.sqlite"));
         assert!(!valid_thumbnail_asset_id("folder/asset"));
         assert!(!valid_thumbnail_asset_id(""));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn explorer_selection_keeps_complex_path_as_a_separate_argument() {
+        let path = Path::new(r"C:\Fotos da família\ensaio, final (1).jpg");
+        let args = explorer_selection_args(path);
+        assert_eq!(args[0], "/select,");
+        assert_eq!(args[1], path.as_os_str());
     }
 
     #[test]

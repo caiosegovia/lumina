@@ -264,6 +264,14 @@ pub struct AssetDetails {
     pub inventory_state: Option<String>,
     pub inventory_error: Option<String>,
     pub enriched_at: Option<String>,
+    pub place_name: Option<String>,
+    pub sublocation: Option<String>,
+    pub location_city: Option<String>,
+    pub location_region: Option<String>,
+    pub location_country: Option<String>,
+    pub location_source: Option<String>,
+    pub altitude: Option<f64>,
+    pub location_accuracy_m: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -647,6 +655,12 @@ pub struct LocationResolveResult {
     pub resolved: i64,
     pub named: i64,
     pub approximate: i64,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppPreferences {
+    pub resource_profile: String,
+    pub curation_rule: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

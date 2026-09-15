@@ -102,6 +102,11 @@ pub fn open(path: &Path) -> Result<Connection> {
         [],
         |row| row.get::<_, bool>(0),
     )?;
+    let needs_v18 = db.query_row(
+        "SELECT NOT EXISTS(SELECT 1 FROM schema_migrations WHERE version=18)",
+        [],
+        |row| row.get::<_, bool>(0),
+    )?;
     db.execute_batch("BEGIN IMMEDIATE;
       CREATE TABLE IF NOT EXISTS job_items(
         id INTEGER PRIMARY KEY AUTOINCREMENT,job_id TEXT NOT NULL REFERENCES jobs(id),source_path TEXT NOT NULL,filename TEXT NOT NULL,extension TEXT NOT NULL,media_type TEXT NOT NULL,
@@ -397,6 +402,21 @@ pub fn open(path: &Path) -> Result<Connection> {
           COMMIT;",
         )?;
     }
+    if needs_v18 {
+        db.execute_batch(
+            "BEGIN IMMEDIATE;
+          CREATE TABLE asset_location_details(
+            asset_id TEXT PRIMARY KEY REFERENCES assets(id) ON DELETE CASCADE,
+            altitude REAL,accuracy_m REAL,sublocation TEXT,city TEXT,region TEXT,country TEXT,
+            source TEXT NOT NULL,algorithm_version INTEGER NOT NULL,resolved_at TEXT NOT NULL);
+          CREATE INDEX idx_location_details_source ON asset_location_details(source,algorithm_version);
+          CREATE TABLE app_preferences(key TEXT PRIMARY KEY,value TEXT NOT NULL,updated_at TEXT NOT NULL);
+          INSERT INTO app_preferences(key,value,updated_at)VALUES('resource_profile','balanced',datetime('now'));
+          INSERT INTO app_preferences(key,value,updated_at)VALUES('curation_rule','balanced',datetime('now'));
+          INSERT INTO schema_migrations(version,applied_at)VALUES(18,datetime('now'));
+          COMMIT;",
+        )?;
+    }
     if needs_v11 {
         db.execute_batch("DROP TRIGGER IF EXISTS dashboard_asset_shape_invalidate; DROP TRIGGER IF EXISTS dashboard_asset_shape_rollup;
       CREATE TRIGGER dashboard_asset_shape_rollup AFTER UPDATE OF captured_at,media_type,extension,camera,bytes ON assets BEGIN
@@ -492,7 +512,7 @@ pub fn open(path: &Path) -> Result<Connection> {
         }
     }
     db.execute("UPDATE job_items SET captured_at=substr(captured_at,1,19),date_source=CASE WHEN date_source='exif_original' THEN 'exif_original_local' ELSE date_source END WHERE date_source IN('exif_original','media_created') AND captured_at IS NOT NULL AND length(captured_at)>=20 AND (substr(captured_at,20,1)='Z' OR substr(captured_at,20,1) IN('+','-'))",[])?;
-    db.pragma_update(None, "user_version", 17)?;
+    db.pragma_update(None, "user_version", 18)?;
     db.execute_batch("PRAGMA optimize;")?;
     db.execute(
         "UPDATE jobs SET state='waiting_space',stage='space_check',finished_at=NULL WHERE state='failed' AND processed_items=0 AND interruption_reason LIKE 'Espaço insuficiente:%'",
@@ -762,13 +782,13 @@ mod tests {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            17
+            18
         );
         assert_eq!(
             db.query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row
                 .get::<_, i64>(0))
                 .unwrap(),
-            17
+            18
         );
         let technical_columns = db
             .prepare("PRAGMA table_info(asset_technical_metadata)")
@@ -934,7 +954,7 @@ mod tests {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            17
+            18
         );
         drop(db);
         fs::remove_dir_all(root).unwrap();
@@ -965,6 +985,31 @@ mod tests {
             ("2026-01-02T14:30:00".into(), "exif_original_local".into())
         );
         drop(migrated);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn v18_adds_versioned_location_details() {
+        let root = std::env::temp_dir().join(Uuid::new_v4().to_string());
+        fs::create_dir_all(&root).unwrap();
+        let db = open(&root.join("location-v3.sqlite")).unwrap();
+        let columns: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('asset_location_details') WHERE name IN('accuracy_m','sublocation','source','algorithm_version')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(columns, 4);
+        let preferences: i64 = db
+            .query_row("SELECT COUNT(*) FROM app_preferences WHERE (key='resource_profile' AND value='balanced') OR (key='curation_rule' AND value='balanced')", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(preferences, 2);
+        assert_eq!(
+            db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            18
+        );
+        drop(db);
         fs::remove_dir_all(root).unwrap();
     }
     #[test]

@@ -50,19 +50,25 @@ O histórico detalhado permanece em `RELEASE-0.18-BETA.md` e nos hotfixes 0.18.1
 - Contadores e ações de lugares em Descoberta, abertura do conjunto e busca textual integrada na Galeria.
 - Migração v16, testes de privacidade e regressão completa em instaladores Windows.
 
-## Entrega atual — 0.21: tempo, lugares e bursts confiáveis
+## Concluído — 0.21: tempo, lugares e bursts confiáveis
 
 - Corrigir o falso UTC de datas EXIF e tornar sua proveniência visível.
 - Usar a base geográfica mundial offline embarcada, filtro exato e viagens legíveis.
 - Detectar bursts por tempo, equipamento e coerência visual.
 - Favoritar a melhor candidata e enviar alternativas para revisão sem exclusão.
 
-## Próximo — 0.22: automação configurável
+## Entrega atual — 0.22: lugares e automação confiáveis
 
-- Regras de curadoria salvas e filas personalizadas.
-- Comparação de até quatro candidatas e ações em pilhas inteiras.
-- Perfis explícitos de CPU, bateria e disco.
-- Atualização versionada da base geográfica e refinamento por bairro/ponto de interesse.
+- Metadados geográficos ricos, cache versionado e refinamento por bairro/sublocalização.
+- Seleção correta no Explorer, feedback visível e cópia de coordenadas.
+- Comparação de até quatro candidatas e ações seguras em bursts.
+- Perfis explícitos de I/O e regras persistentes de curadoria.
+
+## Próximo — 0.23: produção assistida
+
+- Telemetria longitudinal e diagnóstico comparativo entre dispositivos.
+- Políticas de bateria e agendamento por janela de uso.
+- Mapa privado opcional e pacotes geográficos regionais atualizáveis.
 
 ## Depois — 1.0: prontidão de produção
 

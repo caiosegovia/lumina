@@ -16,6 +16,7 @@ import type {
   DiscoveryGroup,
   DiscoveryItem,
   DiscoveryOverview,
+  AppPreferences,
   View,
 } from "./types";
 import "./discovery.css";
@@ -84,7 +85,7 @@ function Shelf({
     navigate("library");
   };
   const compare = (group: DiscoveryGroup) => {
-    openGalleryComparison(group.items.slice(0, 2).map((item) => item.id));
+    openGalleryComparison(group.items.slice(0, 4).map((item) => item.id));
     navigate("library");
   };
   return (
@@ -159,6 +160,7 @@ export default function Discovery({
   const [query, setQuery] = useState("");
   const [editing, setEditing] = useState<DiscoveryGroup>();
   const [placeName, setPlaceName] = useState("");
+  const [preferences,setPreferences]=useState<AppPreferences>({resourceProfile:"balanced",curationRule:"balanced"});
   const load = () =>
     api
       .discovery()
@@ -166,7 +168,9 @@ export default function Discovery({
       .catch((error) => setMessage(String(error)));
   useEffect(() => {
     void load();
+    void api.appPreferences().then(setPreferences);
   }, []);
+  const savePreferences=async(next:AppPreferences)=>{setPreferences(next);try{setPreferences(await api.updateAppPreferences(next));setMessage("Preferências de processamento e curadoria salvas.")}catch(error){setMessage(String(error))}};
   const index = async () => {
     setBusy(true);
     setMessage("Analisando imagens localmente…");
@@ -184,11 +188,11 @@ export default function Discovery({
   };
   const resolvePlaces = async () => {
     setBusy(true);
-    setMessage("Identificando cidades localmente…");
+    setMessage("Recalculando lugares com metadados do arquivo e base offline…");
     try {
       const result = await api.resolveLocationNames();
       setMessage(
-        `${result.named} mídias associadas a cidades · ${result.approximate} regiões para revisar`,
+        `${result.named} mídias com lugar identificado · ${result.approximate} regiões para revisar`,
       );
       await load();
     } catch (error) {
@@ -212,10 +216,15 @@ export default function Discovery({
     if (!group.recommendedId) return;
     setBusy(true);
     try {
-      await api.updateUserState({ assetIds: [group.recommendedId], favorite: true });
       const alternatives = group.items.filter((item) => item.id !== group.recommendedId).map((item) => item.id);
-      if (alternatives.length) await api.updateUserState({ assetIds: alternatives, reviewLater: true });
-      setMessage("Melhor candidata favoritada · alternativas enviadas para revisão. Nada foi excluído.");
+      if(preferences.curationRule==="review_all"){
+        await api.updateUserState({assetIds:group.items.map(item=>item.id),reviewLater:true});
+        setMessage("Burst inteiro enviado para revisão. Nada foi excluído.");
+      }else{
+        await api.updateUserState({ assetIds: [group.recommendedId], favorite: true, ...(preferences.curationRule==="quality"?{rating:5}:{}) });
+        if (alternatives.length) await api.updateUserState({ assetIds: alternatives, reviewLater: true });
+        setMessage(`${preferences.curationRule==="quality"?"Melhor qualidade":"Melhor candidata"} favoritada · alternativas enviadas para revisão. Nada foi excluído.`);
+      }
     } catch (error) {
       setMessage(String(error));
     } finally {
@@ -257,7 +266,7 @@ export default function Discovery({
             onClick={resolvePlaces}
           >
             <MapPin />
-            Nomear lugares
+            Recalcular lugares
           </button>
           <button
             className="primary"
@@ -274,12 +283,18 @@ export default function Discovery({
           {message}
         </div>
       )}
+      <section className="discovery-preferences" aria-label="Automação configurável">
+        <div><strong>Processamento</strong><small>Limite global para tarefas de disco em segundo plano.</small></div>
+        <select aria-label="Perfil de processamento" value={preferences.resourceProfile} onChange={event=>void savePreferences({...preferences,resourceProfile:event.target.value as AppPreferences["resourceProfile"]})}><option value="economy">Economia</option><option value="balanced">Equilibrado</option><option value="performance">Desempenho</option></select>
+        <div><strong>Curadoria de bursts</strong><small>Regra aplicada pela ação de curadoria.</small></div>
+        <select aria-label="Regra de curadoria" value={preferences.curationRule} onChange={event=>void savePreferences({...preferences,curationRule:event.target.value as AppPreferences["curationRule"]})}><option value="balanced">Equilibrada</option><option value="quality">Priorizar qualidade</option><option value="review_all">Revisar todas</option></select>
+      </section>
       <div className="location-summary">
         <span>
           <strong>{data.locationStatus.geotagged}</strong> com GPS
         </span>
         <span>
-          <strong>{data.locationStatus.named}</strong> com cidade
+          <strong>{data.locationStatus.named}</strong> com lugar
         </span>
         <span>
           <strong>{data.locationStatus.approximate}</strong> para revisar
@@ -333,7 +348,7 @@ export default function Discovery({
           </div>
           <Shelf
             title="Lugares"
-            description="Cidades identificadas por GPS; regiões desconhecidas podem ser nomeadas por você."
+            description="Bairros, cidades e pontos registrados na mídia ou identificados offline."
             groups={filter(data.places)}
             empty="Nenhum arquivo com GPS foi encontrado."
             navigate={navigate}

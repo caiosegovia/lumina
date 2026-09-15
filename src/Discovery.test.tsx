@@ -83,7 +83,7 @@ describe("descoberta local", () => {
     const rename = vi.spyOn(api, "renameLocation").mockResolvedValue();
     render(<Discovery navigate={() => {}} />);
     await user.click(
-      await screen.findByRole("button", { name: "Nomear lugares" }),
+      await screen.findByRole("button", { name: "Recalcular lugares" }),
     );
     await waitFor(() => expect(resolve).toHaveBeenCalledOnce());
     await user.click(screen.getByRole("button", { name: "Renomear" }));
@@ -109,5 +109,21 @@ describe("descoberta local", () => {
     expect(update).toHaveBeenNthCalledWith(1, { assetIds: ["b"], favorite: true });
     expect(update).toHaveBeenNthCalledWith(2, { assetIds: ["a", "c"], reviewLater: true });
     expect(await screen.findByText(/Nada foi excluído/)).toBeInTheDocument();
+  });
+  it("persiste perfis e permite revisar o burst inteiro", async () => {
+    const user=userEvent.setup();
+    const items=["a","b","c"].map(id=>({id,filename:`${id}.jpg`,mediaType:"photo" as const,capturedAt:"2026-01-02T14:30:00",camera:"Phone"}));
+    vi.spyOn(api,"appPreferences").mockResolvedValue({resourceProfile:"balanced",curationRule:"review_all"});
+    vi.spyOn(api,"discovery").mockResolvedValue({indexed:3,indexable:3,similar:[],sequences:[{id:"burst",title:"Burst",detail:"Phone",score:3,items,recommendedId:"b"}],memories:[],places:[],trips:[],locationStatus:{geotagged:0,named:0,approximate:0}});
+    const save=vi.spyOn(api,"updateAppPreferences").mockImplementation(async value=>value);
+    const update=vi.spyOn(api,"updateUserState").mockResolvedValue({affected:3});
+    render(<Discovery navigate={()=>{}}/>);
+    const profile=await screen.findByRole("combobox",{name:"Perfil de processamento"});
+    await waitFor(()=>expect(screen.getByRole("combobox",{name:"Regra de curadoria"})).toHaveValue("review_all"));
+    await user.selectOptions(profile,"economy");
+    await waitFor(()=>expect(save).toHaveBeenCalledWith({resourceProfile:"economy",curationRule:"review_all"}));
+    await user.click(screen.getByRole("button",{name:"Manter melhor"}));
+    await waitFor(()=>expect(update).toHaveBeenCalledWith({assetIds:["a","b","c"],reviewLater:true}));
+    expect(await screen.findByText(/Burst inteiro enviado/)).toBeInTheDocument();
   });
 });

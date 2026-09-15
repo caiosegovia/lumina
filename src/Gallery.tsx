@@ -13,6 +13,7 @@ import {
   Images,
   List,
   LoaderCircle,
+  MapPin,
   Maximize2,
   Minimize2,
   Rows3,
@@ -77,7 +78,7 @@ export function openGalleryComparison(assetIds:string[]) {
   session.assets = [];
   session.scrollY = 0;
   session.selected = assetIds.slice(0,2);
-  session.compare = session.selected.length === 2;
+  session.compare = session.selected.length >= 2 && session.selected.length <= 4;
 }
 export default function Gallery() {
   const [filters, setFilters] = useState(session.filters),
@@ -392,7 +393,7 @@ export default function Gallery() {
           <button onClick={() => setAction("date")}>Corrigir data</button>
           <button onClick={async()=>{const r=await api.updateUserState({assetIds:[...selection],favorite:true});setNotice(r.affected+" favoritas");setSelection(new Set());setRefresh(v=>v+1)}}><Star/> Favoritar</button>
           <button onClick={async()=>{const r=await api.updateUserState({assetIds:[...selection],reviewLater:true});setNotice(r.affected+" marcadas para revisar");setSelection(new Set());setRefresh(v=>v+1)}}><Bookmark/> Revisar depois</button>
-          {selection.size === 2 && <button className="primary" onClick={() => setComparing(true)}>Comparar</button>}
+          {selection.size >= 2 && selection.size <= 4 && <button className="primary" onClick={() => setComparing(true)}>Comparar {selection.size}</button>}
           <button onClick={() => {setSelection(new Set());lastSelected.current=undefined}}>Limpar</button>
         </div>
       )}
@@ -908,6 +909,7 @@ function Preview({
   const [qualityState, setQualityState] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [details, setDetails] = useState<AssetDetails>();
   const [detailsLoading, setDetailsLoading] = useState(false);
+  const [fileAction, setFileAction] = useState("");
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const drag = useRef<{ x: number; y: number; left: number; top: number }>();
 
@@ -921,6 +923,7 @@ function Preview({
     setHighQualityUrl("");
     setDetails(undefined);
     setDetailsLoading(true);
+    setFileAction("");
     if (asset.mediaType !== "raw") {
       api.mediaUrl(asset.id).then((url)=>{if(live)setMediaUrl(url)}).catch(() => {if(live)setMediaUrl("")});
     }
@@ -1080,6 +1083,18 @@ function Preview({
       {asset.mediaType==="video"&&<><Info label="Contêiner" value={details?.container || "Não disponível"}/><Info label="Codec de vídeo" value={details?.codec || "Não disponível"}/><Info label="Quadros por segundo" value={details?.frameRate ? `${details.frameRate.toFixed(2)} fps` : "Não disponível"}/><Info label="Codec de áudio" value={details?.audioCodec || "Não disponível"}/><Info label="Taxa de bits" value={details?.bitrate ? `${(details.bitrate/1_000_000).toFixed(2)} Mb/s` : "Não disponível"}/></>}
       {details?.inventoryError&&<p className="notice warning"><AlertTriangle/>Metadados incompletos: {details.inventoryError}</p>}
       </MetadataSection>
+      {asset.latitude != null && asset.longitude != null && <MetadataSection id="geography" title="Localização geográfica" openByDefault>
+        <div className="location good">
+          <MapPin />
+          <div><strong>{details?.placeName || "Coordenadas disponíveis"}</strong><small>{[details?.sublocation,details?.locationCity,details?.locationRegion,details?.locationCountry].filter((value,index,all)=>value&&all.indexOf(value)===index).join(" · ") || `${asset.latitude.toFixed(6)}, ${asset.longitude.toFixed(6)}`}</small></div>
+        </div>
+        <div className="asset-pills">
+          <span>{details?.locationSource==="embedded"?"Do arquivo":details?.locationSource==="offline"?"Base offline":"Aproximada"}</span>
+          {details?.locationAccuracyM!=null&&<span>Precisão ±{Math.round(details.locationAccuracyM)} m</span>}
+          {details?.altitude!=null&&<span>Altitude {Math.round(details.altitude)} m</span>}
+        </div>
+        <button className="copy-value" onClick={async()=>{await navigator.clipboard.writeText(`${asset.latitude}, ${asset.longitude}`);setFileAction("Coordenadas copiadas.")}}><Copy/> Copiar coordenadas</button>
+      </MetadataSection>}
       <MetadataSection id="locations" title="Localizações" openByDefault>
       <div className="location good">
         <HardDrive />
@@ -1097,7 +1112,8 @@ function Preview({
           </div>
         </div>
       ))}
-      <button className="reveal-file" onClick={async()=>{try{await api.revealAsset(asset.id)}catch(error){void api.recordClientError("reveal_error",String(error))}}}><HardDrive/> Abrir localização no Explorador</button>
+      <button className="reveal-file" onClick={async()=>{setFileAction("");try{await api.revealAsset(asset.id);setFileAction("Arquivo selecionado no Explorador.")}catch(error){const message=String(error);setFileAction(message);void api.recordClientError("reveal_error",message)}}}><HardDrive/> Mostrar arquivo no Explorador</button>
+      {fileAction&&<p className={fileAction.includes("selecionado")||fileAction.includes("copiadas")?"metadata-action success":"metadata-action error"} role="status">{fileAction}</p>}
       </MetadataSection>
       <MetadataSection id="catalog" title="Catálogo">
       <p className="hash">

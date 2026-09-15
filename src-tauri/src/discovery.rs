@@ -16,6 +16,7 @@ use std::{
 };
 
 const ALGORITHM_VERSION: i64 = 1;
+const LOCATION_ALGORITHM_VERSION: i64 = 3;
 
 const CITIES: &[(&str, &str, &str, f64, f64)] = &[
     ("São Paulo", "SP", "Brasil", -23.5505, -46.6333),
@@ -72,20 +73,48 @@ fn distance_km(a: f64, b: f64, c: f64, d: f64) -> f64 {
     2.0 * r * h.sqrt().asin()
 }
 fn cell_key(lat: f64, lon: f64) -> String {
-    format!(
-        "{:.2}:{:.2}",
-        (lat * 20.0).round() / 20.0,
-        (lon * 20.0).round() / 20.0
-    )
+    format!("v3:{lat:.3}:{lon:.3}")
 }
 
 fn normalized_path(value: &str) -> String {
     value.replace('/', "\\").to_lowercase()
 }
 
-fn embedded_geolocations(
-    rows: &[(String, f64, f64, String)],
-) -> HashMap<String, (String, String, String)> {
+#[derive(Clone, Debug, Default)]
+struct EmbeddedLocation {
+    sublocation: Option<String>,
+    city: Option<String>,
+    region: Option<String>,
+    country: Option<String>,
+    altitude: Option<f64>,
+    accuracy_m: Option<f64>,
+    source: &'static str,
+}
+
+fn text_tag(value: &serde_json::Value, names: &[&str]) -> Option<String> {
+    names.iter().find_map(|name| {
+        value
+            .get(*name)
+            .and_then(|item| item.as_str())
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .map(str::to_string)
+    })
+}
+
+fn number_tag(value: &serde_json::Value, names: &[&str]) -> Option<f64> {
+    names.iter().find_map(|name| {
+        value.get(*name).and_then(|item| {
+            item.as_f64().or_else(|| {
+                item.as_str()
+                    .and_then(|text| text.split_whitespace().next())
+                    .and_then(|text| text.parse().ok())
+            })
+        })
+    })
+}
+
+fn embedded_geolocations(rows: &[(String, f64, f64, String)]) -> HashMap<String, EmbeddedLocation> {
     let ids = rows
         .iter()
         .map(|(id, _, _, path)| (normalized_path(path), id.clone()))
@@ -99,6 +128,21 @@ fn embedded_geolocations(
             OsString::from("-GeolocationCity"),
             OsString::from("-GeolocationRegion"),
             OsString::from("-GeolocationCountry"),
+            OsString::from("-City"),
+            OsString::from("-State"),
+            OsString::from("-Country"),
+            OsString::from("-Location"),
+            OsString::from("-Sub-location"),
+            OsString::from("-LocationCreatedCity"),
+            OsString::from("-LocationCreatedProvinceState"),
+            OsString::from("-LocationCreatedCountryName"),
+            OsString::from("-LocationCreatedSublocation"),
+            OsString::from("-LocationShownCity"),
+            OsString::from("-LocationShownProvinceState"),
+            OsString::from("-LocationShownCountryName"),
+            OsString::from("-LocationShownSublocation"),
+            OsString::from("-GPSAltitude#"),
+            OsString::from("-GPSHPositioningError#"),
         ];
         args.extend(batch.iter().map(|row| OsString::from(&row.3)));
         let output = crate::process::run(
@@ -120,22 +164,55 @@ fn embedded_geolocations(
             else {
                 continue;
             };
-            let Some(city) = value
-                .get("GeolocationCity")
-                .and_then(|x| x.as_str())
-                .filter(|x| !x.is_empty())
-            else {
-                continue;
+            let native_city = text_tag(
+                &value,
+                &["City", "LocationCreatedCity", "LocationShownCity"],
+            );
+            let native_region = text_tag(
+                &value,
+                &[
+                    "State",
+                    "LocationCreatedProvinceState",
+                    "LocationShownProvinceState",
+                ],
+            );
+            let native_country = text_tag(
+                &value,
+                &[
+                    "Country",
+                    "LocationCreatedCountryName",
+                    "LocationShownCountryName",
+                ],
+            );
+            let sublocation = text_tag(
+                &value,
+                &[
+                    "Sub-location",
+                    "Sublocation",
+                    "Location",
+                    "LocationCreatedSublocation",
+                    "LocationShownSublocation",
+                ],
+            );
+            let generated_city = text_tag(&value, &["GeolocationCity"]);
+            let generated_region = text_tag(&value, &["GeolocationRegion"]);
+            let generated_country = text_tag(&value, &["GeolocationCountry"]);
+            let native = native_city.is_some()
+                || native_region.is_some()
+                || native_country.is_some()
+                || sublocation.is_some();
+            let location = EmbeddedLocation {
+                sublocation,
+                city: native_city.or(generated_city),
+                region: native_region.or(generated_region),
+                country: native_country.or(generated_country),
+                altitude: number_tag(&value, &["GPSAltitude"]),
+                accuracy_m: number_tag(&value, &["GPSHPositioningError"]),
+                source: if native { "embedded" } else { "offline" },
             };
-            let region = value
-                .get("GeolocationRegion")
-                .and_then(|x| x.as_str())
-                .unwrap_or("");
-            let country = value
-                .get("GeolocationCountry")
-                .and_then(|x| x.as_str())
-                .unwrap_or("");
-            found.insert(id.clone(), (city.into(), region.into(), country.into()));
+            if location.city.is_some() || location.sublocation.is_some() {
+                found.insert(id.clone(), location);
+            }
         }
     }
     found
@@ -160,6 +237,18 @@ pub fn resolve_locations(cfg: &LibraryConfig) -> Result<LocationResolveResult, S
         values
     };
     let embedded = embedded_geolocations(&rows);
+    let manual_names = {
+        let mut statement = conn.prepare("SELECT al.asset_id,o.display_name FROM asset_locations al JOIN location_overrides o ON o.cell_key=al.cell_key")
+            .map_err(|e| e.to_string())?;
+        let values = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<HashMap<_, _>, _>>()
+            .map_err(|e| e.to_string())?;
+        values
+    };
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let now = Utc::now().to_rfc3339();
     let mut named = 0;
@@ -170,20 +259,49 @@ pub fn resolve_locations(cfg: &LibraryConfig) -> Result<LocationResolveResult, S
             .iter()
             .map(|city| (city, distance_km(*lat, *lon, city.3, city.4)))
             .min_by(|a, b| a.1.total_cmp(&b.1));
-        let (city, region, country, label, source, precision) = match embedded.get(id) {
-            Some((city, region, country)) => {
-                let label = [city.as_str(), region.as_str(), country.as_str()]
-                    .into_iter()
-                    .filter(|x| !x.is_empty())
-                    .collect::<Vec<_>>()
-                    .join(" · ");
+        let (
+            city,
+            region,
+            country,
+            sublocation,
+            altitude,
+            accuracy,
+            detail_source,
+            label,
+            source,
+            precision,
+        ) = match embedded.get(id) {
+            Some(location) => {
+                let label = [
+                    location.sublocation.as_deref(),
+                    location.city.as_deref(),
+                    location.region.as_deref(),
+                    location.country.as_deref(),
+                ]
+                .into_iter()
+                .flatten()
+                .filter(|x| !x.is_empty())
+                .fold(Vec::<&str>::new(), |mut values, item| {
+                    if !values.iter().any(|value| value.eq_ignore_ascii_case(item)) {
+                        values.push(item);
+                    }
+                    values
+                })
+                .join(" · ");
                 (
-                    Some(city.as_str()),
-                    (!region.is_empty()).then_some(region.as_str()),
-                    (!country.is_empty()).then_some(country.as_str()),
+                    location.city.as_deref(),
+                    location.region.as_deref(),
+                    location.country.as_deref(),
+                    location.sublocation.as_deref(),
+                    location.altitude,
+                    location.accuracy_m,
+                    location.source,
                     label,
                     "offline",
-                    1.0,
+                    location
+                        .accuracy_m
+                        .map(|meters| meters / 1000.0)
+                        .unwrap_or(0.1),
                 )
             }
             None => match nearest {
@@ -191,6 +309,10 @@ pub fn resolve_locations(cfg: &LibraryConfig) -> Result<LocationResolveResult, S
                     Some(c.0),
                     Some(c.1),
                     Some(c.2),
+                    None,
+                    None,
+                    None,
+                    "offline",
                     format!("{}, {} · {}", c.0, c.1, c.2),
                     "offline",
                     d,
@@ -199,6 +321,10 @@ pub fn resolve_locations(cfg: &LibraryConfig) -> Result<LocationResolveResult, S
                     None,
                     None,
                     None,
+                    None,
+                    None,
+                    None,
+                    "approximate",
                     format!("Região {:.2}, {:.2}", lat, lon),
                     "approximate",
                     8.0,
@@ -210,8 +336,12 @@ pub fn resolve_locations(cfg: &LibraryConfig) -> Result<LocationResolveResult, S
         } else {
             approximate += 1
         };
-        tx.execute("INSERT INTO location_cells(cell_key,latitude,longitude,city,region,country,display_name,source,precision_km,resolved_at)VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)ON CONFLICT(cell_key)DO NOTHING",params![key,lat,lon,city,region,country,label,source,precision,now]).map_err(|e|e.to_string())?;
+        tx.execute("INSERT INTO location_cells(cell_key,latitude,longitude,city,region,country,display_name,source,precision_km,resolved_at)VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)ON CONFLICT(cell_key)DO UPDATE SET latitude=excluded.latitude,longitude=excluded.longitude,city=excluded.city,region=excluded.region,country=excluded.country,display_name=excluded.display_name,source=excluded.source,precision_km=excluded.precision_km,resolved_at=excluded.resolved_at",params![key,lat,lon,city,region,country,label,source,precision,now]).map_err(|e|e.to_string())?;
         tx.execute("INSERT INTO asset_locations(asset_id,cell_key)VALUES(?1,?2)ON CONFLICT(asset_id)DO UPDATE SET cell_key=excluded.cell_key",params![id,key]).map_err(|e|e.to_string())?;
+        tx.execute("INSERT INTO asset_location_details(asset_id,altitude,accuracy_m,sublocation,city,region,country,source,algorithm_version,resolved_at)VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)ON CONFLICT(asset_id)DO UPDATE SET altitude=excluded.altitude,accuracy_m=excluded.accuracy_m,sublocation=excluded.sublocation,city=excluded.city,region=excluded.region,country=excluded.country,source=excluded.source,algorithm_version=excluded.algorithm_version,resolved_at=excluded.resolved_at",params![id,altitude,accuracy,sublocation,city,region,country,detail_source,LOCATION_ALGORITHM_VERSION,now]).map_err(|e|e.to_string())?;
+        if let Some(manual_name) = manual_names.get(id) {
+            tx.execute("INSERT INTO location_overrides(cell_key,display_name,updated_at)VALUES(?1,?2,?3)ON CONFLICT(cell_key)DO UPDATE SET display_name=excluded.display_name,updated_at=excluded.updated_at",params![key,manual_name,now]).map_err(|e|e.to_string())?;
+        }
     }
     tx.commit().map_err(|e| e.to_string())?;
     Ok(LocationResolveResult {
@@ -875,6 +1005,27 @@ mod tests {
             &item("d", "2026-01-02T14:30:01", Some("Nikon")),
             &hashes
         ));
+    }
+    #[test]
+    fn location_v3_prefers_rich_phone_tags_and_uses_precise_cells() {
+        let value = serde_json::json!({
+            "City": "Campinas",
+            "State": "SP",
+            "Country": "Brasil",
+            "Location": "Lagoa do Taquaral",
+            "GeolocationCity": "São Paulo",
+            "GPSHPositioningError": 7.5
+        });
+        assert_eq!(
+            text_tag(&value, &["City", "GeolocationCity"]).as_deref(),
+            Some("Campinas")
+        );
+        assert_eq!(
+            text_tag(&value, &["Location"]).as_deref(),
+            Some("Lagoa do Taquaral")
+        );
+        assert_eq!(number_tag(&value, &["GPSHPositioningError"]), Some(7.5));
+        assert_ne!(cell_key(-22.9061, -47.0601), cell_key(-22.9081, -47.0601));
     }
 
     #[test]

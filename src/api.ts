@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { Album, AssetDetails, BackgroundWorkStatus, BatchResult, CleanupPlan, DashboardStats, DiscoveryIndexResult, DiscoveryOverview, LocationResolveResult, DuplicateGroup, DuplicateOccurrence, DuplicateStatus, GalleryFilters, GalleryResult, GallerySort, ImportEvent, ImportSummary, JobEventPage, JobOverview, JobProgress, LibraryConfig, LibraryHealth, MediaAsset, MigrationProgress, PersonInfo, ProtectionQueueStats, RecoverableJob, ReportExport, ReviewSummary, SavedView, SelectionResult, Source, StoragePlan, TagInfo, ThumbnailAudit, ThumbnailRepairProgress } from "./types";
+import type { Album, AppPreferences, AssetDetails, BackgroundWorkStatus, BatchResult, CleanupPlan, DashboardStats, DiscoveryIndexResult, DiscoveryOverview, LocationResolveResult, DuplicateGroup, DuplicateOccurrence, DuplicateStatus, GalleryFilters, GalleryResult, GallerySort, ImportEvent, ImportSummary, JobEventPage, JobOverview, JobProgress, LibraryConfig, LibraryHealth, MediaAsset, MigrationProgress, PersonInfo, ProtectionQueueStats, RecoverableJob, ReportExport, ReviewSummary, SavedView, SelectionResult, Source, StoragePlan, TagInfo, ThumbnailAudit, ThumbnailRepairProgress } from "./types";
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
 const now = new Date();
@@ -62,6 +62,8 @@ export const api = {
   discovery:()=>call<DiscoveryOverview>("get_discovery_overview",undefined,()=>({indexed:15,indexable:15,similar:[{id:"similar-demo",title:"Possível variação",detail:"94% de proximidade visual",score:.94,items:demoAssets.slice(0,2).map(({id,filename,mediaType,capturedAt,camera})=>({id,filename,mediaType,capturedAt,camera}))}],sequences:[{id:"sequence-demo",title:"Burst com 4 registros",detail:"Canon EOS R6",score:4,items:demoAssets.slice(2,6).map(({id,filename,mediaType,capturedAt,camera})=>({id,filename,mediaType,capturedAt,camera}))}],memories:[{id:"memory-demo",title:`Memórias de ${now.getFullYear()-1}`,detail:"6 registros deste período",score:6,items:demoAssets.slice(6,12).map(({id,filename,mediaType,capturedAt,camera})=>({id,filename,mediaType,capturedAt,camera}))}],places:[],trips:[],locationStatus:{geotagged:0,named:0,approximate:0}})),
   resolveLocationNames:()=>call<LocationResolveResult>("resolve_location_names",undefined,()=>({resolved:0,named:0,approximate:0})),
   renameLocation:(placeKey:string,name:string)=>call<void>("rename_location",{placeKey,name},()=>undefined),
+  appPreferences:()=>call<AppPreferences>("get_app_preferences",undefined,()=>({resourceProfile:"balanced",curationRule:"balanced"})),
+  updateAppPreferences:(preferences:AppPreferences)=>call<AppPreferences>("update_app_preferences",{preferences},()=>preferences),
   buildDiscoveryIndex:()=>call<DiscoveryIndexResult>("build_discovery_index",undefined,()=>({indexed:0,skipped:0,failed:0})),
   createAlbum:(name:string)=>call<Album>("create_album",{name},()=>{const album={id:crypto.randomUUID(),name,assetCount:0};demoAlbums=[...demoAlbums,album];return album}),
   renameAlbum:(id:string,name:string)=>call<BatchResult>("rename_album",{id,name},()=>{demoAlbums=demoAlbums.map(album=>album.id===id?{...album,name}:album);return{affected:1}}),
