@@ -65,6 +65,7 @@ function Shelf({
   empty,
   navigate,
   onRename,
+  onCurate,
 }: {
   title: string;
   description: string;
@@ -72,13 +73,14 @@ function Shelf({
   empty: string;
   navigate: (view: View) => void;
   onRename?: (group: DiscoveryGroup) => void;
+  onCurate?: (group: DiscoveryGroup) => void;
 }) {
   const open = (item: DiscoveryItem) => {
     openGalleryWithFilters({ query: item.filename });
     navigate("library");
   };
   const openGroup = (group: DiscoveryGroup) => {
-    openGalleryWithFilters({ query: group.title });
+    openGalleryWithFilters(group.placeKey ? { placeKey: group.placeKey } : { query: group.title });
     navigate("library");
   };
   const compare = (group: DiscoveryGroup) => {
@@ -110,7 +112,7 @@ function Shelf({
                 </div>
                 <div className="discovery-group-actions">
                   {group.score <= 1 && <b>{Math.round(group.score * 100)}%</b>}
-                  {onRename && group.placeKey && (
+                  {group.placeKey && (
                     <button onClick={() => openGroup(group)}>
                       Ver na galeria
                     </button>
@@ -120,6 +122,11 @@ function Shelf({
                   )}
                   {group.items.length >= 2 && (
                     <button onClick={() => compare(group)}>Comparar</button>
+                  )}
+                  {onCurate && group.recommendedId && (
+                    <button className="accent" onClick={() => onCurate(group)}>
+                      Manter melhor
+                    </button>
                   )}
                 </div>
               </header>
@@ -199,6 +206,20 @@ export default function Discovery({
       await load();
     } catch (error) {
       setMessage(String(error));
+    }
+  };
+  const curateBurst = async (group: DiscoveryGroup) => {
+    if (!group.recommendedId) return;
+    setBusy(true);
+    try {
+      await api.updateUserState({ assetIds: [group.recommendedId], favorite: true });
+      const alternatives = group.items.filter((item) => item.id !== group.recommendedId).map((item) => item.id);
+      if (alternatives.length) await api.updateUserState({ assetIds: alternatives, reviewLater: true });
+      setMessage("Melhor candidata favoritada · alternativas enviadas para revisão. Nada foi excluído.");
+    } catch (error) {
+      setMessage(String(error));
+    } finally {
+      setBusy(false);
     }
   };
   if (!data)
@@ -339,11 +360,12 @@ export default function Discovery({
         </>
       )}
       <Shelf
-        title="Sequências"
-        description="Rajadas e registros feitos no mesmo momento e equipamento."
+        title="Bursts"
+        description="Rajadas coerentes por horário, equipamento e semelhança visual."
         groups={filter(data.sequences)}
-        empty="Nenhuma sequência com três ou mais registros foi encontrada."
+        empty="Nenhum burst com três ou mais registros foi encontrado."
         navigate={navigate}
+        onCurate={curateBurst}
       />
       <Shelf
         title="Visualmente parecidas"

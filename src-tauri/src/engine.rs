@@ -135,10 +135,19 @@ fn metadata_value(v: &serde_json::Value, fallback: &str) -> CapturedMetadata {
         .and_then(|x| x.as_str());
     let date = raw
         .and_then(|s| chrono::NaiveDateTime::parse_from_str(s, "%Y:%m:%d %H:%M:%S").ok())
-        .map(|d| d.and_utc().to_rfc3339())
+        // EXIF commonly contains a wall-clock value without any timezone.
+        // Keep it floating: pretending it is UTC shifts it when rendered locally.
+        .map(|d| d.format("%Y-%m-%dT%H:%M:%S").to_string())
         .unwrap_or_else(|| fallback.to_string());
-    let source = if v.get("DateTimeOriginal").is_some() {
-        "exif_original"
+    let has_offset = v
+        .get("OffsetTimeOriginal")
+        .or_else(|| v.get("OffsetTime"))
+        .and_then(|x| x.as_str())
+        .is_some();
+    let source = if v.get("DateTimeOriginal").is_some() && has_offset {
+        "exif_original_offset"
+    } else if v.get("DateTimeOriginal").is_some() {
+        "exif_original_local"
     } else if v.get("CreateDate").is_some() {
         "media_created"
     } else {
@@ -180,6 +189,8 @@ where
             "-json".into(),
             "-DateTimeOriginal".into(),
             "-CreateDate".into(),
+            "-OffsetTimeOriginal".into(),
+            "-OffsetTime".into(),
             "-ImageWidth".into(),
             "-ImageHeight".into(),
             "-Duration#".into(),
@@ -322,6 +333,8 @@ fn capture_metadata(
                 std::ffi::OsStr::new("-json"),
                 std::ffi::OsStr::new("-DateTimeOriginal"),
                 std::ffi::OsStr::new("-CreateDate"),
+                std::ffi::OsStr::new("-OffsetTimeOriginal"),
+                std::ffi::OsStr::new("-OffsetTime"),
                 std::ffi::OsStr::new("-ImageWidth"),
                 std::ffi::OsStr::new("-ImageHeight"),
                 std::ffi::OsStr::new("-Duration#"),
@@ -2042,6 +2055,20 @@ pub fn duplicate_occurrences(conn: &rusqlite::Connection, asset: &str) -> Vec<Oc
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn camera_wall_clock_is_not_reinterpreted_as_utc() {
+        let value = serde_json::json!({"DateTimeOriginal":"2026:01:02 14:30:00"});
+        let metadata = metadata_value(&value, "fallback");
+        assert_eq!(metadata.0, "2026-01-02T14:30:00");
+        assert_eq!(metadata.1, "exif_original_local");
+    }
+    #[test]
+    fn camera_offset_presence_is_reported_without_shifting_wall_clock() {
+        let value = serde_json::json!({"DateTimeOriginal":"2026:01:02 14:30:00","OffsetTimeOriginal":"-03:00"});
+        let metadata = metadata_value(&value, "fallback");
+        assert_eq!(metadata.0, "2026-01-02T14:30:00");
+        assert_eq!(metadata.1, "exif_original_offset");
+    }
     #[test]
     fn technical_metadata_for_large_catalogs_is_strictly_bounded() {
         let rows = vec![0_u8; 9_300];

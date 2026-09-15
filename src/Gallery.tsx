@@ -27,7 +27,7 @@ import {
   X,
 } from "lucide-react";
 import { api } from "./api";
-import { formatBytes } from "./format";
+import { captureDate, formatBytes, formatCaptureDate } from "./format";
 import type { Album, AssetDetails, GalleryFilters, GalleryResult, GallerySort, MediaAsset, PersonInfo, SavedView } from "./types";
 const thumbs = new Map<string, string | null>(),
   empty: GalleryFilters = { query: "" };
@@ -45,6 +45,15 @@ const session: {
 } = { filters: empty, assets: [], scrollY: 0, selected: [], compare: false };
 const saved = <T extends string>(key: string, fallback: T) =>
   (localStorage.getItem(key) || fallback) as T;
+const captureSourceLabel = (source: string) => source === "exif_original_offset"
+  ? "Câmera · fuso informado"
+  : source.startsWith("exif_original")
+    ? "Câmera · horário local"
+    : source === "media_created"
+      ? "Criação da mídia"
+      : source === "user_corrected"
+        ? "Data corrigida"
+        : "Data do arquivo";
 export function resetGallerySession() {
   session.filters = empty;
   session.result = undefined;
@@ -168,7 +177,7 @@ export default function Gallery() {
   const groups = useMemo(() => {
     const m = new Map<string, { label: string; items: MediaAsset[] }>();
     assets.forEach((a) => {
-      const d = new Date(a.capturedAt),
+      const d = captureDate(a.capturedAt),
         key =
           group === "year"
             ? a.capturedAt.slice(0, 4)
@@ -530,7 +539,7 @@ function Item({
             <MediaThumb asset={asset} />
             <span className="list-identity"><strong>{asset.filename}</strong><small>{asset.camera || "Dispositivo desconhecido"}</small></span>
           </div>
-          <span className="list-capture"><time>{new Date(asset.capturedAt).toLocaleString("pt-BR")}</time>{asset.dateSuspicious && <small className="suspicious"><AlertTriangle /> Revisar data</small>}</span>
+          <span className="list-capture"><time>{formatCaptureDate(asset.capturedAt)}</time>{asset.dateSuspicious && <small className="suspicious"><AlertTriangle /> Revisar data</small>}</span>
           <span className="list-file"><strong>{asset.extension.toUpperCase()}</strong><small>{formatBytes(asset.bytes)}{asset.width && asset.height ? ` · ${asset.width} × ${asset.height}` : ""}</small></span>
           <span className="list-origin"><strong>{asset.sourceNames[0] || "Acervo"}</strong><small>{asset.sourceNames.length > 1 ? `+${asset.sourceNames.length - 1} origem(ns)` : asset.mediaType === "video" ? "Vídeo" : asset.mediaType === "raw" ? "RAW" : "Foto"}</small></span>
           <span className={`list-protection ${asset.protectionState}`}><i />{asset.protectionState === "replica_verified" ? "Protegida" : asset.protectionState === "error" ? "Requer atenção" : "Pendente"}</span>
@@ -587,7 +596,7 @@ function ComparisonPane({asset,zoom}:{asset:MediaAsset;zoom:number}){
   const [url,setUrl]=useState("");
   const [details,setDetails]=useState<AssetDetails>();
   useEffect(()=>{let live=true;const media=asset.mediaType==="video"?api.mediaUrl(asset.id):api.photoPreview(asset.id);media.then(value=>live&&setUrl(value)).catch(()=>live&&setUrl(""));api.assetDetails(asset.id).then(value=>live&&setDetails(value)).catch(()=>live&&setDetails(undefined));return()=>{live=false}},[asset.id,asset.mediaType]);
-  return <article className="comparison-pane"><div className="comparison-media">{url?(asset.mediaType==="video"?<video src={url} controls preload="metadata"/>:<img src={url} alt={`Comparação de ${asset.filename}`} style={{transform:`scale(${zoom})`}}/>):<MediaThumb asset={asset}/>}</div><h3>{asset.filename}</h3><p>{new Date(asset.capturedAt).toLocaleString("pt-BR")}</p><div className="asset-pills"><span>{asset.extension.toUpperCase()}</span><span>{formatBytes(asset.bytes)}</span><span className={asset.protectionState==="replica_verified"?"success":"warning"}>{asset.protectionState==="replica_verified"?"Protegida":"Proteção pendente"}</span></div><dl><div><dt>Dimensões</dt><dd>{asset.width&&asset.height?`${asset.width} × ${asset.height}`:"Não disponível"}</dd></div><div><dt>Câmera</dt><dd>{details?.camera||asset.camera||"Não informada"}</dd></div><div><dt>Lente</dt><dd>{details?.lens||"Não informada"}</dd></div><div><dt>Captura</dt><dd>{details?.iso?`ISO ${details.iso}`:"ISO —"} · {details?.aperture?`f/${details.aperture}`:"f/—"}</dd></div><div><dt>Origens</dt><dd>{asset.sourceNames.length}</dd></div><div><dt>SHA-256</dt><dd><code>{asset.hash.slice(0,16)}…</code></dd></div></dl></article>
+  return <article className="comparison-pane"><div className="comparison-media">{url?(asset.mediaType==="video"?<video src={url} controls preload="metadata"/>:<img src={url} alt={`Comparação de ${asset.filename}`} style={{transform:`scale(${zoom})`}}/>):<MediaThumb asset={asset}/>}</div><h3>{asset.filename}</h3><p>{formatCaptureDate(asset.capturedAt)}</p><div className="asset-pills"><span>{asset.extension.toUpperCase()}</span><span>{formatBytes(asset.bytes)}</span><span className={asset.protectionState==="replica_verified"?"success":"warning"}>{asset.protectionState==="replica_verified"?"Protegida":"Proteção pendente"}</span></div><dl><div><dt>Dimensões</dt><dd>{asset.width&&asset.height?`${asset.width} × ${asset.height}`:"Não disponível"}</dd></div><div><dt>Câmera</dt><dd>{details?.camera||asset.camera||"Não informada"}</dd></div><div><dt>Lente</dt><dd>{details?.lens||"Não informada"}</dd></div><div><dt>Captura</dt><dd>{details?.iso?`ISO ${details.iso}`:"ISO —"} · {details?.aperture?`f/${details.aperture}`:"f/—"}</dd></div><div><dt>Origens</dt><dd>{asset.sourceNames.length}</dd></div><div><dt>SHA-256</dt><dd><code>{asset.hash.slice(0,16)}…</code></dd></div></dl></article>
 }
 function Bulk({
   action,
@@ -988,10 +997,11 @@ function Preview({
         </button>
       </div>
       <h2>{asset.filename}</h2>
-      <p>{new Date(asset.capturedAt).toLocaleString("pt-BR")}</p>
+      <p>{formatCaptureDate(asset.capturedAt)}</p>
       <div className="asset-pills" aria-label="Atributos da mídia">
         <span>{asset.mediaType === "video" ? "Vídeo" : asset.mediaType === "raw" ? "RAW" : "Foto"}</span>
         <span>{asset.extension.toUpperCase()}</span>
+        <span title="Origem usada para ordenar a linha do tempo">{captureSourceLabel(asset.dateSource)}</span>
         {asset.favorite && <span className="accent">Favorita</span>}
         <span className={asset.protectionState === "replica_verified" ? "success" : "warning"}>{asset.protectionState === "replica_verified" ? "Protegida" : "Proteção pendente"}</span>
         {asset.tags.map(tag=><span key={tag}>#{tag}</span>)}

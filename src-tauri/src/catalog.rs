@@ -97,6 +97,11 @@ pub fn open(path: &Path) -> Result<Connection> {
         [],
         |row| row.get::<_, bool>(0),
     )?;
+    let needs_v17 = db.query_row(
+        "SELECT NOT EXISTS(SELECT 1 FROM schema_migrations WHERE version=17)",
+        [],
+        |row| row.get::<_, bool>(0),
+    )?;
     db.execute_batch("BEGIN IMMEDIATE;
       CREATE TABLE IF NOT EXISTS job_items(
         id INTEGER PRIMARY KEY AUTOINCREMENT,job_id TEXT NOT NULL REFERENCES jobs(id),source_path TEXT NOT NULL,filename TEXT NOT NULL,extension TEXT NOT NULL,media_type TEXT NOT NULL,
@@ -383,6 +388,15 @@ pub fn open(path: &Path) -> Result<Connection> {
           COMMIT;",
         )?;
     }
+    if needs_v17 {
+        db.execute_batch(
+            "BEGIN IMMEDIATE;
+          UPDATE assets SET captured_at=substr(captured_at,1,19),date_source=CASE WHEN date_source='exif_original' THEN 'exif_original_local' ELSE date_source END
+            WHERE date_source IN('exif_original','media_created') AND length(captured_at)>=20 AND (substr(captured_at,20,1)='Z' OR substr(captured_at,20,1) IN('+','-'));
+          INSERT INTO schema_migrations(version,applied_at)VALUES(17,datetime('now'));
+          COMMIT;",
+        )?;
+    }
     if needs_v11 {
         db.execute_batch("DROP TRIGGER IF EXISTS dashboard_asset_shape_invalidate; DROP TRIGGER IF EXISTS dashboard_asset_shape_rollup;
       CREATE TRIGGER dashboard_asset_shape_rollup AFTER UPDATE OF captured_at,media_type,extension,camera,bytes ON assets BEGIN
@@ -477,7 +491,8 @@ pub fn open(path: &Path) -> Result<Connection> {
             )?;
         }
     }
-    db.pragma_update(None, "user_version", 16)?;
+    db.execute("UPDATE job_items SET captured_at=substr(captured_at,1,19),date_source=CASE WHEN date_source='exif_original' THEN 'exif_original_local' ELSE date_source END WHERE date_source IN('exif_original','media_created') AND captured_at IS NOT NULL AND length(captured_at)>=20 AND (substr(captured_at,20,1)='Z' OR substr(captured_at,20,1) IN('+','-'))",[])?;
+    db.pragma_update(None, "user_version", 17)?;
     db.execute_batch("PRAGMA optimize;")?;
     db.execute(
         "UPDATE jobs SET state='waiting_space',stage='space_check',finished_at=NULL WHERE state='failed' AND processed_items=0 AND interruption_reason LIKE 'Espaço insuficiente:%'",
@@ -747,13 +762,13 @@ mod tests {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            16
+            17
         );
         assert_eq!(
             db.query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row
                 .get::<_, i64>(0))
                 .unwrap(),
-            16
+            17
         );
         let technical_columns = db
             .prepare("PRAGMA table_info(asset_technical_metadata)")
@@ -919,9 +934,37 @@ mod tests {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            16
+            17
         );
         drop(db);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn v17_preserves_exif_wall_clock_without_fake_utc_conversion() {
+        let root = std::env::temp_dir().join(Uuid::new_v4().to_string());
+        fs::create_dir_all(&root).unwrap();
+        let template = root.join("template.sqlite");
+        let db = open(&template).unwrap();
+        db.execute("INSERT INTO assets(id,hash,filename,media_type,extension,captured_at,date_source,bytes,master_path,created_at)VALUES('a',?1,'a.jpg','photo','jpg','2026-01-02T14:30:00+00:00','exif_original',1,'a.jpg','2026-01-02')",["a".repeat(64)]).unwrap();
+        db.execute("DELETE FROM schema_migrations WHERE version=17", [])
+            .unwrap();
+        db.pragma_update(None, "user_version", 16).unwrap();
+        drop(db);
+        let legacy = root.join("legacy.sqlite");
+        fs::copy(template, &legacy).unwrap();
+        let migrated = open(&legacy).unwrap();
+        let value: (String, String) = migrated
+            .query_row(
+                "SELECT captured_at,date_source FROM assets WHERE id='a'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            value,
+            ("2026-01-02T14:30:00".into(), "exif_original_local".into())
+        );
+        drop(migrated);
         fs::remove_dir_all(root).unwrap();
     }
     #[test]

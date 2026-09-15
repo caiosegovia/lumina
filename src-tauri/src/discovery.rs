@@ -10,7 +10,9 @@ use image::{GenericImageView, ImageReader};
 use rusqlite::params;
 use std::{
     collections::{HashMap, HashSet},
+    ffi::OsString,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 const ALGORITHM_VERSION: i64 = 1;
@@ -36,6 +38,15 @@ const CITIES: &[(&str, &str, &str, f64, f64)] = &[
     ("Maceió", "AL", "Brasil", -9.6498, -35.7089),
     ("João Pessoa", "PB", "Brasil", -7.1195, -34.8450),
     ("São Luís", "MA", "Brasil", -2.5307, -44.3068),
+    ("Aracaju", "SE", "Brasil", -10.9472, -37.0731),
+    ("Boa Vista", "RR", "Brasil", 2.8235, -60.6758),
+    ("Campo Grande", "MS", "Brasil", -20.4697, -54.6201),
+    ("Cuiabá", "MT", "Brasil", -15.6014, -56.0979),
+    ("Macapá", "AP", "Brasil", 0.0349, -51.0694),
+    ("Palmas", "TO", "Brasil", -10.1840, -48.3336),
+    ("Porto Velho", "RO", "Brasil", -8.7608, -63.8999),
+    ("Rio Branco", "AC", "Brasil", -9.9754, -67.8249),
+    ("Teresina", "PI", "Brasil", -5.0919, -42.8034),
     ("Lisboa", "Lisboa", "Portugal", 38.7223, -9.1393),
     ("Porto", "Porto", "Portugal", 41.1579, -8.6291),
     ("Nova York", "NY", "Estados Unidos", 40.7128, -74.0060),
@@ -68,16 +79,79 @@ fn cell_key(lat: f64, lon: f64) -> String {
     )
 }
 
+fn normalized_path(value: &str) -> String {
+    value.replace('/', "\\").to_lowercase()
+}
+
+fn embedded_geolocations(
+    rows: &[(String, f64, f64, String)],
+) -> HashMap<String, (String, String, String)> {
+    let ids = rows
+        .iter()
+        .map(|(id, _, _, path)| (normalized_path(path), id.clone()))
+        .collect::<HashMap<_, _>>();
+    let mut found = HashMap::new();
+    for batch in rows.chunks(100) {
+        let mut args = vec![
+            OsString::from("-json"),
+            OsString::from("-api"),
+            OsString::from("Geolocation"),
+            OsString::from("-GeolocationCity"),
+            OsString::from("-GeolocationRegion"),
+            OsString::from("-GeolocationCountry"),
+        ];
+        args.extend(batch.iter().map(|row| OsString::from(&row.3)));
+        let output = crate::process::run(
+            crate::process::ProcessSpec::new("ExifTool", "exiftool")
+                .args(args)
+                .timeout(Duration::from_secs(120))
+                .logical("ExifTool offline geolocation"),
+            &crate::process::CancellationToken::default(),
+        );
+        let Ok(output) = output else { continue };
+        let Ok(values) = serde_json::from_slice::<Vec<serde_json::Value>>(&output.stdout) else {
+            continue;
+        };
+        for value in values {
+            let Some(id) = value
+                .get("SourceFile")
+                .and_then(|x| x.as_str())
+                .and_then(|path| ids.get(&normalized_path(path)))
+            else {
+                continue;
+            };
+            let Some(city) = value
+                .get("GeolocationCity")
+                .and_then(|x| x.as_str())
+                .filter(|x| !x.is_empty())
+            else {
+                continue;
+            };
+            let region = value
+                .get("GeolocationRegion")
+                .and_then(|x| x.as_str())
+                .unwrap_or("");
+            let country = value
+                .get("GeolocationCountry")
+                .and_then(|x| x.as_str())
+                .unwrap_or("");
+            found.insert(id.clone(), (city.into(), region.into(), country.into()));
+        }
+    }
+    found
+}
+
 pub fn resolve_locations(cfg: &LibraryConfig) -> Result<LocationResolveResult, String> {
     let mut conn = db(cfg)?;
     let rows = {
-        let mut s=conn.prepare("SELECT id,latitude,longitude FROM assets WHERE latitude IS NOT NULL AND longitude IS NOT NULL").map_err(|e|e.to_string())?;
+        let mut s=conn.prepare("SELECT id,latitude,longitude,master_path FROM assets WHERE latitude IS NOT NULL AND longitude IS NOT NULL").map_err(|e|e.to_string())?;
         let values = s
             .query_map([], |r| {
                 Ok((
                     r.get::<_, String>(0)?,
                     r.get::<_, f64>(1)?,
                     r.get::<_, f64>(2)?,
+                    r.get::<_, String>(3)?,
                 ))
             })
             .map_err(|e| e.to_string())?
@@ -85,33 +159,51 @@ pub fn resolve_locations(cfg: &LibraryConfig) -> Result<LocationResolveResult, S
             .map_err(|e| e.to_string())?;
         values
     };
+    let embedded = embedded_geolocations(&rows);
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let now = Utc::now().to_rfc3339();
     let mut named = 0;
     let mut approximate = 0;
-    for (id, lat, lon) in &rows {
+    for (id, lat, lon, _) in &rows {
         let key = cell_key(*lat, *lon);
         let nearest = CITIES
             .iter()
             .map(|city| (city, distance_km(*lat, *lon, city.3, city.4)))
             .min_by(|a, b| a.1.total_cmp(&b.1));
-        let (city, region, country, label, source, precision) = match nearest {
-            Some((c, d)) if d <= 100.0 => (
-                Some(c.0),
-                Some(c.1),
-                Some(c.2),
-                format!("{}, {} · {}", c.0, c.1, c.2),
-                "offline",
-                d,
-            ),
-            _ => (
-                None,
-                None,
-                None,
-                format!("Região {:.2}, {:.2}", lat, lon),
-                "approximate",
-                8.0,
-            ),
+        let (city, region, country, label, source, precision) = match embedded.get(id) {
+            Some((city, region, country)) => {
+                let label = [city.as_str(), region.as_str(), country.as_str()]
+                    .into_iter()
+                    .filter(|x| !x.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+                (
+                    Some(city.as_str()),
+                    (!region.is_empty()).then_some(region.as_str()),
+                    (!country.is_empty()).then_some(country.as_str()),
+                    label,
+                    "offline",
+                    1.0,
+                )
+            }
+            None => match nearest {
+                Some((c, d)) if d <= 45.0 => (
+                    Some(c.0),
+                    Some(c.1),
+                    Some(c.2),
+                    format!("{}, {} · {}", c.0, c.1, c.2),
+                    "offline",
+                    d,
+                ),
+                _ => (
+                    None,
+                    None,
+                    None,
+                    format!("Região {:.2}, {:.2}", lat, lon),
+                    "approximate",
+                    8.0,
+                ),
+            },
         };
         if source == "offline" {
             named += 1
@@ -324,10 +416,40 @@ fn parse_date(value: &str) -> Option<chrono::NaiveDateTime> {
     chrono::DateTime::parse_from_rfc3339(value)
         .map(|x| x.naive_local())
         .ok()
+        .or_else(|| NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S").ok())
         .or_else(|| NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S").ok())
         .or_else(|| {
             NaiveDateTime::parse_from_str(&format!("{value} 00:00:00"), "%Y-%m-%d %H:%M:%S").ok()
         })
+}
+
+fn belongs_to_burst(
+    previous: &DiscoveryItem,
+    current: &DiscoveryItem,
+    hashes: &HashMap<String, u64>,
+) -> bool {
+    if !matches!(previous.media_type.as_str(), "photo" | "raw")
+        || !matches!(current.media_type.as_str(), "photo" | "raw")
+        || previous.camera != current.camera
+    {
+        return false;
+    }
+    let Some(gap) = parse_date(&current.captured_at)
+        .zip(parse_date(&previous.captured_at))
+        .map(|(current, previous)| (current - previous).num_seconds().abs())
+    else {
+        return false;
+    };
+    if gap <= 2 {
+        return true;
+    }
+    if gap > 8 || previous.camera.is_none() {
+        return false;
+    }
+    match (hashes.get(&previous.id), hashes.get(&current.id)) {
+        (Some(left), Some(right)) => (*left ^ *right).count_ones() <= 18,
+        _ => gap <= 4,
+    }
 }
 
 fn location_groups(
@@ -399,15 +521,24 @@ fn location_groups(
     places.sort_by(|a, b| b.score.total_cmp(&a.score));
     places.truncate(30);
 
-    let mut trip_rows: Vec<(String, NaiveDateTime, f64, f64)> = rows
+    type TripEntry = (
+        String,
+        NaiveDateTime,
+        f64,
+        f64,
+        Option<String>,
+        Option<String>,
+    );
+    let mut trip_rows: Vec<TripEntry> = rows
         .into_iter()
-        .filter_map(|(id, date, lat, lon, _, _)| Some((id, parse_date(&date)?, lat, lon)))
+        .filter_map(|(id, date, lat, lon, key, label)| {
+            Some((id, parse_date(&date)?, lat, lon, key, label))
+        })
         .collect();
     trip_rows.sort_by_key(|row| row.1);
     let mut trips = Vec::new();
-    let mut current: Vec<(String, NaiveDateTime, f64, f64)> = Vec::new();
-    let flush = |current: &mut Vec<(String, NaiveDateTime, f64, f64)>,
-                 trips: &mut Vec<DiscoveryGroup>| {
+    let mut current: Vec<TripEntry> = Vec::new();
+    let flush = |current: &mut Vec<TripEntry>, trips: &mut Vec<DiscoveryGroup>| {
         if current.len() < 3 {
             current.clear();
             return;
@@ -417,19 +548,37 @@ fn location_groups(
         let center_lon = taken.iter().map(|row| row.3).sum::<f64>() / taken.len() as f64;
         let first = taken.first().map(|row| row.1).unwrap();
         let last = taken.last().map(|row| row.1).unwrap();
+        let label = taken.iter().find_map(|row| row.5.clone());
+        let place_key = taken.iter().find_map(|row| row.4.clone());
         trips.push(DiscoveryGroup {
             id: format!("trip-{}", first.format("%Y%m%d")),
-            title: format!(
-                "Viagem de {} a {}",
-                first.format("%d/%m/%Y"),
-                last.format("%d/%m/%Y")
-            ),
-            detail: format!(
-                "{} registros · região {:.1}, {:.1}",
-                taken.len(),
-                center_lat,
-                center_lon
-            ),
+            title: label
+                .as_ref()
+                .map(|name| format!("Viagem a {name}"))
+                .unwrap_or_else(|| {
+                    format!(
+                        "Viagem de {} a {}",
+                        first.format("%d/%m/%Y"),
+                        last.format("%d/%m/%Y")
+                    )
+                }),
+            detail: label
+                .map(|_| {
+                    format!(
+                        "{} registros · {} a {}",
+                        taken.len(),
+                        first.format("%d/%m/%Y"),
+                        last.format("%d/%m/%Y")
+                    )
+                })
+                .unwrap_or_else(|| {
+                    format!(
+                        "{} registros · região {:.1}, {:.1}",
+                        taken.len(),
+                        center_lat,
+                        center_lon
+                    )
+                }),
             score: taken.len() as f64,
             items: taken
                 .into_iter()
@@ -440,7 +589,7 @@ fn location_groups(
             recommendation: Some(
                 "Sequência sugerida por datas próximas e coordenadas presentes".into(),
             ),
-            place_key: None,
+            place_key,
         });
     };
     for row in trip_rows {
@@ -557,6 +706,10 @@ pub fn overview(cfg: &LibraryConfig) -> Result<DiscoveryOverview, String> {
     }
     similar.sort_by(|a, b| b.score.total_cmp(&a.score));
     similar.truncate(80);
+    let hash_by_id = fingerprints
+        .iter()
+        .map(|(id, hash, _)| (id.clone(), *hash))
+        .collect::<HashMap<_, _>>();
     let mut sequences = Vec::new();
     let mut current: Vec<DiscoveryItem> = Vec::new();
     let mut chronological = assets.clone();
@@ -564,25 +717,20 @@ pub fn overview(cfg: &LibraryConfig) -> Result<DiscoveryOverview, String> {
     for asset in chronological {
         let joins = current
             .last()
-            .and_then(|last| {
-                Some(
-                    (parse_date(&asset.captured_at)? - parse_date(&last.captured_at)?)
-                        .num_seconds()
-                        .abs()
-                        <= 15
-                        && asset.camera == last.camera,
-                )
-            })
+            .map(|last| belongs_to_burst(last, &asset, &hash_by_id))
             .unwrap_or(false);
         if !joins && current.len() >= 3 {
             let taken = std::mem::take(&mut current);
             sequences.push(DiscoveryGroup {
                 id: format!("sequence-{}", taken[0].id),
-                title: format!("Sequência de {} registros", taken.len()),
-                detail: taken[0]
-                    .camera
-                    .clone()
-                    .unwrap_or_else(|| "Mesmo momento".into()),
+                title: format!("Burst com {} registros", taken.len()),
+                detail: format!(
+                    "{} · até 8 s entre registros",
+                    taken[0]
+                        .camera
+                        .clone()
+                        .unwrap_or_else(|| "Câmera não informada".into())
+                ),
                 score: taken.len() as f64,
                 items: taken,
                 recommended_id: None,
@@ -610,11 +758,14 @@ pub fn overview(cfg: &LibraryConfig) -> Result<DiscoveryOverview, String> {
     if current.len() >= 3 {
         sequences.push(DiscoveryGroup {
             id: format!("sequence-{}", current[0].id),
-            title: format!("Sequência de {} registros", current.len()),
-            detail: current[0]
-                .camera
-                .clone()
-                .unwrap_or_else(|| "Mesmo momento".into()),
+            title: format!("Burst com {} registros", current.len()),
+            detail: format!(
+                "{} · até 8 s entre registros",
+                current[0]
+                    .camera
+                    .clone()
+                    .unwrap_or_else(|| "Câmera não informada".into())
+            ),
             score: current.len() as f64,
             items: current,
             recommended_id: None,
@@ -694,7 +845,36 @@ mod tests {
     #[test]
     fn date_parser_accepts_catalog_formats() {
         assert!(parse_date("2025-01-02T03:04:05+00:00").is_some());
+        assert!(parse_date("2025-01-02T03:04:05").is_some());
         assert!(parse_date("2025-01-02").is_some());
+    }
+
+    #[test]
+    fn burst_requires_temporal_camera_and_visual_coherence() {
+        let item = |id: &str, captured_at: &str, camera: Option<&str>| DiscoveryItem {
+            id: id.into(),
+            filename: format!("{id}.jpg"),
+            media_type: "photo".into(),
+            captured_at: captured_at.into(),
+            camera: camera.map(str::to_string),
+            quality_score: None,
+            visual_labels: vec![],
+        };
+        let first = item("a", "2026-01-02T14:30:00", Some("Canon"));
+        let close = item("b", "2026-01-02T14:30:03", Some("Canon"));
+        let different = item("c", "2026-01-02T14:30:06", Some("Canon"));
+        let hashes = HashMap::from([
+            ("a".into(), 0_u64),
+            ("b".into(), 1_u64),
+            ("c".into(), u64::MAX),
+        ]);
+        assert!(belongs_to_burst(&first, &close, &hashes));
+        assert!(!belongs_to_burst(&close, &different, &hashes));
+        assert!(!belongs_to_burst(
+            &first,
+            &item("d", "2026-01-02T14:30:01", Some("Nikon")),
+            &hashes
+        ));
     }
 
     #[test]

@@ -279,6 +279,7 @@ pub struct GalleryFilters {
     pub original_folder: Option<String>,
     pub extension: Option<String>,
     pub has_location: Option<bool>,
+    pub place_key: Option<String>,
     pub tag_id: Option<String>,
     pub album_id: Option<String>,
     pub protection_state: Option<String>,

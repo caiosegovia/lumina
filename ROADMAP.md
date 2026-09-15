@@ -43,19 +43,26 @@ O histórico detalhado permanece em `RELEASE-0.18-BETA.md` e nos hotfixes 0.18.1
 - Testes frontend e Rust, TypeScript/Vite, formatação, Clippy, build release e smoke do pacote portátil.
 - Instalação NSIS/MSI e roteiro manual em catálogo de homologação com carga concorrente.
 
-## Entrega atual — 0.20: lugares e curadoria privada
+## Concluído — 0.20: lugares e curadoria privada
 
 - Resolução local de coordenadas em cidades, com fallback honesto para região aproximada.
 - Cache derivado e idempotente, correções manuais persistentes e nenhuma escrita em EXIF.
 - Contadores e ações de lugares em Descoberta, abertura do conjunto e busca textual integrada na Galeria.
 - Migração v16, testes de privacidade e regressão completa em instaladores Windows.
 
-## Próximo — 0.21: automação assistida
+## Entrega atual — 0.21: tempo, lugares e bursts confiáveis
 
-- Regras de curadoria salvas e filas de revisão configuráveis.
-- Filtros explícitos por lugar, combinações salvas e navegação de viagens aprimorada.
-- Comparação orientada a sequências e escolha assistida, sempre explicável e reversível.
-- Perfis explícitos de consumo para bateria, CPU e disco e expansão versionada da base geográfica.
+- Corrigir o falso UTC de datas EXIF e tornar sua proveniência visível.
+- Usar a base geográfica mundial offline embarcada, filtro exato e viagens legíveis.
+- Detectar bursts por tempo, equipamento e coerência visual.
+- Favoritar a melhor candidata e enviar alternativas para revisão sem exclusão.
+
+## Próximo — 0.22: automação configurável
+
+- Regras de curadoria salvas e filas personalizadas.
+- Comparação de até quatro candidatas e ações em pilhas inteiras.
+- Perfis explícitos de CPU, bateria e disco.
+- Atualização versionada da base geográfica e refinamento por bairro/ponto de interesse.
 
 ## Depois — 1.0: prontidão de produção
 

@@ -110,6 +110,14 @@ fn conditions(f: &GalleryFilters) -> (Vec<String>, Vec<Value>) {
             .into(),
         )
     }
+    if let Some(x) = f.place_key.as_ref().filter(|x| !x.is_empty()) {
+        add(
+            &mut c,
+            &mut v,
+            "EXISTS(SELECT 1 FROM asset_locations apl WHERE apl.asset_id=a.id AND apl.cell_key=?)",
+            Value::Text(x.clone()),
+        )
+    }
     if let Some(x) = f.tag_id.as_ref().filter(|x| !x.is_empty()) {
         add(
             &mut c,
@@ -535,6 +543,20 @@ mod tests {
             .unwrap()
         };
         assert_eq!(find("recife").assets[0].id, "a");
+        let exact = search(
+            &db,
+            &GalleryRequest {
+                filters: GalleryFilters {
+                    place_key: Some("cell".into()),
+                    ..Default::default()
+                },
+                cursor: None,
+                limit: Some(20),
+                sort: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(exact.matched, 1);
         db.execute("INSERT INTO location_overrides(cell_key,display_name,updated_at)VALUES('cell','Casa da praia','2026-01-01')",[]).unwrap();
         assert_eq!(find("casa da praia").assets[0].id, "a");
         drop(db);

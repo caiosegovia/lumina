@@ -1,6 +1,6 @@
 # Lumina
 
-Versão em desenvolvimento: **0.20.0-beta.1**, pacote de lugares e curadoria privada sobre a base estável da 0.19. Consulte [SPEC-0.20-BETA.md](SPEC-0.20-BETA.md), [ARCHITECTURE-0.20.md](ARCHITECTURE-0.20.md), [RELEASE-0.20-BETA.md](RELEASE-0.20-BETA.md) e [VALIDATION-0.20-BETA.md](VALIDATION-0.20-BETA.md).
+Versão em desenvolvimento: **0.21.0-beta.1**, pacote de datas confiáveis, lugares offline e curadoria de bursts. Consulte [SPEC-0.21-BETA.md](SPEC-0.21-BETA.md), [ARCHITECTURE-0.21.md](ARCHITECTURE-0.21.md), [RELEASE-0.21-BETA.md](RELEASE-0.21-BETA.md) e [VALIDATION-0.21-BETA.md](VALIDATION-0.21-BETA.md).
 
 A anatomia, os wireframes responsivos e os estados da nova galeria estão registrados em [DESIGN-0.15-GALLERY.md](DESIGN-0.15-GALLERY.md).
 

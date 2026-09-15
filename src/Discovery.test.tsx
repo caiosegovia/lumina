@@ -98,4 +98,16 @@ describe("descoberta local", () => {
     );
     expect(await screen.findByText(/somente no catálogo/)).toBeInTheDocument();
   });
+  it("faz curadoria reversível do melhor item de um burst", async () => {
+    const user = userEvent.setup();
+    const items = ["a", "b", "c"].map((id) => ({ id, filename: `${id}.jpg`, mediaType: "photo" as const, capturedAt: "2026-01-02T14:30:00", camera: "Canon" }));
+    vi.spyOn(api, "discovery").mockResolvedValue({ indexed: 3, indexable: 3, similar: [], sequences: [{ id: "burst-a", title: "Burst com 3 registros", detail: "Canon", score: 3, items, recommendedId: "b", recommendation: "Mais nítida" }], memories: [], places: [], trips: [], locationStatus: { geotagged: 0, named: 0, approximate: 0 } });
+    const update = vi.spyOn(api, "updateUserState").mockResolvedValue({ affected: 1 });
+    render(<Discovery navigate={() => {}} />);
+    await user.click(await screen.findByRole("button", { name: "Manter melhor" }));
+    await waitFor(() => expect(update).toHaveBeenCalledTimes(2));
+    expect(update).toHaveBeenNthCalledWith(1, { assetIds: ["b"], favorite: true });
+    expect(update).toHaveBeenNthCalledWith(2, { assetIds: ["a", "c"], reviewLater: true });
+    expect(await screen.findByText(/Nada foi excluído/)).toBeInTheDocument();
+  });
 });
