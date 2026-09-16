@@ -54,16 +54,6 @@ pub fn export(cfg: &LibraryConfig, job: &str, format: &str) -> Result<ReportExpo
     if !matches!(format, "jsonl" | "csv") {
         return Err("Formato de relatório inválido".into());
     }
-    let mut events = Vec::new();
-    let mut cursor = 0;
-    loop {
-        let batch = page(cfg, job, cursor, "")?;
-        if batch.events.is_empty() {
-            break;
-        }
-        cursor = batch.next_cursor;
-        events.extend(batch.events);
-    }
     let dir = Path::new(&cfg.master_path).join(".lumina/reports");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = dir.join(format!("import-{job}.{format}"));
@@ -71,31 +61,42 @@ pub fn export(cfg: &LibraryConfig, job: &str, format: &str) -> Result<ReportExpo
     if format == "csv" {
         writeln!(output, "id,job_id,at,path,state,details").map_err(|e| e.to_string())?
     }
-    for event in &events {
-        if format == "jsonl" {
-            writeln!(
-                output,
-                "{}",
-                serde_json::to_string(event).map_err(|e| e.to_string())?
-            )
-            .map_err(|e| e.to_string())?
-        } else {
-            writeln!(
-                output,
-                "{},{},{},{},{},{}",
-                event.id,
-                csv(&event.job_id),
-                csv(&event.at),
-                csv(&event.path),
-                csv(&event.state),
-                csv(&event.details)
-            )
-            .map_err(|e| e.to_string())?
+    let mut cursor = 0;
+    let mut rows = 0i64;
+    loop {
+        let batch = page(cfg, job, cursor, "")?;
+        if batch.events.is_empty() {
+            break;
+        }
+        cursor = batch.next_cursor;
+        for event in batch.events {
+            if format == "jsonl" {
+                writeln!(
+                    output,
+                    "{}",
+                    serde_json::to_string(&event).map_err(|e| e.to_string())?
+                )
+                .map_err(|e| e.to_string())?
+            } else {
+                writeln!(
+                    output,
+                    "{},{},{},{},{},{}",
+                    event.id,
+                    csv(&event.job_id),
+                    csv(&event.at),
+                    csv(&event.path),
+                    csv(&event.state),
+                    csv(&event.details)
+                )
+                .map_err(|e| e.to_string())?
+            }
+            rows += 1;
         }
     }
+    output.flush().map_err(|error| error.to_string())?;
     Ok(ReportExport {
         path: path.to_string_lossy().into_owned(),
-        rows: events.len() as i64,
+        rows,
     })
 }
 

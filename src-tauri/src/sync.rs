@@ -120,6 +120,18 @@ pub fn run(
         seen.insert(path_text.clone());
         let bytes = metadata.len().min(i64::MAX as u64) as i64;
         let modified_at = modified(&metadata);
+        if let Err(reason) = crate::limits::ensure_supported_size(metadata.len()) {
+            summary.failed += 1;
+            summary.processed_bytes = summary.processed_bytes.saturating_add(bytes);
+            conn.execute("INSERT INTO source_inventory(source_id,path,filename,extension,bytes,modified_at,hash,asset_id,state,last_seen_at,missing_since,last_error)VALUES(?1,?2,?3,?4,?5,?6,NULL,NULL,'error',?7,NULL,?8)ON CONFLICT(source_id,path)DO UPDATE SET filename=excluded.filename,extension=excluded.extension,bytes=excluded.bytes,modified_at=excluded.modified_at,hash=NULL,asset_id=NULL,state='error',last_seen_at=excluded.last_seen_at,missing_since=NULL,last_error=excluded.last_error",params![source_id,path_text,path.file_name().unwrap_or_default().to_string_lossy(),extension,bytes,modified_at,started_at,reason]).map_err(|error|error.to_string())?;
+            let processed = summary.present
+                + summary.new_files
+                + summary.duplicates
+                + summary.changed
+                + summary.failed;
+            conn.execute("UPDATE jobs SET processed_items=?2,processed_bytes=?3,current_file=?4,failed_count=?5,updated_at=?6 WHERE id=?1",params![job,processed,summary.processed_bytes,path_text,summary.failed,Utc::now().to_rfc3339()]).map_err(|error|error.to_string())?;
+            continue;
+        }
         let prior: Option<(i64, String, Option<String>, Option<String>)> = conn
             .query_row(
                 "SELECT bytes,modified_at,hash,asset_id FROM source_inventory WHERE source_id=?1 AND path=?2",
@@ -173,7 +185,11 @@ pub fn run(
         };
         conn.execute("INSERT INTO source_inventory(source_id,path,filename,extension,bytes,modified_at,hash,asset_id,state,last_seen_at,missing_since,last_error)VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,NULL,NULL)ON CONFLICT(source_id,path)DO UPDATE SET filename=excluded.filename,extension=excluded.extension,bytes=excluded.bytes,modified_at=excluded.modified_at,hash=excluded.hash,asset_id=excluded.asset_id,state=excluded.state,last_seen_at=excluded.last_seen_at,missing_since=NULL,last_error=NULL",params![source_id,path_text,path.file_name().unwrap_or_default().to_string_lossy(),extension,bytes,modified_at,hash,asset_id,state,started_at]).map_err(|error|error.to_string())?;
         summary.processed_bytes = summary.processed_bytes.saturating_add(bytes);
-        let processed = summary.present + summary.new_files + summary.duplicates + summary.changed;
+        let processed = summary.present
+            + summary.new_files
+            + summary.duplicates
+            + summary.changed
+            + summary.failed;
         conn.execute("UPDATE jobs SET processed_items=?2,processed_bytes=?3,current_file=?4,imported_count=?5,duplicate_count=?6,updated_at=?7 WHERE id=?1",params![job,processed,summary.processed_bytes,path_text,summary.new_files,summary.duplicates,Utc::now().to_rfc3339()]).map_err(|error|error.to_string())?;
     }
 
@@ -195,7 +211,7 @@ pub fn run(
     let finished = Utc::now().to_rfc3339();
     transaction.execute("UPDATE sources SET available=1,last_scan=?2,asset_count=(SELECT COUNT(*) FROM source_inventory WHERE source_id=?1 AND state<>'missing') WHERE id=?1",params![source_id,finished]).map_err(|error|error.to_string())?;
     transaction.execute("UPDATE source_sync_settings SET last_completed_at=?2,last_state='completed',last_error=NULL WHERE source_id=?1",params![source_id,finished]).map_err(|error|error.to_string())?;
-    transaction.execute("UPDATE jobs SET state='completed',stage='sync_completed',processed_items=total_items,processed_bytes=total_bytes,excluded_count=?2,finished_at=?3,updated_at=?3,current_file=NULL WHERE id=?1",params![job,summary.missing,finished]).map_err(|error|error.to_string())?;
+    transaction.execute("UPDATE jobs SET state='completed',stage='sync_completed',processed_items=total_items,processed_bytes=total_bytes,excluded_count=?2,failed_count=?3,finished_at=?4,updated_at=?4,current_file=NULL WHERE id=?1",params![job,summary.missing,summary.failed,finished]).map_err(|error|error.to_string())?;
     transaction
         .execute(
             "INSERT INTO events(job_id,at,path,state,details)VALUES(?1,?2,'','completed',?3)",

@@ -11,7 +11,9 @@ mod health;
 mod insights;
 mod jobs;
 mod library;
+mod limits;
 mod media;
+mod media_protocol;
 mod metadata;
 mod models;
 mod pipeline;
@@ -42,6 +44,8 @@ struct AppState {
     config_path: PathBuf,
     library_lock: Mutex<Option<library::LibraryLock>>,
 }
+
+type MediaProtocolPayload = (Vec<u8>, String, u64, u64, u64, bool);
 
 static PHOTO_PREVIEW_ACTIVE: AtomicBool = AtomicBool::new(false);
 static ON_DEMAND_METADATA_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -123,11 +127,37 @@ fn get_library(state: State<AppState>) -> Option<LibraryConfig> {
     state.library.lock().ok().and_then(|v| v.clone())
 }
 fn persist_config(state: &State<AppState>, cfg: &LibraryConfig) -> Result<(), String> {
-    fs::write(
+    storage::atomic_write(
         &state.config_path,
-        serde_json::to_vec_pretty(cfg).map_err(|e| e.to_string())?,
+        &serde_json::to_vec_pretty(cfg).map_err(|e| e.to_string())?,
     )
-    .map_err(|e| e.to_string())
+}
+
+fn reconcile_config_from_catalog(config_path: &Path, cfg: &mut LibraryConfig) {
+    let path = Path::new(&cfg.master_path).join(".lumina/catalog.sqlite");
+    let stored = catalog::open(&path).ok().and_then(|conn| {
+        conn.query_row(
+            "SELECT value FROM app_preferences WHERE key='library.backup_path'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .ok()
+        .flatten()
+    });
+    let Some(stored) = stored.filter(|value| !value.trim().is_empty()) else {
+        return;
+    };
+    if cfg.backup_path != stored {
+        cfg.backup_path = stored;
+        if let Ok(bytes) = serde_json::to_vec_pretty(cfg) {
+            if let Err(error) = storage::atomic_write(config_path, &bytes) {
+                diagnostics::append("config_reconcile_deferred", &process::sanitize(&error));
+            } else {
+                diagnostics::append("config_reconciled", "backup_path_from_catalog");
+            }
+        }
+    }
 }
 #[tauri::command]
 fn update_backup_path(
@@ -146,20 +176,27 @@ fn update_backup_path(
         return Err("A réplica precisa ficar fora da pasta do acervo".into());
     }
     cfg.backup_path = backup.to_string_lossy().into();
-    let conn = db(&cfg)?;
+    let mut conn = db(&cfg)?;
     let maintenance = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
-    conn.execute("INSERT OR IGNORE INTO sources(id,name,path,volume_label,available)VALUES('_lumina_maintenance','Manutenção da biblioteca','lumina://maintenance','internal',1)",[]).map_err(|e|e.to_string())?;
-    conn.execute("INSERT INTO jobs(id,source_id,source_path,state,stage,created_at,updated_at,library_state,backup_state)VALUES(?1,'_lumina_maintenance','lumina://maintenance','protection_pending','protection_pending',?2,?2,'verified','pending')",params![maintenance,now]).map_err(|e|e.to_string())?;
-    conn.execute(
-        "UPDATE assets SET protection_state='stale' WHERE protection_state='replica_verified'",
-        [],
-    )
-    .map_err(|e| e.to_string())?;
-    conn.execute("UPDATE backup_entries SET state='stale'", [])
+    let transaction = conn.transaction().map_err(|error| error.to_string())?;
+    transaction.execute("INSERT OR IGNORE INTO sources(id,name,path,volume_label,available)VALUES('_lumina_maintenance','Manutenção da biblioteca','lumina://maintenance','internal',1)",[]).map_err(|e|e.to_string())?;
+    transaction.execute("INSERT INTO jobs(id,source_id,source_path,state,stage,created_at,updated_at,library_state,backup_state)VALUES(?1,'_lumina_maintenance','lumina://maintenance','protection_pending','protection_pending',?2,?2,'verified','pending')",params![maintenance,now]).map_err(|e|e.to_string())?;
+    transaction
+        .execute(
+            "UPDATE assets SET protection_state='stale' WHERE protection_state='replica_verified'",
+            [],
+        )
         .map_err(|e| e.to_string())?;
-    conn.execute("INSERT INTO work_queue(job_id,asset_id,kind,state,created_at,updated_at)SELECT ?1,id,'backup','pending',?2,?2 FROM assets",params![maintenance,now]).map_err(|e|e.to_string())?;
-    persist_config(&state, &cfg)?;
+    transaction
+        .execute("UPDATE backup_entries SET state='stale'", [])
+        .map_err(|e| e.to_string())?;
+    transaction.execute("INSERT INTO work_queue(job_id,asset_id,kind,state,created_at,updated_at)SELECT ?1,id,'backup','pending',?2,?2 FROM assets",params![maintenance,now]).map_err(|e|e.to_string())?;
+    transaction.execute("INSERT INTO app_preferences(key,value,updated_at)VALUES('library.backup_path',?1,?2)ON CONFLICT(key)DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",params![&cfg.backup_path,&now]).map_err(|error|error.to_string())?;
+    transaction.commit().map_err(|error| error.to_string())?;
+    if let Err(error) = persist_config(&state, &cfg) {
+        diagnostics::append("config_write_deferred", &process::sanitize(&error));
+    }
     *state
         .library
         .lock()
@@ -192,11 +229,12 @@ async fn migrate_master_path(
     *state
         .library
         .lock()
-        .map_err(|_| "Estado interno indisponível")? = Some(next);
+        .map_err(|_| "Estado interno indisponível")? = Some(next.clone());
     *state
         .library_lock
         .lock()
         .map_err(|_| "Estado interno indisponível")? = Some(guard);
+    diagnostics::spawn_monitor(next);
     Ok(progress)
 }
 #[tauri::command]
@@ -239,15 +277,15 @@ fn create_library(
     };
     let guard =
         library::LibraryLock::acquire(Path::new(&cfg.master_path), &Uuid::new_v4().to_string())?;
-    db(&cfg)?;
+    let conn = db(&cfg)?;
+    conn.execute("INSERT INTO app_preferences(key,value,updated_at)VALUES('library.backup_path',?1,?2)ON CONFLICT(key)DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",params![&cfg.backup_path,Utc::now().to_rfc3339()]).map_err(|error|error.to_string())?;
     if let Some(parent) = state.config_path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?
     }
-    fs::write(
+    storage::atomic_write(
         &state.config_path,
-        serde_json::to_vec_pretty(&cfg).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| e.to_string())?;
+        &serde_json::to_vec_pretty(&cfg).map_err(|e| e.to_string())?,
+    )?;
     *state
         .library
         .lock()
@@ -996,7 +1034,7 @@ fn list_albums(state: State<AppState>) -> Result<Vec<Album>, String> {
 fn list_jobs(state: State<AppState>) -> Result<Vec<JobOverview>, String> {
     let cfg = current(&state)?;
     let conn = db(&cfg)?;
-    let mut stmt=conn.prepare("SELECT j.id,s.name,j.source_path,j.state,j.stage,j.processed_items,j.total_items,j.processed_bytes,j.total_bytes,CASE WHEN j.state='analyzing' AND j.stage_total_bytes>0 THEN MIN(100.0,j.stage_processed_bytes*100.0/j.stage_total_bytes) WHEN j.state='analyzing' AND j.stage_total_items>0 THEN MIN(100.0,j.stage_processed_items*100.0/j.stage_total_items) WHEN j.total_bytes>0 THEN MIN(100.0,j.processed_bytes*100.0/j.total_bytes) WHEN j.total_items>0 THEN MIN(100.0,j.processed_items*100.0/j.total_items) ELSE 0 END,j.bytes_per_second,j.estimated_seconds_remaining,j.imported_count,j.duplicate_count,j.excluded_count,j.failed_count,j.created_at,j.updated_at,j.interruption_reason FROM jobs j JOIN sources s ON s.id=j.source_id WHERE j.source_path NOT LIKE 'lumina://%' ORDER BY CASE WHEN j.state IN('queued','analyzing','consolidating','protecting','pausing','paused','canceling','ready','batch_pending','protection_pending','waiting_space','waiting_backup_space','backup_error','interrupted') THEN 0 ELSE 1 END,j.updated_at DESC LIMIT 200").map_err(|e|e.to_string())?;
+    let mut stmt=conn.prepare("SELECT j.id,s.name,j.source_path,j.state,j.stage,j.processed_items,j.total_items,j.processed_bytes,j.total_bytes,CASE WHEN j.state='analyzing' AND j.stage_total_bytes>0 THEN MIN(100.0,j.stage_processed_bytes*100.0/j.stage_total_bytes) WHEN j.state='analyzing' AND j.stage_total_items>0 THEN MIN(100.0,j.stage_processed_items*100.0/j.stage_total_items) WHEN j.total_bytes>0 THEN MIN(100.0,j.processed_bytes*100.0/j.total_bytes) WHEN j.total_items>0 THEN MIN(100.0,j.processed_items*100.0/j.total_items) ELSE 0 END,j.bytes_per_second,j.estimated_seconds_remaining,j.imported_count,j.duplicate_count,j.excluded_count,j.failed_count,j.created_at,COALESCE(j.heartbeat_at,j.updated_at),j.interruption_reason FROM jobs j JOIN sources s ON s.id=j.source_id WHERE j.source_path NOT LIKE 'lumina://%' ORDER BY CASE WHEN j.state IN('queued','analyzing','consolidating','protecting','pausing','paused','canceling','ready','batch_pending','protection_pending','waiting_space','waiting_backup_space','backup_error','interrupted') THEN 0 ELSE 1 END,j.updated_at DESC LIMIT 200").map_err(|e|e.to_string())?;
     let rows = stmt
         .query_map([], |r| {
             Ok(JobOverview {
@@ -2009,13 +2047,18 @@ pub fn run() {
     diagnostics::start_session();
     let base = dirs::data_local_dir().unwrap_or_else(|| PathBuf::from("."));
     let config_path = base.join("Lumina/library.json");
-    let config: Option<LibraryConfig> = fs::read(&config_path)
+    let mut config: Option<LibraryConfig> = fs::read(&config_path)
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok());
     let manager = jobs::JobManager::new();
     let library_lock = config.as_ref().and_then(|cfg| {
         library::LibraryLock::acquire(Path::new(&cfg.master_path), manager.instance_id()).ok()
     });
+    if library_lock.is_some() {
+        if let Some(cfg) = config.as_mut() {
+            reconcile_config_from_catalog(&config_path, cfg);
+        }
+    }
     if let Some(cfg) = config.as_ref() {
         let _ = jobs::JobManager::interrupt_running(cfg);
         let _ = manager.resume_background(cfg.clone());
@@ -2037,7 +2080,7 @@ pub fn run() {
                     .ok_or_else(|| "Biblioteca não configurada".to_string())?;
                 let path = media::thumbnail_file(&cfg, asset)?
                     .ok_or_else(|| "Miniatura indisponível".to_string())?;
-                fs::read(path).map_err(|error| error.to_string())
+                limits::read_protocol_file(&path)
             };
             match response() {
                 Ok(bytes) => tauri::http::Response::builder()
@@ -2066,8 +2109,7 @@ pub fn run() {
                     .map_err(|_| "Estado indisponível".to_string())?
                     .clone()
                     .ok_or_else(|| "Biblioteca não configurada".to_string())?;
-                fs::read(media::existing_viewer_preview_file(&cfg, asset)?)
-                    .map_err(|error| error.to_string())
+                limits::read_protocol_file(&media::existing_viewer_preview_file(&cfg, asset)?)
             };
             match response() {
                 Ok(bytes) => tauri::http::Response::builder()
@@ -2085,7 +2127,7 @@ pub fn run() {
         })
         .register_uri_scheme_protocol("lumina-media", |context, request| {
             let asset = request.uri().path().trim_start_matches('/');
-            let response = || -> Result<(Vec<u8>, String, u64, u64, u64), String> {
+            let response = || -> Result<MediaProtocolPayload, String> {
                 if !valid_thumbnail_asset_id(asset) {
                     return Err("Identificador inválido".into());
                 }
@@ -2120,30 +2162,23 @@ pub fn run() {
                 }
                 let mut file = fs::File::open(canonical).map_err(|error| error.to_string())?;
                 let total = file.metadata().map_err(|error| error.to_string())?.len();
-                let range = request
+                limits::ensure_supported_size(total)?;
+                let range_header = request
                     .headers()
                     .get("range")
-                    .and_then(|value| value.to_str().ok())
-                    .and_then(|value| value.strip_prefix("bytes="))
-                    .and_then(|value| value.split_once('-'))
-                    .map(|(start, end)| {
-                        (start.parse::<u64>().unwrap_or(0), end.parse::<u64>().ok())
-                    });
-                let (start, end) = range
-                    .map(|(start, end)| {
-                        (
-                            start,
-                            end.unwrap_or_else(|| {
-                                (start + 4 * 1024 * 1024 - 1).min(total.saturating_sub(1))
-                            }),
-                        )
-                    })
-                    .unwrap_or((0, total.saturating_sub(1)));
-                let end = end.min(total.saturating_sub(1));
-                let length = end.saturating_sub(start) + 1;
+                    .and_then(|value| value.to_str().ok());
+                let range = media_protocol::parse_bounded_range(
+                    range_header,
+                    total,
+                    limits::MAX_PROTOCOL_RESPONSE_BYTES,
+                )?
+                .ok_or_else(|| "Mídia vazia".to_string())?;
+                let start = range.start;
+                let end = range.end;
+                let length = range.len();
                 file.seek(SeekFrom::Start(start))
                     .map_err(|error| error.to_string())?;
-                let mut bytes = vec![0; length as usize];
+                let mut bytes = vec![0; usize::try_from(length).map_err(|_| "RANGE_INVALID")?];
                 file.read_exact(&mut bytes)
                     .map_err(|error| error.to_string())?;
                 let mime = if media_type == "photo" {
@@ -2161,11 +2196,11 @@ pub fn run() {
                     }
                 }
                 .to_string();
-                Ok((bytes, mime, start, end, total))
+                Ok((bytes, mime, start, end, total, range_header.is_some()))
             };
             match response() {
-                Ok((bytes, mime, start, end, total)) => {
-                    let partial = start > 0 || end + 1 < total;
+                Ok((bytes, mime, start, end, total, range_requested)) => {
+                    let partial = range_requested || start > 0 || end + 1 < total;
                     let mut builder = tauri::http::Response::builder()
                         .status(if partial { 206 } else { 200 })
                         .header("Content-Type", mime)
@@ -2179,8 +2214,13 @@ pub fn run() {
                     builder.body(bytes).unwrap()
                 }
                 Err(error) => tauri::http::Response::builder()
-                    .status(404)
+                    .status(if error.starts_with("RANGE_") {
+                        416
+                    } else {
+                        404
+                    })
                     .header("Content-Type", "text/plain; charset=utf-8")
+                    .header("Accept-Ranges", "bytes")
                     .body(error.into_bytes())
                     .unwrap(),
             }
@@ -2284,8 +2324,10 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("erro ao iniciar Lumina")
-        .run(|_, event| {
+        .run(|app, event| {
             if matches!(event, tauri::RunEvent::Exit) {
+                let manager = app.state::<jobs::JobManager>();
+                let _ = manager.shutdown(std::time::Duration::from_secs(2));
                 diagnostics::finish_session();
             }
         });

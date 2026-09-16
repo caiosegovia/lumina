@@ -67,60 +67,93 @@ pub fn migrate_master(
     let id = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
     conn.execute("INSERT INTO library_migrations(id,old_master,new_master,state,total_items,total_bytes,created_at,updated_at)VALUES(?1,?2,?3,'copying',?4,?5,?6,?6)",params![id,old.to_string_lossy(),new.to_string_lossy(),total_items,total_bytes,now]).map_err(|e|e.to_string())?;
-    let rows = {
-        let mut s = conn
-            .prepare("SELECT id,master_path,hash,bytes FROM assets ORDER BY id")
-            .map_err(|e| e.to_string())?;
-        let values = s
-            .query_map([], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                    r.get::<_, i64>(3)?,
-                ))
-            })
-            .map_err(|e| e.to_string())?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| e.to_string())?;
-        values
-    };
     let mut processed = 0i64;
     let mut processed_bytes = 0i64;
-    for (_, path, hash, bytes) in &rows {
-        let source =
-            fs::canonicalize(path).map_err(|e| format!("Não foi possível acessar {path}: {e}"))?;
-        let rel = source
-            .strip_prefix(&old)
-            .map_err(|_| format!("Arquivo fora do acervo atual: {path}"))?;
-        let destination = new.join(rel);
-        if let Err(error) = crate::storage::copy_verified(&source, &destination, hash) {
-            conn.execute("UPDATE library_migrations SET state='failed',last_error=?2,updated_at=?3 WHERE id=?1",params![id,error,Utc::now().to_rfc3339()]).ok();
-            return Err(error);
+    let mut cursor = String::new();
+    loop {
+        let page = {
+            let mut statement = conn
+                .prepare("SELECT id,master_path,hash,bytes FROM assets WHERE id>?1 ORDER BY id LIMIT 500")
+                .map_err(|error| error.to_string())?;
+            let rows = statement
+                .query_map([&cursor], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                })
+                .map_err(|error| error.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| error.to_string())?;
+            rows
+        };
+        if page.is_empty() {
+            break;
         }
-        processed += 1;
-        processed_bytes += *bytes;
-        conn.execute("UPDATE library_migrations SET processed_items=?2,processed_bytes=?3,updated_at=?4 WHERE id=?1",params![id,processed,processed_bytes,Utc::now().to_rfc3339()]).ok();
+        for (asset, path, hash, bytes) in page {
+            cursor = asset;
+            let source = fs::canonicalize(&path)
+                .map_err(|e| format!("Não foi possível acessar {path}: {e}"))?;
+            let rel = source
+                .strip_prefix(&old)
+                .map_err(|_| format!("Arquivo fora do acervo atual: {path}"))?;
+            let destination = new.join(rel);
+            if let Err(error) = crate::storage::copy_verified(&source, &destination, &hash) {
+                conn.execute("UPDATE library_migrations SET state='failed',last_error=?2,updated_at=?3 WHERE id=?1",params![id,error,Utc::now().to_rfc3339()]).ok();
+                return Err(error);
+            }
+            processed += 1;
+            processed_bytes += bytes;
+            conn.execute("UPDATE library_migrations SET processed_items=?2,processed_bytes=?3,updated_at=?4 WHERE id=?1",params![id,processed,processed_bytes,Utc::now().to_rfc3339()]).map_err(|error|error.to_string())?;
+        }
     }
     conn.execute(
         "UPDATE library_migrations SET state='verified',updated_at=?2 WHERE id=?1",
         params![id, Utc::now().to_rfc3339()],
     )
     .map_err(|e| e.to_string())?;
-    conn.execute_batch("PRAGMA wal_checkpoint(FULL)").ok();
     fs::create_dir_all(new.join(".lumina")).map_err(|e| e.to_string())?;
-    fs::copy(&db_path, new.join(".lumina/catalog.sqlite")).map_err(|e| e.to_string())?;
+    crate::catalog::snapshot(&db_path, &new.join(".lumina/catalog.sqlite"))
+        .map_err(|error| error.to_string())?;
     let target =
         crate::catalog::open(&new.join(".lumina/catalog.sqlite")).map_err(|e| e.to_string())?;
-    for (asset, path, _, _) in rows {
-        let source = fs::canonicalize(&path).map_err(|e| e.to_string())?;
-        let rel = source.strip_prefix(&old).map_err(|e| e.to_string())?;
-        target
-            .execute(
-                "UPDATE assets SET master_path=?2 WHERE id=?1",
-                params![asset, new.join(rel).to_string_lossy()],
-            )
-            .map_err(|e| e.to_string())?;
+    let mut cursor = String::new();
+    loop {
+        let page = {
+            let mut statement = target
+                .prepare("SELECT id,master_path FROM assets WHERE id>?1 ORDER BY id LIMIT 500")
+                .map_err(|error| error.to_string())?;
+            let rows = statement
+                .query_map([&cursor], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(|error| error.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| error.to_string())?;
+            rows
+        };
+        if page.is_empty() {
+            break;
+        }
+        let transaction = target
+            .unchecked_transaction()
+            .map_err(|error| error.to_string())?;
+        for (asset, path) in page {
+            cursor = asset.clone();
+            let source = fs::canonicalize(&path).map_err(|error| error.to_string())?;
+            let rel = source
+                .strip_prefix(&old)
+                .map_err(|error| error.to_string())?;
+            transaction
+                .execute(
+                    "UPDATE assets SET master_path=?2 WHERE id=?1",
+                    params![asset, new.join(rel).to_string_lossy()],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        transaction.commit().map_err(|error| error.to_string())?;
     }
     target.execute("UPDATE thumbnails SET state='stale',path='',last_error='Acervo migrado; miniatura será reconstruída',updated_at=?1",[Utc::now().to_rfc3339()]).ok();
     target

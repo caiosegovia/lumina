@@ -4,10 +4,25 @@ use std::{
     io::Write,
     panic,
     path::PathBuf,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Mutex, OnceLock,
+    },
 };
 
 static FRONTEND_HEARTBEAT_MS: AtomicU64 = AtomicU64::new(0);
+static MONITOR_STARTED: AtomicBool = AtomicBool::new(false);
+static MONITOR_STOP: AtomicBool = AtomicBool::new(false);
+
+fn log_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn monitor_config() -> &'static Mutex<Option<crate::models::LibraryConfig>> {
+    static CONFIG: OnceLock<Mutex<Option<crate::models::LibraryConfig>>> = OnceLock::new();
+    CONFIG.get_or_init(|| Mutex::new(None))
+}
 
 pub struct ActiveOperation {
     marker: PathBuf,
@@ -56,6 +71,7 @@ pub fn active_operation() -> Option<String> {
 }
 
 pub fn append(kind: &str, detail: &str) {
+    let _guard = log_lock().lock().unwrap_or_else(|error| error.into_inner());
     let directory = root();
     if fs::create_dir_all(&directory).is_err() {
         return;
@@ -91,21 +107,32 @@ pub fn runtime_sample(
     queue: Option<(i64, i64, i64)>,
 ) {
     let (pending, processing, failed) = queue.unwrap_or_default();
-    let memory = working_set_bytes();
+    let rust_memory = working_set_bytes();
+    let memory = process_tree_working_set_bytes();
     let heartbeat = FRONTEND_HEARTBEAT_MS.load(Ordering::Relaxed);
     let heartbeat_age = if heartbeat == 0 {
         0
     } else {
         epoch_ms().saturating_sub(heartbeat)
     };
+    let pressure = if memory >= 1_207_959_552 {
+        2
+    } else if memory >= 1_073_741_824 {
+        1
+    } else {
+        0
+    };
+    crate::resource::set_pressure(pressure);
     append(
         "runtime_metric",
         &format!(
-            "pid={} working_set_bytes={} process_cpu_ms={} ui_heartbeat_age_ms={} active_job={} stage={} queue_pending={} queue_processing={} queue_failed={}",
+            "pid={} working_set_bytes={} rust_working_set_bytes={} process_cpu_ms={} ui_heartbeat_age_ms={} resource_pressure={} active_job={} stage={} queue_pending={} queue_processing={} queue_failed={}",
             std::process::id(),
             memory,
+            rust_memory,
             process_cpu_ms(),
             heartbeat_age,
+            pressure,
             active_job.map(short_id).unwrap_or("none"),
             stage.unwrap_or("idle"),
             pending,
@@ -113,7 +140,7 @@ pub fn runtime_sample(
             failed
         ),
     );
-    if heartbeat_age > 15_000 || memory > 1_500_000_000 {
+    if heartbeat_age > 5_000 || memory > 1_342_177_280 {
         append(
             "runtime_warning",
             &format!(
@@ -166,6 +193,75 @@ pub(crate) fn working_set_bytes() -> u64 {
 }
 
 #[cfg(windows)]
+fn process_tree_working_set_bytes() -> u64 {
+    use std::collections::{HashMap, HashSet, VecDeque};
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, INVALID_HANDLE_VALUE},
+        System::{
+            Diagnostics::ToolHelp::{
+                CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+                TH32CS_SNAPPROCESS,
+            },
+            ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS},
+            Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ},
+        },
+    };
+
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return working_set_bytes();
+    }
+    let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
+    entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    let mut ok = unsafe { Process32FirstW(snapshot, &mut entry) };
+    while ok != 0 {
+        children
+            .entry(entry.th32ParentProcessID)
+            .or_default()
+            .push(entry.th32ProcessID);
+        ok = unsafe { Process32NextW(snapshot, &mut entry) };
+    }
+    unsafe { CloseHandle(snapshot) };
+
+    let root = std::process::id();
+    let mut queue = VecDeque::from([root]);
+    let mut seen = HashSet::new();
+    let mut total = 0u64;
+    while let Some(pid) = queue.pop_front() {
+        if !seen.insert(pid) {
+            continue;
+        }
+        if let Some(next) = children.get(&pid) {
+            queue.extend(next.iter().copied());
+        }
+        let process = unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, 0, pid) };
+        if process.is_null() {
+            continue;
+        }
+        let mut counters: PROCESS_MEMORY_COUNTERS = unsafe { std::mem::zeroed() };
+        counters.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+        if unsafe {
+            GetProcessMemoryInfo(
+                process,
+                &mut counters,
+                std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+            )
+        } != 0
+        {
+            total = total.saturating_add(counters.WorkingSetSize as u64);
+        }
+        unsafe { CloseHandle(process) };
+    }
+    total.max(working_set_bytes())
+}
+
+#[cfg(not(windows))]
+fn process_tree_working_set_bytes() -> u64 {
+    working_set_bytes()
+}
+
+#[cfg(windows)]
 fn process_cpu_ms() -> u64 {
     use windows_sys::Win32::{
         Foundation::FILETIME,
@@ -205,9 +301,27 @@ pub fn log_files() -> Vec<PathBuf> {
 }
 
 pub fn spawn_monitor(cfg: crate::models::LibraryConfig) {
+    MONITOR_STOP.store(false, Ordering::Release);
+    *monitor_config()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = Some(cfg);
+    if MONITOR_STARTED.swap(true, Ordering::AcqRel) {
+        return;
+    }
     let _ = std::thread::Builder::new()
         .name("lumina-observability".into())
         .spawn(move || loop {
+            if MONITOR_STOP.load(Ordering::Acquire) {
+                break;
+            }
+            let cfg = monitor_config()
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone();
+            let Some(cfg) = cfg else {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                continue;
+            };
             let snapshot = crate::catalog::open(
                 &std::path::Path::new(&cfg.master_path).join(".lumina/catalog.sqlite"),
             )
@@ -276,6 +390,7 @@ pub fn start_session() {
 }
 
 pub fn finish_session() {
+    MONITOR_STOP.store(true, Ordering::Release);
     append("session_finished", "clean");
     let _ = fs::remove_file(root().join("running.session"));
 }

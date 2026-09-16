@@ -29,8 +29,9 @@ import {
 } from "lucide-react";
 import { api } from "./api";
 import { captureDate, formatBytes, formatCaptureDate } from "./format";
+import { BoundedLru } from "./lru";
 import type { Album, AssetDetails, GalleryFilters, GalleryResult, GallerySort, MediaAsset, PersonInfo, SavedView } from "./types";
-const thumbs = new Map<string, string | null>(),
+const thumbs = new BoundedLru<string, string | null>(512),
   empty: GalleryFilters = { query: "" };
 type Mode = "grid" | "list";
 type Group = "day" | "month" | "year";
@@ -597,7 +598,21 @@ function ComparisonPane({asset,zoom}:{asset:MediaAsset;zoom:number}){
   const [url,setUrl]=useState("");
   const [details,setDetails]=useState<AssetDetails>();
   useEffect(()=>{let live=true;const media=asset.mediaType==="video"?api.mediaUrl(asset.id):api.photoPreview(asset.id);media.then(value=>live&&setUrl(value)).catch(()=>live&&setUrl(""));api.assetDetails(asset.id).then(value=>live&&setDetails(value)).catch(()=>live&&setDetails(undefined));return()=>{live=false}},[asset.id,asset.mediaType]);
-  return <article className="comparison-pane"><div className="comparison-media">{url?(asset.mediaType==="video"?<video src={url} controls preload="metadata"/>:<img src={url} alt={`Comparação de ${asset.filename}`} style={{transform:`scale(${zoom})`}}/>):<MediaThumb asset={asset}/>}</div><h3>{asset.filename}</h3><p>{formatCaptureDate(asset.capturedAt)}</p><div className="asset-pills"><span>{asset.extension.toUpperCase()}</span><span>{formatBytes(asset.bytes)}</span><span className={asset.protectionState==="replica_verified"?"success":"warning"}>{asset.protectionState==="replica_verified"?"Protegida":"Proteção pendente"}</span></div><dl><div><dt>Dimensões</dt><dd>{asset.width&&asset.height?`${asset.width} × ${asset.height}`:"Não disponível"}</dd></div><div><dt>Câmera</dt><dd>{details?.camera||asset.camera||"Não informada"}</dd></div><div><dt>Lente</dt><dd>{details?.lens||"Não informada"}</dd></div><div><dt>Captura</dt><dd>{details?.iso?`ISO ${details.iso}`:"ISO —"} · {details?.aperture?`f/${details.aperture}`:"f/—"}</dd></div><div><dt>Origens</dt><dd>{asset.sourceNames.length}</dd></div><div><dt>SHA-256</dt><dd><code>{asset.hash.slice(0,16)}…</code></dd></div></dl></article>
+  return <article className="comparison-pane"><div className="comparison-media">{url?(asset.mediaType==="video"?<ManagedVideo key={url} src={url} className="comparison-video"/>:<img src={url} alt={`Comparação de ${asset.filename}`} style={{transform:`scale(${zoom})`}}/>):<MediaThumb asset={asset}/>}</div><h3>{asset.filename}</h3><p>{formatCaptureDate(asset.capturedAt)}</p><div className="asset-pills"><span>{asset.extension.toUpperCase()}</span><span>{formatBytes(asset.bytes)}</span><span className={asset.protectionState==="replica_verified"?"success":"warning"}>{asset.protectionState==="replica_verified"?"Protegida":"Proteção pendente"}</span></div><dl><div><dt>Dimensões</dt><dd>{asset.width&&asset.height?`${asset.width} × ${asset.height}`:"Não disponível"}</dd></div><div><dt>Câmera</dt><dd>{details?.camera||asset.camera||"Não informada"}</dd></div><div><dt>Lente</dt><dd>{details?.lens||"Não informada"}</dd></div><div><dt>Captura</dt><dd>{details?.iso?`ISO ${details.iso}`:"ISO —"} · {details?.aperture?`f/${details.aperture}`:"f/—"}</dd></div><div><dt>Origens</dt><dd>{asset.sourceNames.length}</dd></div><div><dt>SHA-256</dt><dd><code>{asset.hash.slice(0,16)}…</code></dd></div></dl></article>
+}
+
+function ManagedVideo({ src, className }: { src: string; className?: string }) {
+  const ref = useRef<HTMLVideoElement>(null);
+  useEffect(() => {
+    const video = ref.current;
+    return () => {
+      if (!video) return;
+      video.pause();
+      video.removeAttribute("src");
+      video.load();
+    };
+  }, []);
+  return <video ref={ref} src={src} className={className} controls preload="metadata" />;
 }
 function Bulk({
   action,
@@ -971,7 +986,7 @@ function Preview({
       </button>
       <div className={`preview-stage ${previewZoom > 1 ? "pannable" : ""}`} onPointerDown={(event)=>{if(previewZoom===1)return;event.currentTarget.setPointerCapture(event.pointerId);drag.current={x:event.clientX,y:event.clientY,left:pan.x,top:pan.y}}} onPointerMove={(event)=>{if(!drag.current)return;setPan({x:drag.current.left+event.clientX-drag.current.x,y:drag.current.top+event.clientY-drag.current.y})}} onPointerUp={(event)=>{drag.current=undefined;event.currentTarget.releasePointerCapture(event.pointerId)}}>
         {asset.mediaType === "video" && mediaUrl ? (
-          <video key={asset.id} className="drawer-video" src={mediaUrl} controls preload="metadata" />
+          <ManagedVideo key={`${asset.id}-${mediaUrl}`} className="drawer-video" src={mediaUrl} />
         ) : (asset.mediaType === "photo" || asset.mediaType === "raw") && (highQualityUrl || mediaUrl) ? (
           <img key={`${asset.id}-${highQualityUrl ? "hq" : "fast"}`} className="drawer-photo" src={highQualityUrl || mediaUrl} alt={`Prévia de ${asset.filename}`} draggable={false} style={{transform:`translate(${pan.x}px,${pan.y}px) scale(${previewZoom})`}} />
         ) : (

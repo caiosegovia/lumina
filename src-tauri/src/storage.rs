@@ -67,6 +67,7 @@ pub fn sha256_cancel(
     path: &Path,
     cancel: Option<&crate::process::CancellationToken>,
 ) -> Result<String, String> {
+    crate::limits::ensure_supported_file(path)?;
     let mut file = File::open(path).map_err(|e| e.to_string())?;
     let mut hash = Sha256::new();
     let mut buffer = vec![0u8; 8 * 1024 * 1024];
@@ -107,6 +108,7 @@ pub fn copy_verified_via_staged<F: FnMut(&str)>(
     expected: &str,
     mut on_stage: F,
 ) -> Result<(), String> {
+    crate::limits::ensure_supported_file(source)?;
     if let Some(parent) = destination.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?
     }
@@ -142,6 +144,7 @@ pub fn copy_hash_to_temp_verified(
     temp: &Path,
     cancel: Option<&crate::process::CancellationToken>,
 ) -> Result<String, String> {
+    crate::limits::ensure_supported_file(source)?;
     if let Some(parent) = temp.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?
     }

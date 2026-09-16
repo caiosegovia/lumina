@@ -102,7 +102,12 @@ fn hash_files_adaptive(
                 let index = next.fetch_add(1, Ordering::Relaxed);
                 if index >= paths.len() { break; }
                 let path = &paths[index];
-                let _io = crate::resource::io(crate::resource::Priority::Background);
+                let Ok(_io) = crate::resource::io_cancel(
+                    crate::resource::Priority::Background,
+                    cancel,
+                ) else {
+                    break;
+                };
                 let value = crate::storage::sha256_cancel(path, Some(cancel));
                 let length = fs::metadata(path).map(|metadata| metadata.len()).unwrap_or(0);
                 let complete_bytes = bytes.fetch_add(length, Ordering::Relaxed) + length;
@@ -681,6 +686,9 @@ pub fn analyze_with_job_cancel(
     let mut deferred_hash_items = 0i64;
     for path in &media_paths {
         if let Ok(meta) = fs::metadata(path) {
+            if crate::limits::ensure_supported_size(meta.len()).is_err() {
+                continue;
+            }
             let modified = system_time(&meta);
             let cached:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM job_items WHERE job_id<>?1 AND source_path=?2 AND bytes=?3 AND modified_at=?4 AND sha256 IS NOT NULL AND state IN('new','duplicate','consolidated'))",params![job,path.to_string_lossy(),meta.len()as i64,modified],|r|r.get(0)).unwrap_or(false);
             if cached {
@@ -725,10 +733,19 @@ pub fn analyze_with_job_cancel(
     conn.execute("UPDATE jobs SET stage='metadata',current_file='Preparando metadados em lotes',updated_at=?2 WHERE id=?1",params![job,Utc::now().to_rfc3339()]).ok();
     drop(conn);
     let metadata_started = Instant::now();
+    let processable_paths = media_paths
+        .iter()
+        .filter(|path| {
+            fs::metadata(path)
+                .map(|metadata| crate::limits::ensure_supported_size(metadata.len()).is_ok())
+                .unwrap_or(false)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
     let progress_catalog = catalog_path.clone();
     let progress_job = job.clone();
     let (mut metadata_cache, mut validation_cache) = capture_metadata_batches(
-        &media_paths,
+        &processable_paths,
         cancel,
         |done, total, current| {
             if let Ok(progress_conn) = catalog::open(&progress_catalog) {
@@ -752,6 +769,7 @@ pub fn analyze_with_job_cancel(
             }
         },
     );
+    drop(processable_paths);
     conn = catalog::open(&catalog_path).map_err(|e| e.to_string())?;
     conn.execute("INSERT INTO job_metrics(job_id,stage,duration_ms,items,bytes,recorded_at)VALUES(?1,'metadata_batch',?2,?3,?4,?5)ON CONFLICT(job_id,stage)DO UPDATE SET duration_ms=excluded.duration_ms,items=excluded.items,bytes=excluded.bytes,recorded_at=excluded.recorded_at",params![job,metadata_started.elapsed().as_millis() as i64,scan_total,scan_bytes,Utc::now().to_rfc3339()]).ok();
     conn.execute(
@@ -798,7 +816,25 @@ pub fn analyze_with_job_cancel(
         }
         match fs::metadata(path) {
             Ok(meta) => {
-                let size = meta.len() as i64;
+                let size = meta.len().min(i64::MAX as u64) as i64;
+                if let Err(reason) = crate::limits::ensure_supported_size(meta.len()) {
+                    invalid += 1;
+                    scan_processed += 1;
+                    scan_processed_bytes = scan_processed_bytes.saturating_add(size);
+                    conn.execute(
+                        "UPDATE job_items SET current_stage='validation',state='review',validation_state='unsupported_format',last_error_kind='file_too_large',last_error=?3,updated_at=?4 WHERE job_id=?1 AND source_path=?2",
+                        params![job,path.to_string_lossy(),reason,Utc::now().to_rfc3339()],
+                    )
+                    .map_err(|error| error.to_string())?;
+                    event(
+                        &conn,
+                        &job,
+                        &path.to_string_lossy(),
+                        "unsupported_file_size",
+                        "Arquivo acima do limite de 64 GiB; nenhuma leitura foi realizada",
+                    );
+                    continue;
+                }
                 let modified = system_time(&meta);
                 let prior:Option<(Option<String>,String,i64)>=conn.query_row("SELECT ji.sha256,CASE WHEN EXISTS(SELECT 1 FROM assets a WHERE a.hash=ji.sha256) THEN 'duplicate' ELSE ji.state END,ji.id FROM job_items ji WHERE ji.source_path=?1 AND ji.bytes=?2 AND ji.modified_at=?3 AND ji.sha256 IS NOT NULL AND ji.state IN('new','duplicate','consolidated') ORDER BY (ji.job_id=?4) DESC,ji.id DESC LIMIT 1",params![path.to_string_lossy(),size,modified,job],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(|e|e.to_string())?;
                 if let Some((Some(hash), status, cached_item_id)) = prior {
@@ -1226,7 +1262,8 @@ pub fn consolidate_cancel(
                 conn.execute("UPDATE jobs SET stage='copying_and_identifying',current_file=?2,updated_at=?3 WHERE id=?1",params![job,path,Utc::now().to_rfc3339()]).ok();
                 drop(conn);
                 let deferred_copy_started = Instant::now();
-                let _io = crate::resource::io(crate::resource::Priority::Background);
+                let _io =
+                    crate::resource::io_cancel(crate::resource::Priority::Background, cancel)?;
                 let value = crate::storage::copy_hash_to_temp_verified(
                     &source,
                     &deferred_temp,
@@ -1316,7 +1353,7 @@ pub fn consolidate_cancel(
             ).map_err(|e|e.to_string())?;
             drop(conn);
             let copy_started = Instant::now();
-            let _io = crate::resource::io(crate::resource::Priority::Background);
+            let _io = crate::resource::io_cancel(crate::resource::Priority::Background, cancel)?;
             let copy_result = if pre_copied {
                 crate::storage::promote_preverified_temp(&temp, &dest, &hash)
             } else {
@@ -1473,7 +1510,7 @@ pub fn process_thumbnail_queue(
             "thumbnail",
             &format!("asset={} extension={}", &asset[..asset.len().min(12)], ext),
         );
-        let _io = crate::resource::io(crate::resource::Priority::Interactive);
+        let _io = crate::resource::io_cancel(crate::resource::Priority::Interactive, cancel)?;
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             crate::media::generate_thumbnail(
                 Path::new(&path),
@@ -1568,7 +1605,7 @@ pub fn verify_job(
             return Err("JOB_CANCELED".into());
         }
         conn.execute("UPDATE work_queue SET state='processing',attempts=attempts+1,updated_at=?2 WHERE id=?1",params![qid,Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
-        let _io = crate::resource::io(crate::resource::Priority::Background);
+        let _io = crate::resource::io_cancel(crate::resource::Priority::Background, cancel)?;
         let verified = crate::backup::verify(Path::new(&path), &hash);
         drop(_io);
         checked += 1;
@@ -1929,7 +1966,7 @@ pub fn protect_job(
         let destination = Path::new(&cfg.backup_path).join("originais").join(rel);
         conn.execute("UPDATE work_queue SET state='processing',attempts=attempts+1,updated_at=?2 WHERE id=?1",params![qid,Utc::now().to_rfc3339()]).ok();
         drop(conn);
-        let _io = crate::resource::io(crate::resource::Priority::Background);
+        let _io = crate::resource::io_cancel(crate::resource::Priority::Background, cancel)?;
         let result = crate::backup::replicate(Path::new(&master), &destination, &hash);
         drop(_io);
         conn = catalog::open(&db_path).map_err(|e| e.to_string())?;

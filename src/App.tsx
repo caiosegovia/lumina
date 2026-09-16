@@ -462,7 +462,7 @@ function Dashboard({ onImport,navigate }: { onImport: () => void;navigate:(view:
   const openLibrary=(filters:Parameters<typeof openGalleryWithFilters>[0])=>{openGalleryWithFilters(filters);navigate("library")};
   useEffect(() => {
     let live=true;
-    api.dashboard().then(snapshot=>{if(!live)return;setS(snapshot);void api.generateInsights({mode:"sample"}).then(report=>live&&setInsightReport(report));setUpdating(true);return api.refreshDashboard()}).then(full=>{if(live&&full)setS(full)}).catch(error=>live&&setRefreshError(String(error))).finally(()=>live&&setUpdating(false));
+    api.dashboard().then(snapshot=>{if(live)setS(snapshot)}).catch(error=>live&&setRefreshError(String(error)));
     return()=>{live=false};
   }, []);
   if (!s) return <LoaderCircle className="spin" />;

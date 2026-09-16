@@ -79,6 +79,7 @@ pub enum ProcessErrorKind {
     MissingDependency,
     Timeout,
     Canceled,
+    OutputLimit,
     Spawn,
     Failed,
 }
@@ -91,6 +92,23 @@ struct Limiter {
     active: Mutex<usize>,
     available: Condvar,
 }
+
+fn read_bounded<R: Read>(mut reader: R, maximum: usize) -> std::io::Result<(Vec<u8>, bool)> {
+    let mut kept = Vec::with_capacity(maximum.min(64 * 1024));
+    let mut buffer = [0u8; 64 * 1024];
+    let mut truncated = false;
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        let remaining = maximum.saturating_sub(kept.len());
+        let retain = remaining.min(read);
+        kept.extend_from_slice(&buffer[..retain]);
+        truncated |= retain < read;
+    }
+    Ok((kept, truncated))
+}
 struct Permit(&'static Limiter);
 impl Drop for Permit {
     fn drop(&mut self) {
@@ -100,15 +118,29 @@ impl Drop for Permit {
     }
 }
 impl Limiter {
-    fn acquire(&'static self) -> Permit {
+    fn acquire(
+        &'static self,
+        cancel: &CancellationToken,
+        deadline: Instant,
+    ) -> Result<Permit, ProcessErrorKind> {
         let mut n = self.active.lock().unwrap();
         while *n >= PROCESS_LIMIT {
-            n = self.available.wait(n).unwrap()
+            if cancel.is_cancelled() {
+                return Err(ProcessErrorKind::Canceled);
+            }
+            if Instant::now() >= deadline {
+                return Err(ProcessErrorKind::Timeout);
+            }
+            n = self
+                .available
+                .wait_timeout(n, Duration::from_millis(50))
+                .unwrap()
+                .0;
         }
         *n += 1;
         #[cfg(test)]
         TEST_PEAK_ACTIVE.fetch_max(*n, Ordering::SeqCst);
-        Permit(self)
+        Ok(Permit(self))
     }
 }
 fn limiter() -> &'static Limiter {
@@ -171,8 +203,17 @@ pub fn run(spec: ProcessSpec, cancel: &CancellationToken) -> Result<ProcessOutco
             message: "Operação cancelada".into(),
         });
     }
-    let _permit = limiter().acquire();
     let started = Instant::now();
+    let _permit = limiter()
+        .acquire(cancel, started + spec.timeout)
+        .map_err(|kind| ProcessError {
+            message: match kind {
+                ProcessErrorKind::Canceled => "Operação cancelada enquanto aguardava capacidade",
+                _ => "Timeout enquanto aguardava capacidade para o processo",
+            }
+            .into(),
+            kind,
+        })?;
     let resolved_program = resolve_program(&spec.program);
     let mut command = Command::new(&resolved_program);
     command
@@ -203,18 +244,18 @@ pub fn run(spec: ProcessSpec, cancel: &CancellationToken) -> Result<ProcessOutco
     let mut stdout = child.stdout.take().expect("stdout configurado como pipe");
     let mut stderr = child.stderr.take().expect("stderr configurado como pipe");
     let stdout_reader = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        stdout.read_to_end(&mut bytes).map(|_| bytes)
+        read_bounded(&mut stdout, crate::limits::MAX_PROCESS_STREAM_BYTES)
     });
     let stderr_reader = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        stderr.read_to_end(&mut bytes).map(|_| bytes)
+        read_bounded(&mut stderr, crate::limits::MAX_PROCESS_STREAM_BYTES)
     });
     let status;
     loop {
         if cancel.is_cancelled() {
             let _ = child.kill();
             let _ = child.wait();
+            let _ = stdout_reader.join();
+            let _ = stderr_reader.join();
             return Err(ProcessError {
                 kind: ProcessErrorKind::Canceled,
                 message: "Operação cancelada".into(),
@@ -223,6 +264,8 @@ pub fn run(spec: ProcessSpec, cancel: &CancellationToken) -> Result<ProcessOutco
         if started.elapsed() >= spec.timeout {
             let _ = child.kill();
             let _ = child.wait();
+            let _ = stdout_reader.join();
+            let _ = stderr_reader.join();
             return Err(ProcessError {
                 kind: ProcessErrorKind::Timeout,
                 message: format!("{} excedeu o timeout", spec.tool),
@@ -235,14 +278,18 @@ pub fn run(spec: ProcessSpec, cancel: &CancellationToken) -> Result<ProcessOutco
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(25)),
             Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
                 return Err(ProcessError {
                     kind: ProcessErrorKind::Failed,
                     message: error.to_string(),
-                })
+                });
             }
         }
     }
-    let stdout = stdout_reader
+    let (stdout, stdout_truncated) = stdout_reader
         .join()
         .map_err(|_| ProcessError {
             kind: ProcessErrorKind::Failed,
@@ -252,7 +299,7 @@ pub fn run(spec: ProcessSpec, cancel: &CancellationToken) -> Result<ProcessOutco
             kind: ProcessErrorKind::Failed,
             message: error.to_string(),
         })?;
-    let stderr = stderr_reader
+    let (stderr, stderr_truncated) = stderr_reader
         .join()
         .map_err(|_| ProcessError {
             kind: ProcessErrorKind::Failed,
@@ -262,6 +309,26 @@ pub fn run(spec: ProcessSpec, cancel: &CancellationToken) -> Result<ProcessOutco
             kind: ProcessErrorKind::Failed,
             message: error.to_string(),
         })?;
+    if stdout_truncated || stderr_truncated {
+        crate::diagnostics::append(
+            "process_output_limited",
+            &format!(
+                "tool={} stdout_truncated={} stderr_truncated={} limit_bytes={}",
+                spec.tool,
+                stdout_truncated,
+                stderr_truncated,
+                crate::limits::MAX_PROCESS_STREAM_BYTES
+            ),
+        );
+        return Err(ProcessError {
+            kind: ProcessErrorKind::OutputLimit,
+            message: format!(
+                "{} excedeu o limite de saída de {} bytes",
+                spec.tool,
+                crate::limits::MAX_PROCESS_STREAM_BYTES
+            ),
+        });
+    }
     let outcome = ProcessOutcome {
         tool: spec.tool,
         logical_command: sanitize(&spec.logical_command),
@@ -331,6 +398,39 @@ mod tests {
             sanitize("ffmpeg token=abc file.mov password=x"),
             "ffmpeg [REDACTED] file.mov [REDACTED]"
         )
+    }
+    #[test]
+    fn bounded_reader_drains_but_never_retains_more_than_the_limit() {
+        let input = std::io::Cursor::new(vec![7u8; 1024]);
+        let (bytes, truncated) = read_bounded(input, 128).unwrap();
+        assert_eq!(bytes.len(), 128);
+        assert!(truncated);
+    }
+    #[test]
+    fn queued_process_permit_observes_cancellation() {
+        let first = limiter()
+            .acquire(
+                &CancellationToken::default(),
+                Instant::now() + Duration::from_secs(1),
+            )
+            .unwrap();
+        let second = limiter()
+            .acquire(
+                &CancellationToken::default(),
+                Instant::now() + Duration::from_secs(1),
+            )
+            .unwrap();
+        let token = CancellationToken::default();
+        let waiting = token.clone();
+        let worker = std::thread::spawn(move || {
+            limiter().acquire(&waiting, Instant::now() + Duration::from_secs(5))
+        });
+        std::thread::sleep(Duration::from_millis(25));
+        token.cancel();
+        let result = worker.join().unwrap();
+        assert!(matches!(result, Err(ProcessErrorKind::Canceled)));
+        drop(second);
+        drop(first);
     }
     #[test]
     fn canceled_before_spawn() {

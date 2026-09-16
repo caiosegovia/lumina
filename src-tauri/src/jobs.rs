@@ -3,7 +3,7 @@ use crate::{
     models::{LibraryConfig, RecoverableJob},
     process::CancellationToken,
 };
-use chrono::Utc;
+use chrono::{Duration as ChronoDuration, Utc};
 use rusqlite::params;
 use std::{
     collections::{HashMap, VecDeque},
@@ -11,8 +11,9 @@ use std::{
     path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
     },
+    time::{Duration, Instant},
 };
 use tauri::Emitter;
 use uuid::Uuid;
@@ -24,11 +25,14 @@ pub struct JobManager {
 struct Inner {
     instance_id: String,
     active: Mutex<Option<String>>,
+    active_changed: Condvar,
     tokens: Mutex<HashMap<String, CancellationToken>>,
     library: Mutex<Option<LibraryConfig>>,
     thumbnail_worker_active: AtomicBool,
     thumbnail_dispatcher_active: AtomicBool,
     thumbnail_requests: Mutex<VecDeque<(LibraryConfig, String, i64)>>,
+    background_cancel: CancellationToken,
+    shutting_down: AtomicBool,
 }
 #[derive(Clone)]
 struct PendingAnalysis {
@@ -45,17 +49,42 @@ struct PendingWork {
     stage: String,
     kind: String,
 }
+
+struct WorkerGuard {
+    manager: JobManager,
+    cfg: LibraryConfig,
+    job: String,
+}
+
+impl WorkerGuard {
+    fn new(manager: JobManager, cfg: LibraryConfig, job: String) -> Self {
+        Self { manager, cfg, job }
+    }
+}
+
+impl Drop for WorkerGuard {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.manager
+                .mark_failed(&self.cfg, &self.job, "Falha interna isolada no worker");
+        }
+        self.manager.release(&self.job);
+    }
+}
 impl JobManager {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(Inner {
                 instance_id: Uuid::new_v4().to_string(),
                 active: Mutex::new(None),
+                active_changed: Condvar::new(),
                 tokens: Mutex::new(HashMap::new()),
                 library: Mutex::new(None),
                 thumbnail_worker_active: AtomicBool::new(false),
                 thumbnail_dispatcher_active: AtomicBool::new(false),
                 thumbnail_requests: Mutex::new(VecDeque::new()),
+                background_cancel: CancellationToken::default(),
+                shutting_down: AtomicBool::new(false),
             }),
         }
     }
@@ -65,6 +94,16 @@ impl JobManager {
         asset: String,
         priority: i64,
     ) -> Result<(), String> {
+        if self.inner.shutting_down.load(Ordering::Acquire) {
+            return Err("O aplicativo esta encerrando".into());
+        }
+        if priority < 150 && crate::resource::pressure_level() >= 1 {
+            crate::diagnostics::append(
+                "background_deferred",
+                "kind=thumbnail reason=memory_pressure",
+            );
+            return Ok(());
+        }
         let mut requests = self
             .inner
             .thumbnail_requests
@@ -146,8 +185,11 @@ impl JobManager {
         std::thread::Builder::new()
             .name("lumina-thumbnail-worker".into())
             .spawn(move || {
-                let token = CancellationToken::default();
+                let token = manager.inner.background_cancel.clone();
                 loop {
+                    if token.is_cancelled() {
+                        break;
+                    }
                     let _ = engine::process_thumbnail_queue(&cfg, "_thumbnail_background", &token);
                     manager.inner.thumbnail_worker_active.store(false, Ordering::Release);
                     let pending=catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite")).ok().and_then(|conn|conn.query_row("SELECT EXISTS(SELECT 1 FROM work_queue WHERE kind='thumbnail' AND state='pending')",[],|row|row.get::<_,bool>(0)).ok()).unwrap_or(false);
@@ -194,7 +236,7 @@ impl JobManager {
         }
         Ok(())
     }
-    fn reserve(&self, job: &str) -> Result<(), String> {
+    fn reserve_inner(&self, cfg: Option<&LibraryConfig>, job: &str) -> Result<(), String> {
         let mut active = self
             .inner
             .active
@@ -204,6 +246,21 @@ impl JobManager {
             return Err(format!(
                 "O trabalho {current} já está escrevendo nesta biblioteca"
             ));
+        }
+        if let Some(cfg) = cfg {
+            let conn = catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite"))
+                .map_err(|error| error.to_string())?;
+            let now = Utc::now();
+            let expires = (now + ChronoDuration::seconds(30)).to_rfc3339();
+            let changed = conn
+                .execute(
+                    "UPDATE jobs SET instance_id=?2,heartbeat_at=?3,lease_expires_at=?4,updated_at=?3 WHERE id=?1 AND (instance_id IS NULL OR instance_id=?2 OR lease_expires_at IS NULL OR lease_expires_at<?3)",
+                    params![job,self.inner.instance_id,now.to_rfc3339(),expires],
+                )
+                .map_err(|error| error.to_string())?;
+            if changed != 1 {
+                return Err("O trabalho já possui uma execução ativa".into());
+            }
         }
         *active = Some(job.into());
         self.inner
@@ -217,6 +274,18 @@ impl JobManager {
         );
         Ok(())
     }
+    #[cfg(test)]
+    fn reserve(&self, job: &str) -> Result<(), String> {
+        self.reserve_inner(None, job)
+    }
+    fn reserve_durable(&self, cfg: &LibraryConfig, job: &str) -> Result<(), String> {
+        *self
+            .inner
+            .library
+            .lock()
+            .map_err(|_| "Biblioteca indisponível".to_string())? = Some(cfg.clone());
+        self.reserve_inner(Some(cfg), job)
+    }
     fn release(&self, job: &str) {
         crate::diagnostics::append(
             "job_released",
@@ -228,9 +297,23 @@ impl JobManager {
                 *active = None
             }
         }
+        self.inner.active_changed.notify_all();
         self.inner.tokens.lock().unwrap().remove(job);
         let cfg = self.inner.library.lock().ok().and_then(|cfg| cfg.clone());
-        let next = cfg.clone().and_then(|cfg| {
+        if let Some(cfg) = cfg.as_ref() {
+            if let Ok(conn) =
+                catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite"))
+            {
+                let _ = conn.execute(
+                    "UPDATE jobs SET instance_id=NULL,lease_expires_at=NULL,heartbeat_at=?3 WHERE id=?1 AND instance_id=?2",
+                    params![job,self.inner.instance_id,Utc::now().to_rfc3339()],
+                );
+            }
+        }
+        let next = (!self.inner.shutting_down.load(Ordering::Acquire))
+            .then_some(())
+            .and_then(|_| cfg.clone())
+            .and_then(|cfg| {
             let path = Path::new(&cfg.master_path).join(".lumina/catalog.sqlite");
             catalog::open(&path).ok().and_then(|conn| {
                 conn.query_row(
@@ -243,7 +326,7 @@ impl JobManager {
         if let Some(next) = next {
             let job = next.job.clone();
             let result = if next.stage == "discovery" {
-                self.reserve(&job).and_then(|_| {
+                self.reserve_durable(&next.cfg, &job).and_then(|_| {
                     self.spawn_analysis(PendingAnalysis {
                         cfg: next.cfg.clone(),
                         path: next.path,
@@ -312,6 +395,8 @@ impl JobManager {
         std::thread::Builder::new()
             .name(format!("lumina-analysis-{}", pending.job))
             .spawn(move || {
+                let _guard =
+                    WorkerGuard::new(manager.clone(), pending.cfg.clone(), pending.job.clone());
                 let result = engine::analyze_with_job_cancel(
                     &pending.cfg,
                     &pending.path,
@@ -326,7 +411,6 @@ impl JobManager {
                         manager.mark_failed(&pending.cfg, &pending.job, &error);
                     }
                 }
-                manager.release(&pending.job);
             })
             .map_err(|e| e.to_string())?;
         Ok(())
@@ -347,6 +431,38 @@ impl JobManager {
             }
         }
     }
+    pub fn shutdown(&self, timeout: Duration) -> bool {
+        self.inner.shutting_down.store(true, Ordering::Release);
+        self.inner.background_cancel.cancel();
+        if let Ok(mut queue) = self.inner.thumbnail_requests.lock() {
+            queue.clear();
+        }
+        if let Ok(tokens) = self.inner.tokens.lock() {
+            for token in tokens.values() {
+                token.cancel();
+            }
+        }
+        let deadline = Instant::now() + timeout;
+        let mut active = self
+            .inner
+            .active
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        while active.is_some() {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                crate::diagnostics::append("shutdown_timeout", "active_job_did_not_stop");
+                return false;
+            }
+            active = self
+                .inner
+                .active_changed
+                .wait_timeout(active, remaining.min(Duration::from_millis(100)))
+                .unwrap_or_else(|error| error.into_inner())
+                .0;
+        }
+        true
+    }
     pub fn start_analysis(
         &self,
         cfg: LibraryConfig,
@@ -365,7 +481,7 @@ impl JobManager {
             name,
             job: job.clone(),
         };
-        if self.reserve(&job).is_ok() {
+        if self.reserve_durable(&pending.cfg, &job).is_ok() {
             self.spawn_analysis(pending)?;
         }
         // O catálogo mantém o job em queued até o slot ficar livre.
@@ -384,13 +500,14 @@ impl JobManager {
         Ok(job)
     }
     fn spawn_source_sync(&self, cfg: LibraryConfig, job: String) -> Result<(), String> {
-        self.reserve(&job)?;
+        self.reserve_durable(&cfg, &job)?;
         let cancel = self.token(&job)?;
         let manager = self.clone();
         let worker = job.clone();
         std::thread::Builder::new()
             .name(format!("lumina-source-sync-{job}"))
             .spawn(move || {
+                let _guard = WorkerGuard::new(manager.clone(), cfg.clone(), worker.clone());
                 if let Err(error) = crate::sync::run(&cfg, &worker, &cancel) {
                     if error == "JOB_CANCELED" {
                         manager.mark_canceled(&cfg, &worker);
@@ -403,17 +520,16 @@ impl JobManager {
                         manager.mark_failed(&cfg, &worker, &error);
                     }
                 }
-                manager.release(&worker);
             })
             .map_err(|error| error.to_string())?;
         Ok(())
     }
     pub fn start_consolidation(&self, cfg: LibraryConfig, job: String) -> Result<(), String> {
-        self.reserve(&job)?;
+        self.reserve_durable(&cfg, &job)?;
         let cancel = self.token(&job)?;
         let manager = self.clone();
         let worker_job = job.clone();
-        std::thread::Builder::new().name(format!("lumina-consolidation-{job}")).spawn(move||{if let Err(error)=engine::consolidate_cancel(&cfg,&worker_job,&cancel){if error=="JOB_CANCELED"{manager.mark_canceled(&cfg,&worker_job)}else if let Ok(conn)=catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite")){let _=conn.execute("UPDATE jobs SET state='failed',interruption_reason=?2,updated_at=?3 WHERE id=?1",params![worker_job,error,Utc::now().to_rfc3339()]);}}else{let _=engine::process_thumbnail_queue(&cfg,&worker_job,&cancel);}manager.release(&worker_job)}).map_err(|e|e.to_string())?;
+        std::thread::Builder::new().name(format!("lumina-consolidation-{job}")).spawn(move||{let _guard=WorkerGuard::new(manager.clone(),cfg.clone(),worker_job.clone());if let Err(error)=engine::consolidate_cancel(&cfg,&worker_job,&cancel){if error=="JOB_CANCELED"{manager.mark_canceled(&cfg,&worker_job)}else if let Ok(conn)=catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite")){let _=conn.execute("UPDATE jobs SET state='failed',interruption_reason=?2,updated_at=?3 WHERE id=?1",params![worker_job,error,Utc::now().to_rfc3339()]);}}else{let _=engine::process_thumbnail_queue(&cfg,&worker_job,&cancel);}}).map_err(|e|e.to_string())?;
         Ok(())
     }
     pub fn start_protection(&self, cfg: LibraryConfig, job: String) -> Result<(), String> {
@@ -432,13 +548,14 @@ impl JobManager {
             );
             return Ok(());
         }
-        self.reserve(&job)?;
+        self.reserve_durable(&cfg, &job)?;
         let cancel = self.token(&job)?;
         let manager = self.clone();
         let worker = job.clone();
         std::thread::Builder::new()
             .name(format!("lumina-protection-{job}"))
             .spawn(move || {
+                let _guard = WorkerGuard::new(manager.clone(), cfg.clone(), worker.clone());
                 if let Err(error) = engine::protect_job(&cfg, &worker, &cancel) {
                     if error == "JOB_CANCELED" {
                         manager.mark_canceled(&cfg, &worker)
@@ -446,19 +563,19 @@ impl JobManager {
                         manager.mark_failed(&cfg, &worker, &error)
                     }
                 }
-                manager.release(&worker)
             })
             .map_err(|e| e.to_string())?;
         Ok(())
     }
     fn spawn_verification(&self, cfg: LibraryConfig, job: String) -> Result<(), String> {
-        self.reserve(&job)?;
+        self.reserve_durable(&cfg, &job)?;
         let cancel = self.token(&job)?;
         let manager = self.clone();
         let worker = job.clone();
         std::thread::Builder::new()
             .name(format!("lumina-verification-{job}"))
             .spawn(move || {
+                let _guard = WorkerGuard::new(manager.clone(), cfg.clone(), worker.clone());
                 if let Err(error) = engine::verify_job(&cfg, &worker, &cancel) {
                     if error == "JOB_CANCELED" {
                         manager.mark_canceled(&cfg, &worker)
@@ -466,7 +583,6 @@ impl JobManager {
                         manager.mark_failed(&cfg, &worker, &error)
                     }
                 }
-                manager.release(&worker)
             })
             .map_err(|e| e.to_string())?;
         Ok(())
@@ -480,13 +596,14 @@ impl JobManager {
         Ok(job)
     }
     fn spawn_format_enrichment(&self, cfg: LibraryConfig, job: String) -> Result<(), String> {
-        self.reserve(&job)?;
+        self.reserve_durable(&cfg, &job)?;
         let cancel = self.token(&job)?;
         let manager = self.clone();
         let worker = job.clone();
         std::thread::Builder::new()
             .name(format!("lumina-format-enrichment-{job}"))
             .spawn(move || {
+                let _guard = WorkerGuard::new(manager.clone(), cfg.clone(), worker.clone());
                 if let Err(error) = engine::enrich_formats_job(&cfg, &worker, &cancel) {
                     if error == "JOB_CANCELED" {
                         manager.mark_canceled(&cfg, &worker)
@@ -494,7 +611,6 @@ impl JobManager {
                         manager.mark_failed(&cfg, &worker, &error)
                     }
                 }
-                manager.release(&worker)
             })
             .map_err(|error| error.to_string())?;
         Ok(())
@@ -543,11 +659,11 @@ impl JobManager {
         if stage == "technical_enrichment" {
             return self.spawn_format_enrichment(cfg, job);
         }
-        self.reserve(&job)?;
+        self.reserve_durable(&cfg, &job)?;
         let cancel = self.token(&job)?;
         let manager = self.clone();
         let worker_job = job.clone();
-        std::thread::Builder::new().name(format!("lumina-resume-{job}")).spawn(move||{if let Err(error)=engine::analyze_with_job_cancel(&cfg,&source,&name,Some(&worker_job),&cancel){if error=="JOB_CANCELED"{manager.mark_canceled(&cfg,&worker_job)}else if let Ok(conn)=catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite")){let _=conn.execute("UPDATE jobs SET state='failed',interruption_reason=?2,updated_at=?3 WHERE id=?1",params![worker_job,error,Utc::now().to_rfc3339()]);}}manager.release(&worker_job)}).map_err(|e|e.to_string())?;
+        std::thread::Builder::new().name(format!("lumina-resume-{job}")).spawn(move||{let _guard=WorkerGuard::new(manager.clone(),cfg.clone(),worker_job.clone());if let Err(error)=engine::analyze_with_job_cancel(&cfg,&source,&name,Some(&worker_job),&cancel){if error=="JOB_CANCELED"{manager.mark_canceled(&cfg,&worker_job)}else if let Ok(conn)=catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite")){let _=conn.execute("UPDATE jobs SET state='failed',interruption_reason=?2,updated_at=?3 WHERE id=?1",params![worker_job,error,Utc::now().to_rfc3339()]);}}}).map_err(|e|e.to_string())?;
         Ok(())
     }
     pub fn retry_failed(&self, cfg: &LibraryConfig, job: &str) -> Result<i64, String> {
@@ -567,7 +683,7 @@ impl JobManager {
             [&now],
         )
         .map_err(|e| e.to_string())?;
-        conn.execute("UPDATE jobs SET state='interrupted',interruption_reason='Aplicativo encerrado durante o processamento',updated_at=?1 WHERE state IN('queued','analyzing','consolidating','protecting','pausing','paused','canceling') AND source_path NOT LIKE 'lumina://%'",[now]).map_err(|e|e.to_string())?;
+        conn.execute("UPDATE jobs SET state='interrupted',interruption_reason='Aplicativo encerrado durante o processamento',instance_id=NULL,lease_expires_at=NULL,heartbeat_at=?1,updated_at=?1 WHERE state IN('queued','analyzing','consolidating','protecting','pausing','paused','canceling') AND source_path NOT LIKE 'lumina://%'",[now]).map_err(|e|e.to_string())?;
         Ok(())
     }
     pub fn recoverable(cfg: &LibraryConfig) -> Result<Vec<RecoverableJob>, String> {
@@ -621,7 +737,20 @@ pub fn emit_progress(app: tauri::AppHandle, cfg: LibraryConfig, job: String) {
     let _ = std::thread::Builder::new()
         .name(format!("lumina-events-{job}"))
         .spawn(move || {
+            let mut ticks = 0u8;
             while let Ok(snapshot) = engine::job_progress(&cfg, &job) {
+                if ticks == 0 {
+                    if let Ok(conn) = catalog::open(
+                        &Path::new(&cfg.master_path).join(".lumina/catalog.sqlite"),
+                    ) {
+                        let now = Utc::now();
+                        let _ = conn.execute(
+                            "UPDATE jobs SET heartbeat_at=?2,lease_expires_at=?3 WHERE id=?1 AND instance_id IS NOT NULL",
+                            params![job,now.to_rfc3339(),(now+ChronoDuration::seconds(30)).to_rfc3339()],
+                        );
+                    }
+                }
+                ticks = (ticks + 1) % 10;
                 let terminal = matches!(
                     snapshot.state.as_str(),
                     "ready"

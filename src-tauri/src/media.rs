@@ -15,7 +15,7 @@ use std::{
     time::Duration,
 };
 
-const MAX_EMBEDDED_PREVIEW_BYTES: usize = 64 * 1024 * 1024;
+const MAX_EMBEDDED_PREVIEW_BYTES: usize = crate::limits::MAX_PROCESS_STREAM_BYTES;
 const MAX_DECODED_EDGE: u32 = 32_768;
 const MAX_DECODED_BYTES: u64 = 256 * 1024 * 1024;
 
@@ -103,11 +103,19 @@ fn process_failure(tool: &str, error: process::ProcessError) -> ValidationResult
 }
 
 pub fn validate(path: &Path, extension: &str, cancel: &CancellationToken) -> ValidationResult {
-    if fs::metadata(path).map(|m| m.len() == 0).unwrap_or(true) {
+    let file_bytes = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    if file_bytes == 0 {
         return ValidationResult {
             state: ValidationState::Unreadable,
             tool: "filesystem".into(),
             details: "Arquivo vazio ou ilegível".into(),
+        };
+    }
+    if let Err(details) = crate::limits::ensure_supported_size(file_bytes) {
+        return ValidationResult {
+            state: ValidationState::UnsupportedFormat,
+            tool: "filesystem".into(),
+            details,
         };
     }
     let ext = extension.to_ascii_lowercase();
@@ -383,6 +391,7 @@ pub fn generate_thumbnail(
     cache_root: &Path,
     cancel: &CancellationToken,
 ) -> Result<PathBuf, String> {
+    crate::limits::ensure_supported_file(source)?;
     let destination = thumbnail_path(cache_root, hash);
     if destination.exists() {
         return Ok(destination);
@@ -550,6 +559,7 @@ pub fn viewer_preview_file(cfg: &LibraryConfig, asset: &str) -> Result<PathBuf, 
     if media_type == "video" {
         return Err("Preview fotográfico solicitado para um vídeo".into());
     }
+    crate::limits::ensure_supported_file(Path::new(&source))?;
     let cache_root = Path::new(&cfg.master_path)
         .join(".lumina/cache/viewer")
         .join(format!("v{VIEWER_PREVIEW_VERSION}"));
@@ -557,7 +567,7 @@ pub fn viewer_preview_file(cfg: &LibraryConfig, asset: &str) -> Result<PathBuf, 
     let destination = cache_root.join(format!("{}-{}.jpg", &hash[..16.min(hash.len())], asset));
     if destination
         .metadata()
-        .map(|value| value.len() > 0)
+        .map(|value| value.len() > 0 && value.len() <= crate::limits::MAX_PROTOCOL_RESPONSE_BYTES)
         .unwrap_or(false)
     {
         return Ok(destination);
@@ -566,31 +576,42 @@ pub fn viewer_preview_file(cfg: &LibraryConfig, asset: &str) -> Result<PathBuf, 
     let _ = fs::remove_file(&temporary);
     let cancel = CancellationToken::default();
     let mut generated = false;
-    let ffmpeg = ProcessSpec::new("FFmpeg", "ffmpeg")
-        .args([
-            "-y",
-            "-v",
-            "error",
-            "-i",
-            source.as_str(),
-            "-frames:v",
-            "1",
-            "-vf",
-            &format!(
-                "scale={VIEWER_PREVIEW_EDGE}:{VIEWER_PREVIEW_EDGE}:force_original_aspect_ratio=decrease"
-            ),
-            "-q:v",
-            "2",
-            "-pix_fmt",
-            "yuvj420p",
-            "-strict",
-            "unofficial",
-            temporary.to_string_lossy().as_ref(),
-        ])
-        .timeout(Duration::from_secs(90))
-        .logical("High quality photo preview");
-    if process::run(ffmpeg, &cancel).is_ok() && temporary.is_file() {
-        generated = true;
+    for quality in ["2", "5", "8"] {
+        let _ = fs::remove_file(&temporary);
+        let ffmpeg = ProcessSpec::new("FFmpeg", "ffmpeg")
+            .args([
+                "-y",
+                "-v",
+                "error",
+                "-i",
+                source.as_str(),
+                "-frames:v",
+                "1",
+                "-vf",
+                &format!(
+                    "scale={VIEWER_PREVIEW_EDGE}:{VIEWER_PREVIEW_EDGE}:force_original_aspect_ratio=decrease"
+                ),
+                "-q:v",
+                quality,
+                "-pix_fmt",
+                "yuvj420p",
+                "-strict",
+                "unofficial",
+                temporary.to_string_lossy().as_ref(),
+            ])
+            .timeout(Duration::from_secs(90))
+            .logical("High quality photo preview");
+        if process::run(ffmpeg, &cancel).is_ok()
+            && temporary
+                .metadata()
+                .map(|value| {
+                    value.len() > 0 && value.len() <= crate::limits::MAX_PROTOCOL_RESPONSE_BYTES
+                })
+                .unwrap_or(false)
+        {
+            generated = true;
+            break;
+        }
     }
     if !generated && crate::formats::family(&extension) == crate::formats::MediaFamily::Raw {
         let preview = process::run(
@@ -626,6 +647,17 @@ pub fn viewer_preview_file(cfg: &LibraryConfig, asset: &str) -> Result<PathBuf, 
     if !temporary.is_file() {
         return Err("Não foi possível gerar a prévia em alta qualidade".into());
     }
+    let preview_bytes = temporary
+        .metadata()
+        .map_err(|error| error.to_string())?
+        .len();
+    if preview_bytes > crate::limits::MAX_PROTOCOL_RESPONSE_BYTES {
+        let _ = fs::remove_file(&temporary);
+        return Err(format!(
+            "Preview excedeu o limite de {} MiB",
+            crate::limits::MAX_PROTOCOL_RESPONSE_BYTES / 1024 / 1024
+        ));
+    }
     if destination.exists() {
         fs::remove_file(&destination).map_err(|error| error.to_string())?;
     }
@@ -655,7 +687,7 @@ pub fn existing_viewer_preview_file(cfg: &LibraryConfig, asset: &str) -> Result<
         .join(format!("{}-{}.jpg", &hash[..16.min(hash.len())], asset));
     if path
         .metadata()
-        .map(|value| value.len() > 0)
+        .map(|value| value.len() > 0 && value.len() <= crate::limits::MAX_PROTOCOL_RESPONSE_BYTES)
         .unwrap_or(false)
     {
         Ok(path)

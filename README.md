@@ -1,6 +1,6 @@
 # Lumina
 
-Versão publicada mais recente: **0.22.1-beta.1**. A homologação prolongada encontrou encerramento por consumo de memória; portanto, ela **não é candidata de produção**. A evolução funcional está congelada enquanto a 0.22.2 executa a estabilização arquitetural.
+Versão candidata atual: **0.22.2-beta.1**. Ela substitui a 0.22.1 reprovada em endurance e permanece uma beta de homologação até concluir o roteiro prolongado no dispositivo de produção.
 
 Fontes vigentes: [escopo preservado](SCOPE-0.22.2.md), [contrato não funcional](NFR-0.22.2-RESILIENCE.md), [arquitetura-alvo](ARCHITECTURE-0.22.2.md), [auditoria arquitetural](ARCHITECTURE-AUDIT-0.22.2.md), [plano de remediação](REMEDIATION-0.22.2.md) e [matriz de rastreabilidade](TRACEABILITY-0.22.2.md).
 

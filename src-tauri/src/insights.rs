@@ -5,13 +5,13 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     path::Path,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicU64, Ordering},
     time::Instant,
 };
 
 const ALGORITHM_VERSION: i64 = 1;
 const SAMPLE_PER_STRATUM: i64 = 12;
-static CANCEL_REQUESTED: AtomicBool = AtomicBool::new(false);
+static OPERATION_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -46,16 +46,6 @@ pub struct InsightReport {
     pub cards: Vec<InsightCard>,
 }
 
-#[derive(Debug)]
-struct Item {
-    media: String,
-    captured: String,
-    camera: Option<String>,
-    protected: bool,
-    review: bool,
-    located: bool,
-}
-
 fn validate(request: &InsightRequest) -> Result<String, String> {
     if request.mode != "sample" && request.mode != "full" {
         return Err("Modo de análise inválido".into());
@@ -76,12 +66,15 @@ fn validate(request: &InsightRequest) -> Result<String, String> {
 }
 
 pub fn cancel() {
-    CANCEL_REQUESTED.store(true, Ordering::Release);
+    OPERATION_GENERATION.fetch_add(1, Ordering::AcqRel);
 }
 
 pub fn generate(cfg: &LibraryConfig, request: InsightRequest) -> Result<InsightReport, String> {
+    if crate::resource::pressure_level() >= 2 {
+        return Err("INSIGHT_DEFERRED_MEMORY_PRESSURE".into());
+    }
     let scope = validate(&request)?;
-    CANCEL_REQUESTED.store(false, Ordering::Release);
+    let operation = OPERATION_GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
     let started = Instant::now();
     let conn = catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite"))
         .map_err(|e| e.to_string())?;
@@ -90,7 +83,7 @@ pub fn generate(cfg: &LibraryConfig, request: InsightRequest) -> Result<InsightR
     } else {
         format!("{scope}%")
     };
-    let fingerprint: String = conn.query_row("SELECT printf('%d:%s',COUNT(*),COALESCE(MAX(created_at),'')) FROM assets WHERE captured_at LIKE ?1", [&prefix], |r| r.get(0)).map_err(|e|e.to_string())?;
+    let fingerprint: String = conn.query_row("SELECT printf('%d:%s:%d:%d:%d:%s:%s',COUNT(*),COALESCE(MAX(a.created_at),''),COALESCE(SUM(a.protection_state='replica_verified'),0),COALESCE(SUM(a.latitude IS NOT NULL AND a.longitude IS NOT NULL),0),COALESCE(SUM(COALESCE(u.review_later,0)),0),COALESCE(MAX(u.updated_at),''),COALESCE((SELECT MAX(edited_at) FROM asset_edits),'')) FROM assets a LEFT JOIN asset_user_state u ON u.asset_id=a.id WHERE a.captured_at LIKE ?1", [&prefix], |r| r.get(0)).map_err(|e|e.to_string())?;
     let cache_key = format!("v{ALGORITHM_VERSION}:{scope}:{}", request.mode);
     if let Some(payload) = conn.query_row("SELECT payload FROM insight_runs WHERE cache_key=?1 AND catalog_fingerprint=?2 AND state='completed'", params![cache_key,fingerprint], |r|r.get::<_,String>(0)).optional().map_err(|e|e.to_string())? {
         let mut report: InsightReport=serde_json::from_str(&payload).map_err(|e|e.to_string())?; report.cached=true; return Ok(report);
@@ -115,46 +108,55 @@ pub fn generate(cfg: &LibraryConfig, request: InsightRequest) -> Result<InsightR
     let mut statement = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = statement
         .query_map(params_from_iter(values), |r| {
-            Ok(Item {
-                media: r.get(0)?,
-                captured: r.get(1)?,
-                camera: r.get(2)?,
-                protected: r.get::<_, String>(3)? == "replica_verified",
-                review: r.get::<_, i64>(4)? != 0,
-                located: r.get::<_, i64>(5)? != 0,
-            })
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                r.get::<_, String>(3)? == "replica_verified",
+                r.get::<_, i64>(4)? != 0,
+                r.get::<_, i64>(5)? != 0,
+            ))
         })
         .map_err(|e| e.to_string())?;
-    let mut items = Vec::new();
+    let mut sampled = 0i64;
+    let mut photos = 0i64;
+    let mut pending = 0i64;
+    let mut review = 0i64;
+    let mut located = 0i64;
+    let mut cameras = HashMap::new();
+    let mut first: Option<String> = None;
+    let mut last: Option<String> = None;
     for row in rows {
-        if CANCEL_REQUESTED.load(Ordering::Acquire) {
+        if OPERATION_GENERATION.load(Ordering::Acquire) != operation {
             return Err("INSIGHT_CANCELED".into());
         }
-        items.push(row.map_err(|e| e.to_string())?);
-    }
-    let sampled = items.len() as i64;
-    let photos = items.iter().filter(|x| x.media != "video").count() as i64;
-    let videos = sampled - photos;
-    let pending = items.iter().filter(|x| !x.protected).count() as i64;
-    let review = items.iter().filter(|x| x.review).count() as i64;
-    let located = items.iter().filter(|x| x.located).count() as i64;
-    let mut cameras = HashMap::new();
-    for item in &items {
-        if let Some(c) = item.camera.as_ref().filter(|x| !x.trim().is_empty()) {
-            *cameras.entry(c.clone()).or_insert(0i64) += 1;
+        let (media, captured, camera, protected, needs_review, has_location) =
+            row.map_err(|e| e.to_string())?;
+        sampled += 1;
+        photos += i64::from(media != "video");
+        pending += i64::from(!protected);
+        review += i64::from(needs_review);
+        located += i64::from(has_location);
+        if let Some(camera) = camera.filter(|value| !value.trim().is_empty()) {
+            *cameras.entry(camera).or_insert(0i64) += 1;
+        }
+        if first
+            .as_ref()
+            .is_none_or(|value| captured.as_str() < value.as_str())
+        {
+            first = Some(captured.clone());
+        }
+        if last
+            .as_ref()
+            .is_none_or(|value| captured.as_str() > value.as_str())
+        {
+            last = Some(captured);
         }
     }
+    let videos = sampled - photos;
     let top_camera = cameras.into_iter().max_by_key(|x| x.1);
-    let first = items
-        .iter()
-        .map(|x| x.captured.as_str())
-        .min()
-        .unwrap_or("");
-    let last = items
-        .iter()
-        .map(|x| x.captured.as_str())
-        .max()
-        .unwrap_or("");
+    let first = first.as_deref().unwrap_or("");
+    let last = last.as_deref().unwrap_or("");
     let confidence = if request.mode == "full" {
         "alta"
     } else if total > 0 && sampled * 100 / total >= 30 {

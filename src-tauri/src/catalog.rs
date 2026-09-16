@@ -112,6 +112,11 @@ pub fn open(path: &Path) -> Result<Connection> {
         [],
         |row| row.get::<_, bool>(0),
     )?;
+    let needs_v20 = db.query_row(
+        "SELECT NOT EXISTS(SELECT 1 FROM schema_migrations WHERE version=20)",
+        [],
+        |row| row.get::<_, bool>(0),
+    )?;
     db.execute_batch("BEGIN IMMEDIATE;
       CREATE TABLE IF NOT EXISTS job_items(
         id INTEGER PRIMARY KEY AUTOINCREMENT,job_id TEXT NOT NULL REFERENCES jobs(id),source_path TEXT NOT NULL,filename TEXT NOT NULL,extension TEXT NOT NULL,media_type TEXT NOT NULL,
@@ -463,6 +468,8 @@ pub fn open(path: &Path) -> Result<Connection> {
         ("library_state", "TEXT NOT NULL DEFAULT 'pending'"),
         ("backup_state", "TEXT NOT NULL DEFAULT 'pending'"),
         ("instance_id", "TEXT"),
+        ("heartbeat_at", "TEXT"),
+        ("lease_expires_at", "TEXT"),
     ] {
         let exists = db
             .prepare("PRAGMA table_info(jobs)")?
@@ -475,6 +482,15 @@ pub fn open(path: &Path) -> Result<Connection> {
                 [],
             )?;
         }
+    }
+    if needs_v20 {
+        db.execute_batch(
+            "BEGIN IMMEDIATE;
+             CREATE INDEX IF NOT EXISTS idx_jobs_lease ON jobs(state,lease_expires_at);
+             UPDATE jobs SET heartbeat_at=updated_at WHERE heartbeat_at IS NULL;
+             INSERT INTO schema_migrations(version,applied_at)VALUES(20,datetime('now'));
+             COMMIT;",
+        )?;
     }
     let work_queue_has_priority = db
         .prepare("PRAGMA table_info(work_queue)")?
@@ -524,7 +540,7 @@ pub fn open(path: &Path) -> Result<Connection> {
         }
     }
     db.execute("UPDATE job_items SET captured_at=substr(captured_at,1,19),date_source=CASE WHEN date_source='exif_original' THEN 'exif_original_local' ELSE date_source END WHERE date_source IN('exif_original','media_created') AND captured_at IS NOT NULL AND length(captured_at)>=20 AND (substr(captured_at,20,1)='Z' OR substr(captured_at,20,1) IN('+','-'))",[])?;
-    db.pragma_update(None, "user_version", 19)?;
+    db.pragma_update(None, "user_version", 20)?;
     db.execute_batch("PRAGMA optimize;")?;
     db.execute(
         "UPDATE jobs SET state='waiting_space',stage='space_check',finished_at=NULL WHERE state='failed' AND processed_items=0 AND interruption_reason LIKE 'Espaço insuficiente:%'",
@@ -794,13 +810,13 @@ mod tests {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            19
+            20
         );
         assert_eq!(
             db.query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row
                 .get::<_, i64>(0))
                 .unwrap(),
-            19
+            20
         );
         let technical_columns = db
             .prepare("PRAGMA table_info(asset_technical_metadata)")
@@ -966,7 +982,7 @@ mod tests {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            19
+            20
         );
         drop(db);
         fs::remove_dir_all(root).unwrap();
@@ -1019,7 +1035,7 @@ mod tests {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            19
+            20
         );
         drop(db);
         fs::remove_dir_all(root).unwrap();
@@ -1034,7 +1050,36 @@ mod tests {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            19
+            20
+        );
+        drop(db);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn v20_adds_durable_job_lease_columns_and_index() {
+        let root = std::env::temp_dir().join(Uuid::new_v4().to_string());
+        fs::create_dir_all(&root).unwrap();
+        let db = open(&root.join("leases.sqlite")).unwrap();
+        let columns: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name IN('heartbeat_at','lease_expires_at')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let indexes: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND tbl_name='jobs' AND name='idx_jobs_lease'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(columns, 2);
+        assert_eq!(indexes, 1);
+        assert_eq!(
+            db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            20
         );
         drop(db);
         fs::remove_dir_all(root).unwrap();
