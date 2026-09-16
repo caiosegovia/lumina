@@ -22,6 +22,8 @@ Organizar e proteger memórias digitais sem exigir confiança cega. O aplicativo
 8. **Falhas acionáveis.** O produto diferencia corrupção, incompatibilidade, ausência de preview e metadado incompleto.
 9. **Escala comprovada.** Afirmações de desempenho exigem medição reproduzível e cenários representativos.
 10. **Evolução sem recomeço.** Catálogo e formatos possuem migração segura; caches derivados podem ser reconstruídos.
+11. **Recursos limitados por construção.** Arquivos, saídas de ferramentas, caches e protocolos nunca controlam diretamente uma alocação; toda concorrência compartilha um orçamento global.
+12. **Falha recuperável antes de velocidade.** Pressão de memória, falta de disco, mídia hostil ou encerramento preservam o catálogo e produzem um estado explicável e retomável.
 
 ## Princípios de experiência
 
@@ -39,3 +41,5 @@ Organizar e proteger memórias digitais sem exigir confiança cega. O aplicativo
 - Tempo até conteúdo útil e latência de interação dentro dos orçamentos de cada release.
 - Taxa de conclusão de importação/proteção e quantidade de falhas que exigem suporte.
 - Cobertura de preview e inventário por formato, sem classificação falsa de corrupção.
+- Picos e latências da árvore completa de processos dentro do contrato `NFR-0.22.2-RESILIENCE.md`.
+- Nenhum job permanece ativo sem lease/heartbeat válido e nenhuma operação sobrevive sem supervisor após o fechamento.

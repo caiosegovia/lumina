@@ -64,7 +64,7 @@ O histórico detalhado permanece em `RELEASE-0.18-BETA.md` e nos hotfixes 0.18.1
 - Comparação de até quatro candidatas e ações seguras em bursts.
 - Perfis explícitos de I/O e regras persistentes de curadoria.
 
-## Entrega atual — 0.22.1: estabilidade e insights controlados
+## Publicada, mas reprovada em homologação — 0.22.1
 
 - Remover originais fotográficos do WebView e manter miniatura → preview limitado.
 - Telemetria por preview com bytes, dimensões e variação de memória.
@@ -73,7 +73,21 @@ O histórico detalhado permanece em `RELEASE-0.18-BETA.md` e nos hotfixes 0.18.1
 - Localização v3.1 sem misturar campos nativos confiáveis com fragmentos inferidos.
 - Regressão integral da galeria e pacote homologável Windows.
 
-## Próximo — 0.23: produtividade e produção assistida
+A automação e o smoke curto foram aprovados, porém a homologação prolongada encontrou crescimento abrupto da árvore de processos e encerramento inesperado. A causa principal confirmada é a leitura de vídeo sem intervalo limitado; a auditoria também encontrou outros caminhos sem orçamento. O histórico permanece preservado, mas a versão não é candidata de produção.
+
+## Em preparação — 0.22.2: resiliência arquitetural
+
+- Limitar protocolo de vídeo, saídas de ferramentas, arquivos individuais e exportações.
+- Adotar coordenador global de recursos e runtime supervisionado.
+- Tornar jobs duráveis por lease/heartbeat, com cancelamento e shutdown prováveis.
+- Corrigir atomicidade de configuração, alteração de réplica e migração SQLite.
+- Limitar lifecycle e caches da galeria; medir a árvore completa de processos.
+- Aplicar CSP, logs estruturados e diagnóstico privado por construção.
+- Homologar em 100 mil registros, arquivo de 64 GiB, equipamento mínimo e soak de 2 horas.
+
+Escopo, ordem e gates estão em `NFR-0.22.2-RESILIENCE.md`, `ARCHITECTURE-AUDIT-0.22.2.md`, `REMEDIATION-0.22.2.md` e `TRACEABILITY-0.22.2.md`.
+
+## Congelado até o aceite da 0.22.2 — 0.23: produtividade e produção assistida
 
 - Comparação de períodos, insights por lugar/equipamento/tag e curadoria orientada.
 - Duplicatas com confiança editorial e revisão compacta refinada.

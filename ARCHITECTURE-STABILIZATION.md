@@ -1,5 +1,7 @@
 # Estabilização arquitetural
 
+> Histórico da revisão iniciada na 0.10. A homologação da 0.22.1 demonstrou que vários objetivos foram atendidos apenas localmente, não como invariantes do sistema. A auditoria vigente é `ARCHITECTURE-AUDIT-0.22.2.md`; nenhum item abaixo deve ser presumido concluído sem a evidência da matriz `TRACEABILITY-0.22.2.md`.
+
 Objetivo do produto: consolidar e tornar pesquisáveis dezenas ou centenas de milhares de mídias espalhadas, sem alterar origens, mantendo integridade, proteção verificável, retomada e navegação fluida enquanto trabalhos longos continuam.
 
 | # | Problema | Plano obrigatório | Evidência de aceite |
@@ -28,3 +30,7 @@ Objetivo do produto: consolidar e tornar pesquisáveis dezenas ou centenas de mi
 | 22 | Smoke mede abertura, não usabilidade | Testar navegação sob processamento concorrente | E2E mede latência e ausência de bloqueio sob carga |
 
 Nenhum item será marcado como concluído apenas por compilação. O checklist final será derivado das evidências executadas nesta branch.
+
+## Lacuna identificada em 2026-09-16
+
+A revisão anterior descreveu coordenação global, escala real e navegação sob carga, mas não fixou orçamentos quantitativos de memória, tamanho de resposta, arquivo máximo, cancelamento e árvore de processos. Essa ausência permitiu que implementações locais fossem consideradas suficientes. O contrato `NFR-0.22.2-RESILIENCE.md` fecha essa lacuna e passa a ser obrigatório para todas as jornadas.

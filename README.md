@@ -1,6 +1,8 @@
 # Lumina
 
-Versão em desenvolvimento: **0.22.1-beta.1**, pacote de estabilidade do preview, insights controlados e localização v3.1. Consulte [SPEC-0.22.1-BETA.md](SPEC-0.22.1-BETA.md), [ARCHITECTURE-0.22.1.md](ARCHITECTURE-0.22.1.md), [RELEASE-0.22.1-BETA.md](RELEASE-0.22.1-BETA.md) e [VALIDATION-0.22.1-BETA.md](VALIDATION-0.22.1-BETA.md).
+Versão publicada mais recente: **0.22.1-beta.1**. A homologação prolongada encontrou encerramento por consumo de memória; portanto, ela **não é candidata de produção**. A evolução funcional está congelada enquanto a 0.22.2 executa a estabilização arquitetural.
+
+Fontes vigentes: [escopo preservado](SCOPE-0.22.2.md), [contrato não funcional](NFR-0.22.2-RESILIENCE.md), [arquitetura-alvo](ARCHITECTURE-0.22.2.md), [auditoria arquitetural](ARCHITECTURE-AUDIT-0.22.2.md), [plano de remediação](REMEDIATION-0.22.2.md) e [matriz de rastreabilidade](TRACEABILITY-0.22.2.md).
 
 A anatomia, os wireframes responsivos e os estados da nova galeria estão registrados em [DESIGN-0.15-GALLERY.md](DESIGN-0.15-GALLERY.md).
 
@@ -57,7 +59,7 @@ npm.cmd run build
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
-A versão beta atual possui gates automatizados do núcleo e frontend, além dos benchmarks de release. Consulte [RELEASE-0.14-BETA.md](RELEASE-0.14-BETA.md).
+Os testes existentes são úteis, mas não cobrem ainda todos os gates de memória, endurance e árvore de processos exigidos para a 0.22.2. Consulte [TESTING.md](TESTING.md) e não interprete uma compilação verde como aceite de produção.
 
 ## Build
 

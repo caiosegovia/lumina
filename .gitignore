@@ -25,6 +25,7 @@ catalog.sqlite*
 # Local process output
 *.log
 *.pid
+lumina-diagnostics-*.json
 
 # Secrets and machine-local configuration
 .env

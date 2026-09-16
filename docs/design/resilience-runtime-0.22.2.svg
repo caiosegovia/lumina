@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-labelledby="title desc">
+  <title id="title">Arquitetura de resiliência do Lumina 0.22.2</title>
+  <desc id="desc">Fluxo entre interface, supervisor, coordenador de recursos, casos de uso e adaptadores limitados.</desc>
+  <style>
+    .bg{fill:#f6f4ee}.box{fill:#fff;stroke:#b9b5aa;stroke-width:2}.core{fill:#e9f3ee;stroke:#2f7555;stroke-width:2}.edge{fill:#edf2f7;stroke:#45637f;stroke-width:2}.danger{fill:#fff1ea;stroke:#b45c35;stroke-width:2}.t{font:600 18px system-ui,sans-serif;fill:#24302a}.s{font:14px system-ui,sans-serif;fill:#53605a}.a{stroke:#61706a;stroke-width:2;fill:none;marker-end:url(#m)}
+  </style>
+  <defs><marker id="m" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#61706a"/></marker></defs>
+  <rect class="bg" width="1280" height="720"/>
+  <rect class="box" x="45" y="60" width="240" height="105" rx="16"/><text class="t" x="70" y="95">React / WebView2</text><text class="s" x="70" y="124">Lifecycle, LRU, cancelamento</text><text class="s" x="70" y="146">e feedback imediato</text>
+  <rect class="core" x="390" y="45" width="500" height="135" rx="18"/><text class="t" x="420" y="82">Supervisor de operações</text><text class="s" x="420" y="110">operation_id · prioridade · deadline · token · join</text><text class="s" x="420" y="135">shutdown estruturado · falha tipada · telemetria</text><text class="s" x="420" y="160">fonte única do lifecycle em memória</text>
+  <rect class="core" x="390" y="245" width="500" height="135" rx="18"/><text class="t" x="420" y="282">ResourceGovernor</text><text class="s" x="420" y="310">árvore &lt; 1,25 GiB · respostas &lt;= 4 MiB</text><text class="s" x="420" y="335">CPU/processos · I/O · memória · fairness</text><text class="s" x="420" y="360">degradação em 80% / 90% / limite</text>
+  <rect class="box" x="990" y="60" width="240" height="105" rx="16"/><text class="t" x="1015" y="95">Casos de uso</text><text class="s" x="1015" y="124">Galeria · Jobs · Proteção</text><text class="s" x="1015" y="146">Insights · Migração</text>
+  <rect class="edge" x="45" y="520" width="210" height="120" rx="16"/><text class="t" x="70" y="555">Catálogo</text><text class="s" x="70" y="584">leitores limitados</text><text class="s" x="70" y="606">escritor transacional</text><text class="s" x="70" y="628">leases duráveis</text>
+  <rect class="edge" x="305" y="520" width="210" height="120" rx="16"/><text class="t" x="330" y="555">Filesystem</text><text class="s" x="330" y="584">streaming limitado</text><text class="s" x="330" y="606">temporário + hash</text><text class="s" x="330" y="628">troca atômica</text>
+  <rect class="edge" x="565" y="520" width="210" height="120" rx="16"/><text class="t" x="590" y="555">Mídia local</text><text class="s" x="590" y="584">Range validado</text><text class="s" x="590" y="606">preview limitado</text><text class="s" x="590" y="628">cleanup explícito</text>
+  <rect class="edge" x="825" y="520" width="210" height="120" rx="16"/><text class="t" x="850" y="555">Ferramentas</text><text class="s" x="850" y="584">stdout/stderr limitados</text><text class="s" x="850" y="606">timeout + kill tree</text><text class="s" x="850" y="628">versão e hash</text>
+  <rect class="danger" x="1085" y="520" width="150" height="120" rx="16"/><text class="t" x="1110" y="555">Entradas</text><text class="s" x="1110" y="584">até 64 GiB</text><text class="s" x="1110" y="606">nunca viram</text><text class="s" x="1110" y="628">alocação direta</text>
+  <path class="a" d="M285 112 H390"/><path class="a" d="M890 112 H990"/><path class="a" d="M640 180 V245"/><path class="a" d="M640 380 V455"/>
+  <path class="a" d="M640 455 H150 V520"/><path class="a" d="M640 455 H410 V520"/><path class="a" d="M640 455 H670 V520"/><path class="a" d="M640 455 H930 V520"/><path class="a" d="M640 455 H1160 V520"/>
+</svg>

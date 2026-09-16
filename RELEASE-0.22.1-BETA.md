@@ -1,5 +1,7 @@
 # Roteiro de homologação 0.22.1 Beta
 
+> **Status final: reprovado para produção.** Este roteiro é mantido como histórico. A homologação encontrou encerramento inesperado e crescimento de memória não coberto pelos testes curtos. Não use esta versão como baseline de produção; a próxima candidata depende da estabilização 0.22.2.
+
 1. Instale sobre a 0.22 e confirme que catálogo, favoritos, tags e descrições permanecem.
 2. Abra uma foto grande e confirme a sequência miniatura → “Prévia HD”.
 3. Navegue rapidamente por pelo menos 500 trocas usando as setas.
