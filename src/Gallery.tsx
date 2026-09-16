@@ -924,7 +924,10 @@ function Preview({
     setDetails(undefined);
     setDetailsLoading(true);
     setFileAction("");
-    if (asset.mediaType !== "raw") {
+    // Never point a photo element at the original media route. Very large
+    // images can expand to several GiB in WebView2 before the bounded preview
+    // replaces them. Videos keep the range-enabled original route.
+    if (asset.mediaType === "video") {
       api.mediaUrl(asset.id).then((url)=>{if(live)setMediaUrl(url)}).catch(() => {if(live)setMediaUrl("")});
     }
     if (asset.mediaType === "photo" || asset.mediaType === "raw") {
@@ -1090,6 +1093,7 @@ function Preview({
         </div>
         <div className="asset-pills">
           <span>{details?.locationSource==="embedded"?"Do arquivo":details?.locationSource==="offline"?"Base offline":"Aproximada"}</span>
+          <span>{details?.locationConfidence==="exact"?"Confiança exata":details?.locationConfidence==="probable"?"Confiança provável":"Confiança aproximada"}</span>
           {details?.locationAccuracyM!=null&&<span>Precisão ±{Math.round(details.locationAccuracyM)} m</span>}
           {details?.altitude!=null&&<span>Altitude {Math.round(details.altitude)} m</span>}
         </div>

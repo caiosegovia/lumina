@@ -201,11 +201,22 @@ fn embedded_geolocations(rows: &[(String, f64, f64, String)]) -> HashMap<String,
                 || native_region.is_some()
                 || native_country.is_some()
                 || sublocation.is_some();
+            // Never compose a trustworthy native phone place with unrelated
+            // reverse-geocoder fragments. Native fields stay together; the
+            // offline result is only used when the file has no place names.
             let location = EmbeddedLocation {
-                sublocation,
-                city: native_city.or(generated_city),
-                region: native_region.or(generated_region),
-                country: native_country.or(generated_country),
+                sublocation: if native { sublocation } else { None },
+                city: if native { native_city } else { generated_city },
+                region: if native {
+                    native_region
+                } else {
+                    generated_region
+                },
+                country: if native {
+                    native_country
+                } else {
+                    generated_country
+                },
                 altitude: number_tag(&value, &["GPSAltitude"]),
                 accuracy_m: number_tag(&value, &["GPSHPositioningError"]),
                 source: if native { "embedded" } else { "offline" },

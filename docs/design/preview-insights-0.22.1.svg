@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="520" viewBox="0 0 1200 520" role="img" aria-labelledby="title desc">
+  <title id="title">Pipelines seguros do Lumina 0.22.1</title><desc id="desc">Preview de fotos limitado e motor de insights isolado do catálogo.</desc>
+  <rect width="1200" height="520" fill="#f6f5ef"/><style>text{font-family:Segoe UI,Arial;fill:#183229}.h{font-size:22px;font-weight:700}.t{font-size:15px;font-weight:600}.s{font-size:12px;fill:#52665e}.b{fill:#fff;stroke:#b8c5bf;stroke-width:2}.g{fill:#e7f2ec;stroke:#39795f;stroke-width:2}.a{stroke:#39795f;stroke-width:3;marker-end:url(#m)}</style><defs><marker id="m" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8z" fill="#39795f"/></marker></defs>
+  <text x="45" y="48" class="h">Fotografia: original fora do WebView</text>
+  <rect x="45" y="80" width="190" height="90" rx="14" class="b"/><text x="70" y="118" class="t">Galeria</text><text x="70" y="143" class="s">miniatura imediata</text>
+  <rect x="300" y="80" width="220" height="90" rx="14" class="g"/><text x="325" y="116" class="t">Preview isolado</text><text x="325" y="141" class="s">FFmpeg · limite 2560 px</text>
+  <rect x="585" y="80" width="220" height="90" rx="14" class="b"/><text x="610" y="116" class="t">Cache versionado</text><text x="610" y="141" class="s">JPEG limitado e reutilizável</text>
+  <rect x="870" y="80" width="260" height="90" rx="14" class="g"/><text x="895" y="116" class="t">lumina-preview</text><text x="895" y="141" class="s">somente leitura · telemetria</text>
+  <path d="M235 125H300M520 125H585M805 125H870" class="a"/>
+  <text x="45" y="250" class="h">Insights: análise local, explícita e cacheada</text>
+  <rect x="45" y="285" width="190" height="105" rx="14" class="b"/><text x="70" y="323" class="t">Recorte</text><text x="70" y="348" class="s">acervo · ano · mês</text><text x="70" y="370" class="s">amostra ou completa</text>
+  <rect x="300" y="285" width="220" height="105" rx="14" class="g"/><text x="325" y="323" class="t">InsightEngine</text><text x="325" y="348" class="s">SQLite, sem abrir originais</text><text x="325" y="370" class="s">cancelável e determinístico</text>
+  <rect x="585" y="285" width="220" height="105" rx="14" class="b"/><text x="610" y="323" class="t">Cache schema 19</text><text x="610" y="348" class="s">escopo · modo · algoritmo</text><text x="610" y="370" class="s">impressão do catálogo</text>
+  <rect x="870" y="285" width="260" height="105" rx="14" class="g"/><text x="895" y="323" class="t">Cards acionáveis</text><text x="895" y="348" class="s">cobertura e confiança</text><text x="895" y="370" class="s">abre filtros e ações existentes</text>
+  <path d="M235 337H300M520 337H585M805 337H870" class="a"/><text x="45" y="470" class="s">lumina-media permanece exclusivo para streaming de vídeo por intervalos.</text>
+</svg>

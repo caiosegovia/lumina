@@ -107,6 +107,11 @@ pub fn open(path: &Path) -> Result<Connection> {
         [],
         |row| row.get::<_, bool>(0),
     )?;
+    let needs_v19 = db.query_row(
+        "SELECT NOT EXISTS(SELECT 1 FROM schema_migrations WHERE version=19)",
+        [],
+        |row| row.get::<_, bool>(0),
+    )?;
     db.execute_batch("BEGIN IMMEDIATE;
       CREATE TABLE IF NOT EXISTS job_items(
         id INTEGER PRIMARY KEY AUTOINCREMENT,job_id TEXT NOT NULL REFERENCES jobs(id),source_path TEXT NOT NULL,filename TEXT NOT NULL,extension TEXT NOT NULL,media_type TEXT NOT NULL,
@@ -417,6 +422,13 @@ pub fn open(path: &Path) -> Result<Connection> {
           COMMIT;",
         )?;
     }
+    if needs_v19 {
+        db.execute_batch("BEGIN IMMEDIATE;
+          CREATE TABLE insight_runs(cache_key TEXT PRIMARY KEY,scope_key TEXT NOT NULL,mode TEXT NOT NULL,algorithm_version INTEGER NOT NULL,catalog_fingerprint TEXT NOT NULL,state TEXT NOT NULL,sampled_items INTEGER NOT NULL,total_items INTEGER NOT NULL,payload TEXT NOT NULL,generated_at TEXT NOT NULL);
+          CREATE INDEX idx_insight_runs_scope ON insight_runs(scope_key,mode,generated_at DESC);
+          INSERT INTO schema_migrations(version,applied_at)VALUES(19,datetime('now'));
+          COMMIT;")?;
+    }
     if needs_v11 {
         db.execute_batch("DROP TRIGGER IF EXISTS dashboard_asset_shape_invalidate; DROP TRIGGER IF EXISTS dashboard_asset_shape_rollup;
       CREATE TRIGGER dashboard_asset_shape_rollup AFTER UPDATE OF captured_at,media_type,extension,camera,bytes ON assets BEGIN
@@ -512,7 +524,7 @@ pub fn open(path: &Path) -> Result<Connection> {
         }
     }
     db.execute("UPDATE job_items SET captured_at=substr(captured_at,1,19),date_source=CASE WHEN date_source='exif_original' THEN 'exif_original_local' ELSE date_source END WHERE date_source IN('exif_original','media_created') AND captured_at IS NOT NULL AND length(captured_at)>=20 AND (substr(captured_at,20,1)='Z' OR substr(captured_at,20,1) IN('+','-'))",[])?;
-    db.pragma_update(None, "user_version", 18)?;
+    db.pragma_update(None, "user_version", 19)?;
     db.execute_batch("PRAGMA optimize;")?;
     db.execute(
         "UPDATE jobs SET state='waiting_space',stage='space_check',finished_at=NULL WHERE state='failed' AND processed_items=0 AND interruption_reason LIKE 'Espaço insuficiente:%'",
@@ -782,13 +794,13 @@ mod tests {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            18
+            19
         );
         assert_eq!(
             db.query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row
                 .get::<_, i64>(0))
                 .unwrap(),
-            18
+            19
         );
         let technical_columns = db
             .prepare("PRAGMA table_info(asset_technical_metadata)")
@@ -954,7 +966,7 @@ mod tests {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            18
+            19
         );
         drop(db);
         fs::remove_dir_all(root).unwrap();
@@ -1007,7 +1019,22 @@ mod tests {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            18
+            19
+        );
+        drop(db);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn v19_adds_isolated_insight_cache() {
+        let root = std::env::temp_dir().join(Uuid::new_v4().to_string());
+        fs::create_dir_all(&root).unwrap();
+        let db = open(&root.join("insights.sqlite")).unwrap();
+        let columns:i64=db.query_row("SELECT COUNT(*)FROM pragma_table_info('insight_runs')WHERE name IN('scope_key','mode','catalog_fingerprint','payload')",[],|row|row.get(0)).unwrap();
+        assert_eq!(columns, 4);
+        assert_eq!(
+            db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            19
         );
         drop(db);
         fs::remove_dir_all(root).unwrap();

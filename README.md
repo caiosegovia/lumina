@@ -1,6 +1,6 @@
 # Lumina
 
-Versão em desenvolvimento: **0.22.0-beta.1**, pacote de lugares confiáveis, comparação ampliada e automação configurável. Consulte [SPEC-0.22-BETA.md](SPEC-0.22-BETA.md), [ARCHITECTURE-0.22.md](ARCHITECTURE-0.22.md), [RELEASE-0.22-BETA.md](RELEASE-0.22-BETA.md) e [VALIDATION-0.22-BETA.md](VALIDATION-0.22-BETA.md).
+Versão em desenvolvimento: **0.22.1-beta.1**, pacote de estabilidade do preview, insights controlados e localização v3.1. Consulte [SPEC-0.22.1-BETA.md](SPEC-0.22.1-BETA.md), [ARCHITECTURE-0.22.1.md](ARCHITECTURE-0.22.1.md), [RELEASE-0.22.1-BETA.md](RELEASE-0.22.1-BETA.md) e [VALIDATION-0.22.1-BETA.md](VALIDATION-0.22.1-BETA.md).
 
 A anatomia, os wireframes responsivos e os estados da nova galeria estão registrados em [DESIGN-0.15-GALLERY.md](DESIGN-0.15-GALLERY.md).
 

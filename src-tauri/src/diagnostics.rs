@@ -129,7 +129,7 @@ fn short_id(value: &str) -> &str {
 }
 
 #[cfg(windows)]
-fn working_set_bytes() -> u64 {
+pub(crate) fn working_set_bytes() -> u64 {
     use windows_sys::Win32::{
         System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS},
         System::Threading::GetCurrentProcess,
@@ -161,7 +161,7 @@ fn working_set_bytes() -> u64 {
 }
 
 #[cfg(not(windows))]
-fn working_set_bytes() -> u64 {
+pub(crate) fn working_set_bytes() -> u64 {
     0
 }
 

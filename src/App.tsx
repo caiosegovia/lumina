@@ -37,6 +37,7 @@ import type {
   Album,
   CleanupPlan,
   DashboardStats,
+  InsightReport,
   DuplicateGroup,
   DuplicateStatus,
   ImportEvent,
@@ -455,11 +456,13 @@ const monthRange = (key: string) => {
 };
 function Dashboard({ onImport,navigate }: { onImport: () => void;navigate:(view:View)=>void }) {
   const [s, setS] = useState<DashboardStats>(),[updating,setUpdating]=useState(false),[refreshError,setRefreshError]=useState(""),[inventoryMessage,setInventoryMessage]=useState("");
+  const [insightYear,setInsightYear]=useState(""),[insightMonth,setInsightMonth]=useState(""),[insightReport,setInsightReport]=useState<InsightReport>(),[insightBusy,setInsightBusy]=useState(false),[insightError,setInsightError]=useState("");
+  const runInsights=(mode:"sample"|"full")=>{setInsightBusy(true);setInsightError("");api.generateInsights({mode,year:insightYear?Number(insightYear):undefined,month:insightMonth?Number(insightMonth):undefined}).then(setInsightReport).catch(error=>{if(!String(error).includes("INSIGHT_CANCELED"))setInsightError(String(error))}).finally(()=>setInsightBusy(false))};
   const refresh=()=>{setUpdating(true);setRefreshError("");api.refreshDashboard().then(setS).catch(error=>setRefreshError(String(error))).finally(()=>setUpdating(false))};
   const openLibrary=(filters:Parameters<typeof openGalleryWithFilters>[0])=>{openGalleryWithFilters(filters);navigate("library")};
   useEffect(() => {
     let live=true;
-    api.dashboard().then(snapshot=>{if(!live)return;setS(snapshot);setUpdating(true);return api.refreshDashboard()}).then(full=>{if(live&&full)setS(full)}).catch(error=>live&&setRefreshError(String(error))).finally(()=>live&&setUpdating(false));
+    api.dashboard().then(snapshot=>{if(!live)return;setS(snapshot);void api.generateInsights({mode:"sample"}).then(report=>live&&setInsightReport(report));setUpdating(true);return api.refreshDashboard()}).then(full=>{if(live&&full)setS(full)}).catch(error=>live&&setRefreshError(String(error))).finally(()=>live&&setUpdating(false));
     return()=>{live=false};
   }, []);
   if (!s) return <LoaderCircle className="spin" />;
@@ -561,32 +564,18 @@ function Dashboard({ onImport,navigate }: { onImport: () => void;navigate:(view:
           <p>Estimativa informativa baseada em conteúdo idêntico. Nenhum arquivo será removido automaticamente.</p>
           <button onClick={()=>navigate("duplicates")}>Analisar ocorrências <ChevronRight/></button>
         </article>
-        <article className="panel insight-panel">
-          <p className="eyebrow">PRECISA DA SUA ATENÇÃO</p>
-          <h3>Insights da biblioteca</h3>
-          {s.insights.length ? (
-            s.insights.map((x) => (
-              <button
-                className={`dashboard-insight ${x.severity}`}
-                key={`${x.kind}-${x.title}`}
-                onClick={()=>x.kind==="dates"?openLibrary({dateSuspicious:true}):navigate(x.action)}
-              >
-                <span>
-                  <b>{x.title}</b>
-                  <small>{x.detail}</small>
-                  <em>{x.reason} · confiança {x.confidence}</em>
-                </span>
-                <strong>
-                  {x.bytes
-                    ? formatBytes(x.bytes)
-                    : x.value.toLocaleString("pt-BR")}
-                </strong>
-                <i>{x.actionLabel}<ChevronRight/></i>
-              </button>
-            ))
-          ) : (
-            <p className="all-good">Nenhuma pendência encontrada.</p>
-          )}
+        <article className="panel insight-panel insight-workbench">
+          <div className="insight-heading"><div><p className="eyebrow">INSIGHTS SOB SEU CONTROLE</p><h3>Analise uma amostra ou aprofunde um período</h3></div>{insightReport&&<span className={`insight-mode ${insightReport.mode}`}>{insightReport.mode==="sample"?"Amostral":"Completa"}</span>}</div>
+          <div className="insight-controls">
+            <label>Ano<select aria-label="Ano dos insights" value={insightYear} onChange={event=>{setInsightYear(event.target.value);setInsightMonth("")}}><option value="">Todo o acervo</option>{s.years.map(year=><option key={year.key}>{year.key}</option>)}</select></label>
+            <label>Mês<select aria-label="Mês dos insights" disabled={!insightYear} value={insightMonth} onChange={event=>setInsightMonth(event.target.value)}><option value="">Ano completo</option>{Array.from({length:12},(_,index)=><option key={index+1} value={index+1}>{new Date(2020,index,1).toLocaleString("pt-BR",{month:"long"})}</option>)}</select></label>
+            <button disabled={insightBusy} onClick={()=>runInsights("sample")}><Sparkles/> Gerar amostra</button>
+            <button className="primary" disabled={insightBusy} onClick={()=>runInsights("full")}>{insightBusy?<LoaderCircle className="spin"/>:<Database/>} Análise completa</button>
+            {insightBusy&&<button onClick={()=>void api.cancelInsights()}>Cancelar</button>}
+          </div>
+          {insightReport&&<div className="insight-coverage"><span>{insightReport.scopeKey==="all"?"Todo o acervo":insightReport.scopeKey}</span><span>{insightReport.sampledItems.toLocaleString("pt-BR")} de {insightReport.totalItems.toLocaleString("pt-BR")} itens</span><span>{insightReport.coveragePercent.toFixed(1)}% de cobertura</span><span>{insightReport.cached?"Resultado em cache":`${insightReport.durationMs} ms`}</span></div>}
+          {insightError&&<p className="dashboard-refresh-error">{insightError}</p>}
+          <div className="insight-results">{insightReport?.cards.map(card=><button className="dashboard-insight low" key={card.kind} onClick={()=>card.action==="library"?openLibrary(insightYear?insightMonth?monthRange(`${insightYear}-${insightMonth.padStart(2,"0")}`):{year:Number(insightYear)}:{}):navigate(card.action)}><span><b>{card.title}</b><small>{card.detail}</small><em>confiança {card.confidence}</em></span><strong>{card.value.toLocaleString("pt-BR")}</strong><i>Abrir <ChevronRight/></i></button>)}</div>
         </article>
         {!!benchmarks.length && (
           <article className="panel benchmark-panel">

@@ -159,4 +159,17 @@ describe("fluxo principal do aplicativo", () => {
     expect(screen.getByText("Volume capturado nos últimos 12 meses ativos")).toBeInTheDocument();
     expect(screen.getByText("h264")).toBeInTheDocument();
   });
+  it("gera insights amostrais e completos por período sem alterar o catálogo",async()=>{
+    const user=userEvent.setup();
+    vi.spyOn(api,"getLibrary").mockResolvedValue({id:"lib",name:"Teste",masterPath:"D:\\Lumina",backupPath:"G:\\Backup",createdAt:new Date().toISOString()});
+    vi.spyOn(api,"recoverableJobs").mockResolvedValue([]);
+    const dashboard={...emptyDashboard(),totalAssets:100,photos:80,videos:20,years:[{key:"2025",items:100,bytes:1_000}]};
+    vi.spyOn(api,"dashboard").mockResolvedValue(dashboard);vi.spyOn(api,"refreshDashboard").mockResolvedValue(dashboard);
+    const generate=vi.spyOn(api,"generateInsights").mockImplementation(async request=>({scopeKey:request.year?String(request.year):"all",mode:request.mode,sampledItems:request.mode==="sample"?24:100,totalItems:100,coveragePercent:request.mode==="sample"?24:100,generatedAt:new Date().toISOString(),durationMs:9,cached:request.mode==="full",cards:[{kind:"composition",title:"Composição do período",detail:"80 fotos e 20 vídeos",value:100,action:"library",confidence:request.mode==="full"?"alta":"indicativa"}]}));
+    render(<App/>);expect(await screen.findByText("INSIGHTS SOB SEU CONTROLE")).toBeInTheDocument();
+    await user.selectOptions(screen.getByLabelText("Ano dos insights"),"2025");
+    await user.click(screen.getByRole("button",{name:/Análise completa/}));
+    await waitFor(()=>expect(generate).toHaveBeenLastCalledWith({mode:"full",year:2025,month:undefined}));
+    expect(await screen.findByText("Resultado em cache")).toBeInTheDocument();expect(screen.getByText("confiança alta")).toBeInTheDocument();
+  });
 });

@@ -57,15 +57,27 @@ O histórico detalhado permanece em `RELEASE-0.18-BETA.md` e nos hotfixes 0.18.1
 - Detectar bursts por tempo, equipamento e coerência visual.
 - Favoritar a melhor candidata e enviar alternativas para revisão sem exclusão.
 
-## Entrega atual — 0.22: lugares e automação confiáveis
+## Concluído — 0.22: lugares e automação confiáveis
 
 - Metadados geográficos ricos, cache versionado e refinamento por bairro/sublocalização.
 - Seleção correta no Explorer, feedback visível e cópia de coordenadas.
 - Comparação de até quatro candidatas e ações seguras em bursts.
 - Perfis explícitos de I/O e regras persistentes de curadoria.
 
-## Próximo — 0.23: produção assistida
+## Entrega atual — 0.22.1: estabilidade e insights controlados
 
+- Remover originais fotográficos do WebView e manter miniatura → preview limitado.
+- Telemetria por preview com bytes, dimensões e variação de memória.
+- Motor isolado de insights com amostra estratificada e análise completa por acervo, ano ou mês.
+- Cache versionado, cobertura explícita, cancelamento e cards acionáveis.
+- Localização v3.1 sem misturar campos nativos confiáveis com fragmentos inferidos.
+- Regressão integral da galeria e pacote homologável Windows.
+
+## Próximo — 0.23: produtividade e produção assistida
+
+- Comparação de períodos, insights por lugar/equipamento/tag e curadoria orientada.
+- Duplicatas com confiança editorial e revisão compacta refinada.
+- Jobs idempotentes com estados mais claros, diagnóstico guiado e retomada provada.
 - Telemetria longitudinal e diagnóstico comparativo entre dispositivos.
 - Políticas de bateria e agendamento por janela de uso.
 - Mapa privado opcional e pacotes geográficos regionais atualizáveis.

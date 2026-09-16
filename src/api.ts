@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { Album, AppPreferences, AssetDetails, BackgroundWorkStatus, BatchResult, CleanupPlan, DashboardStats, DiscoveryIndexResult, DiscoveryOverview, LocationResolveResult, DuplicateGroup, DuplicateOccurrence, DuplicateStatus, GalleryFilters, GalleryResult, GallerySort, ImportEvent, ImportSummary, JobEventPage, JobOverview, JobProgress, LibraryConfig, LibraryHealth, MediaAsset, MigrationProgress, PersonInfo, ProtectionQueueStats, RecoverableJob, ReportExport, ReviewSummary, SavedView, SelectionResult, Source, StoragePlan, TagInfo, ThumbnailAudit, ThumbnailRepairProgress } from "./types";
+import type { Album, AppPreferences, AssetDetails, BackgroundWorkStatus, BatchResult, CleanupPlan, DashboardStats, DiscoveryIndexResult, DiscoveryOverview, LocationResolveResult, DuplicateGroup, DuplicateOccurrence, DuplicateStatus, GalleryFilters, GalleryResult, GallerySort, ImportEvent, ImportSummary, InsightReport, InsightRequest, JobEventPage, JobOverview, JobProgress, LibraryConfig, LibraryHealth, MediaAsset, MigrationProgress, PersonInfo, ProtectionQueueStats, RecoverableJob, ReportExport, ReviewSummary, SavedView, SelectionResult, Source, StoragePlan, TagInfo, ThumbnailAudit, ThumbnailRepairProgress } from "./types";
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
 const now = new Date();
@@ -39,6 +39,8 @@ export const api = {
   createLibrary: (name: string, masterPath: string, backupPath: string) => call<LibraryConfig>("create_library", { name, masterPath, backupPath }, () => config = { id: crypto.randomUUID(), name, masterPath, backupPath, createdAt: new Date().toISOString() }),
   dashboard: () => call<DashboardStats>("get_dashboard", undefined, () => demoDashboard()),
   refreshDashboard: () => call<DashboardStats>("refresh_dashboard", undefined, () => ({...demoDashboard(),stale:false,snapshotGeneratedAt:new Date().toISOString()})),
+  generateInsights:(request:InsightRequest)=>call<InsightReport>("generate_insights",{request},()=>({scopeKey:request.month?`${request.year}-${String(request.month).padStart(2,"0")}`:request.year?String(request.year):"all",mode:request.mode,sampledItems:18,totalItems:18,coveragePercent:100,generatedAt:new Date().toISOString(),durationMs:12,cached:false,cards:[{kind:"composition",title:"Composição do período",detail:"15 fotos e 3 vídeos",value:18,action:"library",confidence:request.mode==="full"?"alta":"indicativa"}]})),
+  cancelInsights:()=>call<void>("cancel_insights",undefined,()=>undefined),
   startFormatEnrichment: () => call<string>("start_format_enrichment", undefined, () => "demo-format-inventory"),
   sources: () => call<Source[]>("list_sources", undefined, () => demoSources),
   startSourceSync:(sourceId:string)=>call<string>("start_source_sync",{sourceId},()=>{const id=crypto.randomUUID();demoJobs.set(id,{started:Date.now(),state:"analyzing"});setTimeout(()=>{const job=demoJobs.get(id);if(job)job.state="completed"},1200);return id}),

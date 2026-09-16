@@ -8,6 +8,7 @@ mod events;
 mod formats;
 mod gallery;
 mod health;
+mod insights;
 mod jobs;
 mod library;
 mod media;
@@ -44,6 +45,22 @@ struct AppState {
 
 static PHOTO_PREVIEW_ACTIVE: AtomicBool = AtomicBool::new(false);
 static ON_DEMAND_METADATA_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+#[tauri::command]
+async fn generate_insights(
+    request: insights::InsightRequest,
+    state: State<'_, AppState>,
+) -> Result<insights::InsightReport, String> {
+    let cfg = current(&state)?;
+    tauri::async_runtime::spawn_blocking(move || insights::generate(&cfg, request))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn cancel_insights() {
+    insights::cancel();
+}
 
 #[derive(Debug)]
 struct PhotoPreviewPermit;
@@ -1851,15 +1868,18 @@ fn get_media_url(asset_id: String, state: State<AppState>) -> Result<String, Str
     }
     let cfg = current(&state)?;
     let conn = db(&cfg)?;
-    let exists: bool = conn
+    let media_type: Option<String> = conn
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM assets WHERE id=?1)",
+            "SELECT media_type FROM assets WHERE id=?1",
             [&asset_id],
             |row| row.get(0),
         )
+        .optional()
         .map_err(|error| error.to_string())?;
-    if !exists {
-        return Err("Mídia não encontrada".into());
+    match media_type.as_deref() {
+        None => return Err("Mídia não encontrada".into()),
+        Some("video") => {}
+        Some(_) => return Err("MEDIA_ORIGINAL_BLOCKED: fotos usam prévia limitada".into()),
     }
     #[cfg(windows)]
     {
@@ -1883,17 +1903,27 @@ async fn prepare_photo_preview(
     // pool of blocking threads which only wait for the process limiter.
     let _permit = PhotoPreviewPermit::acquire()?;
     let cfg = current(&state)?;
+    let preview_context = db(&cfg)?.query_row(
+        "SELECT bytes,COALESCE(width,0),COALESCE(height,0),LOWER(extension) FROM assets WHERE id=?1",
+        [&asset_id],
+        |row| Ok((row.get::<_,i64>(0)?,row.get::<_,i64>(1)?,row.get::<_,i64>(2)?,row.get::<_,String>(3)?)),
+    ).map_err(|error|error.to_string())?;
     let requested = asset_id.clone();
+    let memory_before = diagnostics::working_set_bytes();
     diagnostics::append(
         "photo_preview_started",
-        &format!("asset={}", &asset_id[..asset_id.len().min(12)]),
+        &format!("asset={} original_bytes={} original_dimensions={}x{} extension={} working_set_before={}", &asset_id[..asset_id.len().min(12)],preview_context.0,preview_context.1,preview_context.2,preview_context.3,memory_before),
     );
-    tauri::async_runtime::spawn_blocking(move || media::viewer_preview_file(&cfg, &requested))
-        .await
-        .map_err(|error| error.to_string())??;
+    let preview =
+        tauri::async_runtime::spawn_blocking(move || media::viewer_preview_file(&cfg, &requested))
+            .await
+            .map_err(|error| error.to_string())??;
+    let preview_bytes = preview.metadata().map(|value| value.len()).unwrap_or(0);
+    let dimensions = image::image_dimensions(&preview).unwrap_or_default();
+    let memory_after = diagnostics::working_set_bytes();
     diagnostics::append(
         "photo_preview_completed",
-        &format!("asset={}", &asset_id[..asset_id.len().min(12)]),
+        &format!("asset={} preview_bytes={} preview_dimensions={}x{} working_set_after={} memory_delta={}", &asset_id[..asset_id.len().min(12)],preview_bytes,dimensions.0,dimensions.1,memory_after,memory_after.saturating_sub(memory_before)),
     );
     #[cfg(windows)]
     {
@@ -2074,15 +2104,14 @@ pub fn run() {
                         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                     )
                     .map_err(|_| "Mídia não encontrada".to_string())?;
-                // Navegar rapidamente por originais grandes pode esgotar a memória do
-                // WebView. Fotos usam a representação limitada do cache; vídeos mantêm
-                // acesso parcial ao arquivo original.
-                let served = if media_type == "photo" {
-                    media::thumbnail_file(&cfg, asset)?
-                        .ok_or_else(|| "Prévia indisponível".to_string())?
-                } else {
-                    PathBuf::from(&stored)
-                };
+                if media_type != "video" {
+                    diagnostics::append(
+                        "media_original_blocked",
+                        &format!("asset={}", &asset[..asset.len().min(12)]),
+                    );
+                    return Err("Originais fotográficos não são servidos ao visualizador".into());
+                }
+                let served = PathBuf::from(&stored);
                 let canonical = fs::canonicalize(&served).map_err(|error| error.to_string())?;
                 let master =
                     fs::canonicalize(&cfg.master_path).map_err(|error| error.to_string())?;
@@ -2172,6 +2201,8 @@ pub fn run() {
             create_library,
             get_dashboard,
             refresh_dashboard,
+            generate_insights,
+            cancel_insights,
             list_sources,
             start_source_sync,
             get_review_summary,

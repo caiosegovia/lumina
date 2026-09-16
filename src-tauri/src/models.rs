@@ -270,6 +270,7 @@ pub struct AssetDetails {
     pub location_region: Option<String>,
     pub location_country: Option<String>,
     pub location_source: Option<String>,
+    pub location_confidence: Option<String>,
     pub altitude: Option<f64>,
     pub location_accuracy_m: Option<f64>,
 }
