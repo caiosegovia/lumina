@@ -575,7 +575,7 @@ function Dashboard({ onImport,navigate }: { onImport: () => void;navigate:(view:
           </div>
           {insightReport&&<div className="insight-coverage"><span>{insightReport.scopeKey==="all"?"Todo o acervo":insightReport.scopeKey}</span><span>{insightReport.sampledItems.toLocaleString("pt-BR")} de {insightReport.totalItems.toLocaleString("pt-BR")} itens</span><span>{insightReport.coveragePercent.toFixed(1)}% de cobertura</span><span>{insightReport.cached?"Resultado em cache":`${insightReport.durationMs} ms`}</span></div>}
           {insightError&&<p className="dashboard-refresh-error">{insightError}</p>}
-          <div className="insight-results">{insightReport?.cards.map(card=><button className="dashboard-insight low" key={card.kind} onClick={()=>card.action==="library"?openLibrary(insightYear?insightMonth?monthRange(`${insightYear}-${insightMonth.padStart(2,"0")}`):{year:Number(insightYear)}:{}):navigate(card.action)}><span><b>{card.title}</b><small>{card.detail}</small><em>confiança {card.confidence}</em></span><strong>{card.value.toLocaleString("pt-BR")}</strong><i>Abrir <ChevronRight/></i></button>)}</div>
+          <div className="insight-results">{insightReport?.cards.map(card=><button className={`dashboard-insight confidence-${card.confidence}`} aria-label={`${card.title}: ${card.detail}. Abrir resultado`} key={card.kind} onClick={()=>card.action==="library"?openLibrary(insightYear?insightMonth?monthRange(`${insightYear}-${insightMonth.padStart(2,"0")}`):{year:Number(insightYear)}:{}):navigate(card.action)}><span><b>{card.title}</b><small>{card.detail}</small><em>confiança {card.confidence}</em></span><strong>{card.value.toLocaleString("pt-BR")}</strong><i>Explorar <ChevronRight/></i></button>)}</div>
         </article>
         {!!benchmarks.length && (
           <article className="panel benchmark-panel">
@@ -741,6 +741,13 @@ function Duplicates() {
     loadDuplicates();
   }, []);
   const filtered=items.filter(group=>filter==="all"||filter==="pending"&&!group.decision||filter==="protected"&&group.safety==="eligible_for_review"||filter==="review"&&group.decision==="review"||filter==="eligible"&&group.safety==="eligible_for_review").sort((a,b)=>sort==="name"?a.filename.localeCompare(b.filename):sort==="copies"?b.occurrenceCount-a.occurrenceCount:b.additionalBytes-a.additionalBytes);
+  const duplicateFilters=[
+    ["all","Todas",items.length],
+    ["pending","Pendentes",items.filter(group=>!group.decision).length],
+    ["protected","Protegidas",items.filter(group=>group.safety==="eligible_for_review").length],
+    ["review","Revisar",items.filter(group=>group.decision==="review").length],
+    ["eligible","Elegíveis",items.filter(group=>group.safety==="eligible_for_review").length],
+  ] as const;
   return (
     <>
       <div className="section-heading">
@@ -763,7 +770,7 @@ function Duplicates() {
         <span>Última análise: <strong>{formatDate(status.lastScan)}</strong></span>
       </div>}
       <div className="duplicate-toolbar" aria-label="Organizar duplicatas">
-        <div className="duplicate-filters">{[["all","Todas"],["pending","Pendentes"],["protected","Protegidas"],["review","Revisar"],["eligible","Elegíveis"]].map(([value,label])=><button key={value} className={filter===value?"active":""} onClick={()=>{setFilter(value);setVisible(50)}}>{label}</button>)}</div>
+        <div className="duplicate-filters">{duplicateFilters.map(([value,label,count])=><button key={value} className={filter===value?"active":""} aria-pressed={filter===value} onClick={()=>{setFilter(value);setVisible(50)}}>{label}<span>{count}</span></button>)}</div>
         <label>Ordenar por <select value={sort} onChange={event=>setSort(event.target.value)}><option value="space">Maior espaço</option><option value="copies">Mais cópias</option><option value="name">Nome</option></select></label>
       </div>
       <section className="cleanup-planner">

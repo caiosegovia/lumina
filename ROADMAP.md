@@ -75,7 +75,7 @@ O histórico detalhado permanece em `RELEASE-0.18-BETA.md` e nos hotfixes 0.18.1
 
 A automação e o smoke curto foram aprovados, porém a homologação prolongada encontrou crescimento abrupto da árvore de processos e encerramento inesperado. A causa principal confirmada é a leitura de vídeo sem intervalo limitado; a auditoria também encontrou outros caminhos sem orçamento. O histórico permanece preservado, mas a versão não é candidata de produção.
 
-## Em preparação — 0.22.2: resiliência arquitetural
+## Concluído e homologado — 0.22.2: resiliência arquitetural
 
 - Limitar protocolo de vídeo, saídas de ferramentas, arquivos individuais e exportações.
 - Adotar coordenador global de recursos e runtime supervisionado.
@@ -87,7 +87,7 @@ A automação e o smoke curto foram aprovados, porém a homologação prolongada
 
 Escopo, ordem e gates estão em `NFR-0.22.2-RESILIENCE.md`, `ARCHITECTURE-AUDIT-0.22.2.md`, `REMEDIATION-0.22.2.md` e `TRACEABILITY-0.22.2.md`.
 
-## Congelado até o aceite da 0.22.2 — 0.23: produtividade e produção assistida
+## Em homologação — 0.23: produtividade e produção assistida
 
 - Revisão tipográfica integral: adotar uma família moderna e legível, com fallback local previsível, pesos consistentes e renderização uniforme no Windows/WebView2.
 - Consolidar tokens tipográficos para títulos, seções, cards, metadados, pills, botões e textos auxiliares, eliminando tamanhos e estilos isolados.

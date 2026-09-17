@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import { api } from "./api";
 import "./styles.css";
+import "./design-system.css";
 
 class AppErrorBoundary extends React.Component<React.PropsWithChildren, {failed:boolean}> {
   state={failed:false};
