@@ -6,8 +6,8 @@ Transformar a baseline estável da 0.22.2 em uma experiência mais coerente e pr
 
 ## Entregas do pacote
 
-- sistema tipográfico local e determinístico, sem dependência de Google Fonts;
-- família variável nativa do Windows, escala tipográfica, pesos e alturas de linha normalizados;
+- sistema tipográfico local e determinístico, sem dependência de Google Fonts remotas;
+- Inter Variable embarcada para interface e Manrope Variable embarcada para títulos, com escala, pesos e alturas de linha normalizados;
 - linguagem moderna e única para botões, foco, pills, cards e estados desabilitados;
 - galeria virtualizada em grade ou lista, densidade configurável e inspector convivendo com o acervo;
 - filtros agregadores, segmentação por ano, visões salvas e indicadores do resultado atual;

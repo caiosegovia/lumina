@@ -1,7 +1,7 @@
 /* Lumina 0.23 — local, deterministic typography and interaction system. */
 :root {
-  --font-ui: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
-  --font-display: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+  --font-ui: "Inter Variable", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --font-display: "Manrope Variable", "Inter Variable", "Segoe UI Variable Display", system-ui, sans-serif;
   --type-xs: 0.75rem;
   --type-sm: 0.8125rem;
   --type-md: 0.9375rem;
@@ -65,6 +65,15 @@ small { line-height: 1.38; }
   border-radius: var(--radius-card);
   box-shadow: var(--shadow-card);
 }
+.app-shell > aside { background: linear-gradient(180deg, #172c25 0%, #213a31 100%); }
+.brand { font-size: 1.28rem; letter-spacing: -.025em; }
+.brand-mark { border-radius: .9rem; box-shadow: inset 0 1px #ffffff66, 0 8px 20px #08140f4d; }
+aside nav button { min-height: 43px; border-radius: .72rem; font-size: .86rem; font-weight: 540; }
+aside nav button.active { background: #ffffff12; box-shadow: inset 3px 0 #dfb66f; }
+.topbar h1 { font-size: 1.18rem; font-weight: 650; }
+.hero-row h2, .section-heading h2, .activity-hero h2 { font-size: var(--type-xl); }
+.content { padding-top: 2.2rem; }
+.stat-card > strong { font-size: 1.8rem; font-weight: 660; }
 .eyebrow { font-family: var(--font-ui); font-size: .68rem !important; font-weight: 680; letter-spacing: .105em; }
 .status-pill, .duplicate-pill, .work-state, .insight-mode {
   font-family: var(--font-ui);
