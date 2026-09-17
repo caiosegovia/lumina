@@ -89,6 +89,10 @@ Escopo, ordem e gates estão em `NFR-0.22.2-RESILIENCE.md`, `ARCHITECTURE-AUDIT-
 
 ## Congelado até o aceite da 0.22.2 — 0.23: produtividade e produção assistida
 
+- Revisão tipográfica integral: adotar uma família moderna e legível, com fallback local previsível, pesos consistentes e renderização uniforme no Windows/WebView2.
+- Consolidar tokens tipográficos para títulos, seções, cards, metadados, pills, botões e textos auxiliares, eliminando tamanhos e estilos isolados.
+- Revisar hierarquia, espaçamento, altura de linha, contraste, truncamento e comportamento em diferentes escalas de tela e DPI.
+- Validar visualmente todas as seções e estados — carregamento, vazio, erro, seleção, zoom e comparação — antes de publicar a próxima candidata.
 - Comparação de períodos, insights por lugar/equipamento/tag e curadoria orientada.
 - Duplicatas com confiança editorial e revisão compacta refinada.
 - Jobs idempotentes com estados mais claros, diagnóstico guiado e retomada provada.

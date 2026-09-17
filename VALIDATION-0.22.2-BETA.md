@@ -4,6 +4,10 @@
 
 Documento preenchido pelos gates da candidata. A aprovação automatizada não substitui o endurance no dispositivo de produção descrito em `RELEASE-0.22.2-BETA.md`.
 
+## Feedback aberto da homologação
+
+- Tipografia visualmente inconsistente após a 0.22.2: fontes, pesos e hierarquia deixaram partes da interface desorganizadas. Correção planejada para o próximo pacote como revisão do sistema tipográfico completo, sem bloquear a continuidade dos demais testes desta beta.
+
 ## Gates
 
 | Gate | Resultado |
