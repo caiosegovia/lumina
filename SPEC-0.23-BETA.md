@@ -6,6 +6,10 @@ Transformar a baseline estável da 0.22.2 em uma experiência mais coerente e pr
 
 ## Entregas do pacote
 
+- revisão visual beta 3 com a identidade DM Sans + Manrope restaurada;
+- temas Claro, Escuro e Seguir Windows, persistentes e sem recarregar a jornada;
+- paleta semântica aplicada a navegação, dashboard, galeria, inspector, comparação, atividade, duplicatas, descoberta e modais;
+
 - sistema tipográfico local e determinístico, sem dependência de Google Fonts remotas;
 - Inter Variable embarcada para interface e Manrope Variable embarcada para títulos, com escala, pesos e alturas de linha normalizados;
 - linguagem moderna e única para botões, foco, pills, cards e estados desabilitados;

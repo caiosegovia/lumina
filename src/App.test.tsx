@@ -7,7 +7,7 @@ import type { DashboardStats } from "./types";
 const emptyDashboard=():DashboardStats=>({totalAssets:0,photos:0,videos:0,bytes:0,protected:0,pending:0,duplicateGroups:0,duplicateBytes:0,reclaimableBytes:0,errors:0,offlineSources:0,masterAvailableBytes:0,backupAvailableBytes:0,types:[],years:[],months:[],protection:[],cameras:[],formats:[],sources:[],insights:[],snapshotGeneratedAt:new Date().toISOString(),stale:false,timings:[]});
 
 describe("fluxo principal do aplicativo", () => {
-  afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+  afterEach(() => { cleanup(); vi.restoreAllMocks(); localStorage.clear(); });
   it("cria a biblioteca, abre o painel e conclui o assistente de importação", async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -171,5 +171,20 @@ describe("fluxo principal do aplicativo", () => {
     await user.click(screen.getByRole("button",{name:/Análise completa/}));
     await waitFor(()=>expect(generate).toHaveBeenLastCalledWith({mode:"full",year:2025,month:undefined}));
     expect(await screen.findByText("Resultado em cache")).toBeInTheDocument();expect(screen.getByText("confiança alta")).toBeInTheDocument();
+  });
+  it("alterna e persiste os temas claro, escuro e do Windows", async()=>{
+    const user=userEvent.setup();
+    vi.spyOn(api,"getLibrary").mockResolvedValue({id:"lib",name:"Teste",masterPath:"D:\\Lumina",backupPath:"G:\\Backup",createdAt:new Date().toISOString()});
+    vi.spyOn(api,"recoverableJobs").mockResolvedValue([]);
+    vi.spyOn(api,"dashboard").mockResolvedValue(emptyDashboard());
+    render(<App/>);
+    await screen.findByRole("button",{name:"Usar tema escuro"});
+    await user.click(screen.getByRole("button",{name:"Usar tema escuro"}));
+    expect(document.documentElement).toHaveAttribute("data-theme","dark");
+    expect(localStorage.getItem("lumina-theme")).toBe("dark");
+    await user.click(screen.getByRole("button",{name:"Usar tema claro"}));
+    expect(document.documentElement).toHaveAttribute("data-theme","light");
+    await user.click(screen.getByRole("button",{name:"Seguir tema do Windows"}));
+    expect(localStorage.getItem("lumina-theme")).toBe("system");
   });
 });

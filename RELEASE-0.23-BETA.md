@@ -1,5 +1,7 @@
 # Roteiro de homologação 0.23 Beta
 
+> A beta 3 acrescenta a revisão visual e os temas Claro, Escuro e Seguir Windows. Execute também `VISUAL-REVIEW-0.23.md`.
+
 ## Instalação e preservação
 
 1. Instale sobre a 0.22.2 e confirme a abertura do mesmo catálogo.

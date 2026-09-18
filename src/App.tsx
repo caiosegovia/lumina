@@ -18,10 +18,13 @@ import {
   Images,
   LayoutDashboard,
   LoaderCircle,
+  Monitor,
+  Moon,
   Plus,
   RefreshCw,
   Search,
   Sparkles,
+  Sun,
   ShieldCheck,
   UserRound,
   X,
@@ -80,6 +83,22 @@ export default function App() {
     [toast, setToast] = useState(""),
     previous = useRef(new Map<string, string>()),
     pollingFast = useRef(false);
+  const [theme, setTheme] = useState<"system" | "light" | "dark">(() => {
+    const saved = localStorage.getItem("lumina-theme");
+    return saved === "light" || saved === "dark" ? saved : "system";
+  });
+  useEffect(() => {
+    const media = window.matchMedia?.("(prefers-color-scheme: dark)");
+    const apply = () => {
+      const resolved = theme === "system" ? (media?.matches ? "dark" : "light") : theme;
+      document.documentElement.dataset.theme = resolved;
+      document.documentElement.style.colorScheme = resolved;
+    };
+    localStorage.setItem("lumina-theme", theme);
+    apply();
+    media?.addEventListener?.("change", apply);
+    return () => media?.removeEventListener?.("change", apply);
+  }, [theme]);
   useEffect(() => {
     api.getLibrary().then(setLibrary);
   }, []);
@@ -187,6 +206,11 @@ export default function App() {
         <header className="topbar">
           <h1>{nav.find((n) => n.id === view)?.label}</h1>
           <div className="top-actions">
+            <div className="theme-switcher" role="group" aria-label="Tema da interface">
+              <button className={theme === "light" ? "active" : ""} onClick={() => setTheme("light")} aria-label="Usar tema claro" title="Tema claro"><Sun /></button>
+              <button className={theme === "system" ? "active" : ""} onClick={() => setTheme("system")} aria-label="Seguir tema do Windows" title="Seguir Windows"><Monitor /></button>
+              <button className={theme === "dark" ? "active" : ""} onClick={() => setTheme("dark")} aria-label="Usar tema escuro" title="Tema escuro"><Moon /></button>
+            </div>
             <i className="status-dot" />
             Biblioteca saudável
           </div>

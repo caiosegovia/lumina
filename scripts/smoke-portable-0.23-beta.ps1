@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 $workspace = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$zip = (Resolve-Path (Join-Path $workspace "artifacts\Lumina-0.23.0-beta.2-portable-windows-x64.zip")).Path
-$extract = Join-Path $env:TEMP ("Lumina-023b1-Smoke-" + [guid]::NewGuid().ToString("N"))
+$zip = (Resolve-Path (Join-Path $workspace "artifacts\Lumina-0.23.0-beta.3-portable-windows-x64.zip")).Path
+$extract = Join-Path $env:TEMP ("Lumina-023b3-Smoke-" + [guid]::NewGuid().ToString("N"))
 Expand-Archive -LiteralPath $zip -DestinationPath $extract
 $manifest = Get-Content (Join-Path $extract "MANIFEST.json") -Raw | ConvertFrom-Json
 foreach ($entry in $manifest) {$path=Join-Path $extract $entry.path.Replace("/", "\");if(-not(Test-Path -LiteralPath $path)){throw "Ausente: $($entry.path)"};if((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -ne $entry.sha256){throw "Hash invalido: $($entry.path)"}}

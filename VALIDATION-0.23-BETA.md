@@ -4,16 +4,19 @@
 
 | Gate | Resultado |
 |---|---|
-| Frontend/Vitest | 42 aprovados em 7 arquivos |
+| Frontend/Vitest | 43 aprovados em 7 arquivos, incluindo persistência dos três modos de tema |
 | Rust completo | 136 aprovados, 0 falhas, 2 fixtures opcionais ignoradas |
 | TypeScript/Vite | aprovado durante o desenvolvimento |
 | Formatação e Clippy estrito | aprovados |
 | Build release | MSI e NSIS aprovados |
-| Smoke portátil isolado | 574 entradas, frontend pronto, encerramento limpo, 31.420.416 bytes de working set |
+| Smoke portátil isolado | 575 entradas, frontend pronto, encerramento limpo, 31.166.464 bytes de working set |
 | Homologação humana | executar `RELEASE-0.23-BETA.md` |
 
 ## Cobertura adicionada
 
+- temas Claro, Escuro e Seguir Windows com preferência persistente;
+- DM Sans e Manrope embarcadas, sem rede ou fallback inesperado;
+- tokens semânticos e revisão das superfícies principais nos dois temas;
 - filtro operacional da Atividade entre execução, atenção e histórico;
 - tipografia inteiramente local, sem requisição externa;
 - agregadores contáveis de duplicatas;
@@ -25,6 +28,6 @@ Os testes de resiliência, galeria, preview, vídeo, jobs, duplicatas, localiza�
 
 | Pacote | Bytes | SHA-256 |
 |---|---:|---|
-| `Lumina_0.23.0-2_x64_en-US.msi` | 92.107.476 | `3e45544d876c1d7c834dc2240005f3db62296910cf178b411cbca345f5c47077` |
-| `Lumina_0.23.0-2_x64-setup.exe` | 67.045.342 | `2a51d388357929afbffb4204e195fca8762c0c76077c1a4c32ccb3198d6dbecd` |
-| `Lumina-0.23.0-beta.2-portable-windows-x64.zip` | 92.152.643 | `d6cf6dfc57ea3d9013936acba9168347f62931637e809beb083540096e1462d9` |
+| `Lumina_0.23.0-3_x64_en-US.msi` | 91.923.156 | `a6d121758a4c3154f2be4a88a37d31e5fe67312872193029bfe87f68e39f0b9e` |
+| `Lumina_0.23.0-3_x64-setup.exe` | 66.876.352 | `8af2a2e02e43f71ec14596f4429aa20fcc4e3b1d8d587c7f590afbc2ffe35908` |
+| `Lumina-0.23.0-beta.3-portable-windows-x64.zip` | 91.992.003 | `375bda0f1eb77752a6b41d822d68d8b348252989ee05bc818f1c957737a8e10c` |

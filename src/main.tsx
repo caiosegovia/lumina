@@ -1,11 +1,18 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import "@fontsource-variable/inter/wght.css";
+import "@fontsource-variable/dm-sans/wght.css";
 import "@fontsource-variable/manrope/wght.css";
 import App from "./App";
 import { api } from "./api";
 import "./styles.css";
 import "./design-system.css";
+
+const savedTheme = localStorage.getItem("lumina-theme");
+const initialTheme = savedTheme === "light" || savedTheme === "dark"
+  ? savedTheme
+  : window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+document.documentElement.dataset.theme = initialTheme;
+document.documentElement.style.colorScheme = initialTheme;
 
 class AppErrorBoundary extends React.Component<React.PropsWithChildren, {failed:boolean}> {
   state={failed:false};
