@@ -170,6 +170,14 @@ fn metadata_value(v: &serde_json::Value, fallback: &str) -> CapturedMetadata {
     )
 }
 
+fn capture_calendar_date(value: &str) -> Option<chrono::NaiveDateTime> {
+    DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|date| date.naive_local())
+        .or_else(|| chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S").ok())
+        .or_else(|| chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S").ok())
+}
+
 fn capture_metadata_batches<F>(
     paths: &[PathBuf],
     cancel: &crate::process::CancellationToken,
@@ -1330,9 +1338,11 @@ pub fn consolidate_cancel(
                         metadata
                     }
                 };
-            let parsed = DateTime::parse_from_rfc3339(&captured)
-                .map(|d| d.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now());
+            let parsed = capture_calendar_date(&captured)
+                .or_else(|| capture_calendar_date(&modified))
+                .ok_or_else(|| {
+                    "A data de captura e a data física do arquivo são inválidas".to_string()
+                })?;
             let dir = Path::new(&cfg.master_path)
                 .join(parsed.format("%Y").to_string())
                 .join(parsed.format("%m").to_string());
@@ -1384,6 +1394,7 @@ pub fn consolidate_cancel(
                 conn.execute("UPDATE jobs SET processed_items=?2,processed_bytes=?3,failed_count=?4 WHERE id=?1",params![job,processed_items,processed_bytes,failed]).ok();
                 continue;
             }
+            crate::storage::preserve_modified_time(&source, &dest)?;
             conn.execute(
                 "UPDATE job_items SET temp_path=NULL,current_stage='cataloging',updated_at=?3 WHERE job_id=?1 AND source_path=?2",
                 params![job,path,Utc::now().to_rfc3339()],
@@ -2105,6 +2116,14 @@ mod tests {
         let metadata = metadata_value(&value, "fallback");
         assert_eq!(metadata.0, "2026-01-02T14:30:00");
         assert_eq!(metadata.1, "exif_original_offset");
+    }
+    #[test]
+    fn local_capture_date_drives_the_physical_year_and_month() {
+        let local = capture_calendar_date("2018-07-09T22:14:03").unwrap();
+        assert_eq!(local.format("%Y/%m").to_string(), "2018/07");
+        let offset = capture_calendar_date("2018-07-09T22:14:03-03:00").unwrap();
+        assert_eq!(offset.format("%Y/%m").to_string(), "2018/07");
+        assert!(capture_calendar_date("not-a-date").is_none());
     }
     #[test]
     fn technical_metadata_for_large_catalogs_is_strictly_bounded() {

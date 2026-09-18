@@ -6,7 +6,7 @@ Restaurar a identidade aprovada do Lumina e aplicar uma linguagem consistente em
 
 ## Fundacao
 
-- DM Sans Variable local para interface e Manrope Variable local para titulos e numeros de destaque.
+- Plus Jakarta Sans Variable local para interface e Sora Variable local para titulos e numeros de destaque.
 - Nenhuma fonte ou folha de estilo depende de rede.
 - Tokens semanticos para tela, superficie, texto, borda, destaque, sucesso, atencao, erro, overlay e palco de midia.
 - Controles compartilham altura, raio, foco, hover, estado pressionado e estado desabilitado.
@@ -34,15 +34,15 @@ Restaurar a identidade aprovada do Lumina e aplicar uma linguagem consistente em
 2. Alterne entre os tres modos em cada secao; a navegacao e o trabalho atual nao podem reiniciar.
 3. Feche e reabra no modo Escuro e confirme a persistencia; repita com Seguir Windows.
 4. Compare todas as secoes nos dois temas e procure superficies claras ou textos sem contraste.
-5. Verifique DM Sans nos textos, Manrope nos titulos e ausencia de troca de fonte depois do carregamento.
+5. Verifique Plus Jakarta Sans nos textos, Sora nos titulos e ausencia de troca de fonte depois do carregamento.
 6. Teste foco pelo teclado, hover, selecionado, desabilitado, alertas, modais e menus.
 7. Repita em escala de 100%, 125% e 150% do Windows e com a janela reduzida.
 8. Confirme que foto e video preservam suas cores e que preview, zoom e tela cheia continuam sincronizados.
 
 ## Regras de aceitacao
 
-1. A familia calculada do texto de interface deve iniciar por `DM Sans Variable`.
-2. Titulos devem usar `Manrope Variable`.
+1. A familia calculada do texto de interface deve iniciar por `Plus Jakarta Sans Variable`.
+2. Titulos devem usar `Sora Variable`.
 3. Alternar tema nao pode recarregar a tela, perder selecao ou interromper jobs.
 4. Claro ou Escuro deve permanecer escolhido depois de reiniciar.
 5. Seguir Windows deve reagir a mudanca do sistema durante a execucao.

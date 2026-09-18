@@ -1896,8 +1896,10 @@ fn reveal_asset_in_folder(asset_id: String, state: State<AppState>) -> Result<()
     Ok(())
 }
 #[cfg(windows)]
-fn explorer_selection_args(path: &Path) -> [std::ffi::OsString; 2] {
-    ["/select,".into(), path.as_os_str().to_owned()]
+fn explorer_selection_args(path: &Path) -> [std::ffi::OsString; 1] {
+    let mut selection = std::ffi::OsString::from("/select,");
+    selection.push(path.as_os_str());
+    [selection]
 }
 #[tauri::command]
 fn get_media_url(asset_id: String, state: State<AppState>) -> Result<String, String> {
@@ -2365,8 +2367,10 @@ mod protocol_tests {
     fn explorer_selection_keeps_complex_path_as_a_separate_argument() {
         let path = Path::new(r"C:\Fotos da família\ensaio, final (1).jpg");
         let args = explorer_selection_args(path);
-        assert_eq!(args[0], "/select,");
-        assert_eq!(args[1], path.as_os_str());
+        assert_eq!(
+            args[0],
+            std::ffi::OsString::from(format!("/select,{}", path.display()))
+        );
     }
 
     #[test]

@@ -137,7 +137,17 @@ pub fn copy_verified_via_staged<F: FnMut(&str)>(
         return Err("O destino já contém outro arquivo".into());
     }
     on_stage("promotion");
-    fs::rename(temp, destination).map_err(|e| e.to_string())
+    fs::rename(temp, destination).map_err(|e| e.to_string())?;
+    preserve_modified_time(source, destination)?;
+    Ok(())
+}
+
+/// Keep the source filesystem modification time on the verified physical copy.
+/// The catalog capture date remains authoritative for the gallery timeline.
+pub fn preserve_modified_time(source: &Path, destination: &Path) -> Result<(), String> {
+    let metadata = fs::metadata(source).map_err(|e| e.to_string())?;
+    let modified = filetime::FileTime::from_last_modification_time(&metadata);
+    filetime::set_file_mtime(destination, modified).map_err(|e| e.to_string())
 }
 pub fn copy_hash_to_temp_verified(
     source: &Path,
@@ -276,6 +286,21 @@ mod tests {
         assert_eq!(hash, sha256(&source).unwrap());
         promote_verified_temp(&temp, &destination, &hash).unwrap();
         assert_eq!(fs::read(destination).unwrap(), fs::read(source).unwrap());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn verified_copy_preserves_the_source_modification_time() {
+        let root = std::env::temp_dir().join(Uuid::new_v4().to_string());
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("original.jpg");
+        let destination = root.join("copy.jpg");
+        fs::write(&source, b"original").unwrap();
+        let expected = filetime::FileTime::from_unix_time(1_530_000_000, 0);
+        filetime::set_file_mtime(&source, expected).unwrap();
+        copy_verified(&source, &destination, &sha256(&source).unwrap()).unwrap();
+        let actual =
+            filetime::FileTime::from_last_modification_time(&fs::metadata(&destination).unwrap());
+        assert_eq!(actual.unix_seconds(), expected.unix_seconds());
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
