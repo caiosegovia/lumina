@@ -234,6 +234,7 @@ async fn migrate_master_path(
         .library_lock
         .lock()
         .map_err(|_| "Estado interno indisponível")? = Some(guard);
+    manager.start_watchdog(next.clone())?;
     diagnostics::spawn_monitor(next);
     Ok(progress)
 }
@@ -252,6 +253,7 @@ fn create_library(
     master_path: String,
     backup_path: String,
     state: State<AppState>,
+    manager: State<jobs::JobManager>,
 ) -> Result<LibraryConfig, String> {
     if master_path.trim().is_empty() || backup_path.trim().is_empty() {
         return Err("Informe as pastas do acervo e do backup".into());
@@ -294,6 +296,7 @@ fn create_library(
         .library_lock
         .lock()
         .map_err(|_| "Estado interno indisponível".to_string())? = Some(guard);
+    manager.start_watchdog(cfg.clone())?;
     diagnostics::spawn_monitor(cfg.clone());
     Ok(cfg)
 }
@@ -1034,7 +1037,7 @@ fn list_albums(state: State<AppState>) -> Result<Vec<Album>, String> {
 fn list_jobs(state: State<AppState>) -> Result<Vec<JobOverview>, String> {
     let cfg = current(&state)?;
     let conn = db(&cfg)?;
-    let mut stmt=conn.prepare("SELECT j.id,s.name,j.source_path,j.state,j.stage,j.processed_items,j.total_items,j.processed_bytes,j.total_bytes,CASE WHEN j.state='analyzing' AND j.stage_total_bytes>0 THEN MIN(100.0,j.stage_processed_bytes*100.0/j.stage_total_bytes) WHEN j.state='analyzing' AND j.stage_total_items>0 THEN MIN(100.0,j.stage_processed_items*100.0/j.stage_total_items) WHEN j.total_bytes>0 THEN MIN(100.0,j.processed_bytes*100.0/j.total_bytes) WHEN j.total_items>0 THEN MIN(100.0,j.processed_items*100.0/j.total_items) ELSE 0 END,j.bytes_per_second,j.estimated_seconds_remaining,j.imported_count,j.duplicate_count,j.excluded_count,j.failed_count,j.created_at,COALESCE(j.heartbeat_at,j.updated_at),j.interruption_reason FROM jobs j JOIN sources s ON s.id=j.source_id WHERE j.source_path NOT LIKE 'lumina://%' ORDER BY CASE WHEN j.state IN('queued','analyzing','consolidating','protecting','pausing','paused','canceling','ready','batch_pending','protection_pending','waiting_space','waiting_backup_space','backup_error','interrupted') THEN 0 ELSE 1 END,j.updated_at DESC LIMIT 200").map_err(|e|e.to_string())?;
+    let mut stmt=conn.prepare("SELECT j.id,s.name,j.source_path,j.state,j.stage,j.processed_items,j.total_items,j.processed_bytes,j.total_bytes,CASE WHEN j.state='analyzing' AND j.stage_total_bytes>0 THEN MIN(100.0,j.stage_processed_bytes*100.0/j.stage_total_bytes) WHEN j.state='analyzing' AND j.stage_total_items>0 THEN MIN(100.0,j.stage_processed_items*100.0/j.stage_total_items) WHEN j.total_bytes>0 THEN MIN(100.0,j.processed_bytes*100.0/j.total_bytes) WHEN j.total_items>0 THEN MIN(100.0,j.processed_items*100.0/j.total_items) ELSE 0 END,j.bytes_per_second,j.estimated_seconds_remaining,j.imported_count,j.duplicate_count,j.excluded_count,j.failed_count,j.created_at,COALESCE((SELECT MAX(q.updated_at) FROM work_queue q WHERE q.job_id=j.id),j.heartbeat_at,j.updated_at),j.interruption_reason,(SELECT COUNT(*) FROM work_queue q WHERE q.job_id=j.id AND q.state='pending'),(SELECT COUNT(*) FROM work_queue q WHERE q.job_id=j.id AND q.state='processing') FROM jobs j JOIN sources s ON s.id=j.source_id WHERE j.source_path NOT LIKE 'lumina://%' ORDER BY CASE WHEN j.state IN('queued','analyzing','consolidating','protecting','pausing','paused','canceling','ready','batch_pending','protection_pending','waiting_space','waiting_backup_space','backup_error','interrupted') THEN 0 ELSE 1 END,j.updated_at DESC LIMIT 200").map_err(|e|e.to_string())?;
     let rows = stmt
         .query_map([], |r| {
             Ok(JobOverview {
@@ -1057,6 +1060,8 @@ fn list_jobs(state: State<AppState>) -> Result<Vec<JobOverview>, String> {
                 created_at: r.get(16)?,
                 updated_at: r.get(17)?,
                 interruption_reason: r.get(18)?,
+                queue_pending: r.get(19)?,
+                queue_processing: r.get(20)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -1885,21 +1890,45 @@ fn reveal_asset_in_folder(asset_id: String, state: State<AppState>) -> Result<()
         return Err("O arquivo não está disponível no acervo mestre".into());
     }
     #[cfg(windows)]
-    std::process::Command::new("explorer.exe")
-        .args(explorer_selection_args(
-            &std::fs::canonicalize(&path).map_err(|error| error.to_string())?,
-        ))
-        .spawn()
-        .map_err(|error| error.to_string())?;
+    reveal_path_native(&std::fs::canonicalize(&path).map_err(|error| error.to_string())?)?;
     #[cfg(not(windows))]
     return Err("Abrir localização ainda não é suportado neste sistema".into());
     Ok(())
 }
 #[cfg(windows)]
-fn explorer_selection_args(path: &Path) -> [std::ffi::OsString; 1] {
-    let mut selection = std::ffi::OsString::from("/select,");
-    selection.push(path.as_os_str());
-    [selection]
+fn reveal_path_native(path: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::{
+        System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED},
+        UI::Shell::{ILCreateFromPathW, ILFree, SHOpenFolderAndSelectItems},
+    };
+    let wide = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    unsafe {
+        let initialized = CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32) >= 0;
+        let pidl = ILCreateFromPathW(wide.as_ptr());
+        if pidl.is_null() {
+            if initialized {
+                CoUninitialize()
+            }
+            return Err("O Windows não conseguiu localizar o arquivo".into());
+        }
+        let result = SHOpenFolderAndSelectItems(pidl, 0, std::ptr::null(), 0);
+        ILFree(pidl.cast());
+        if initialized {
+            CoUninitialize()
+        }
+        if result < 0 {
+            return Err(format!(
+                "O Explorer não conseguiu selecionar o arquivo (0x{:08X})",
+                result as u32
+            ));
+        }
+    }
+    Ok(())
 }
 #[tauri::command]
 fn get_media_url(asset_id: String, state: State<AppState>) -> Result<String, String> {
@@ -2064,6 +2093,7 @@ pub fn run() {
     if let Some(cfg) = config.as_ref() {
         let _ = jobs::JobManager::interrupt_running(cfg);
         let _ = manager.resume_background(cfg.clone());
+        let _ = manager.start_watchdog(cfg.clone());
         diagnostics::spawn_monitor(cfg.clone());
     }
     tauri::Builder::default()
@@ -2337,8 +2367,6 @@ pub fn run() {
 
 #[cfg(test)]
 mod protocol_tests {
-    #[cfg(windows)]
-    use super::explorer_selection_args;
     use super::{
         compute_dashboard, quick_dashboard, valid_thumbnail_asset_id, MetadataPermit,
         PhotoPreviewPermit,
@@ -2346,7 +2374,6 @@ mod protocol_tests {
     use crate::{catalog, models::LibraryConfig};
     use std::{
         fs,
-        path::Path,
         sync::{
             atomic::{AtomicBool, Ordering},
             Arc,
@@ -2360,17 +2387,6 @@ mod protocol_tests {
         assert!(!valid_thumbnail_asset_id("../catalog.sqlite"));
         assert!(!valid_thumbnail_asset_id("folder/asset"));
         assert!(!valid_thumbnail_asset_id(""));
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn explorer_selection_keeps_complex_path_as_a_separate_argument() {
-        let path = Path::new(r"C:\Fotos da família\ensaio, final (1).jpg");
-        let args = explorer_selection_args(path);
-        assert_eq!(
-            args[0],
-            std::ffi::OsString::from(format!("/select,{}", path.display()))
-        );
     }
 
     #[test]

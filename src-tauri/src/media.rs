@@ -576,9 +576,14 @@ pub fn viewer_preview_file(cfg: &LibraryConfig, asset: &str) -> Result<PathBuf, 
     let _ = fs::remove_file(&temporary);
     let cancel = CancellationToken::default();
     let mut generated = false;
-    for quality in ["2", "5", "8"] {
-        let _ = fs::remove_file(&temporary);
-        let ffmpeg = ProcessSpec::new("FFmpeg", "ffmpeg")
+    let is_raw = crate::formats::family(&extension) == crate::formats::MediaFamily::Raw;
+    // FFmpeg returns a deterministic decoder failure for several camera RAW
+    // containers. Go directly to the embedded preview instead of paying for
+    // three doomed subprocesses on every first view.
+    if !is_raw {
+        for quality in ["2", "5", "8"] {
+            let _ = fs::remove_file(&temporary);
+            let ffmpeg = ProcessSpec::new("FFmpeg", "ffmpeg")
             .args([
                 "-y",
                 "-v",
@@ -601,19 +606,20 @@ pub fn viewer_preview_file(cfg: &LibraryConfig, asset: &str) -> Result<PathBuf, 
             ])
             .timeout(Duration::from_secs(90))
             .logical("High quality photo preview");
-        if process::run(ffmpeg, &cancel).is_ok()
-            && temporary
-                .metadata()
-                .map(|value| {
-                    value.len() > 0 && value.len() <= crate::limits::MAX_PROTOCOL_RESPONSE_BYTES
-                })
-                .unwrap_or(false)
-        {
-            generated = true;
-            break;
+            if process::run(ffmpeg, &cancel).is_ok()
+                && temporary
+                    .metadata()
+                    .map(|value| {
+                        value.len() > 0 && value.len() <= crate::limits::MAX_PROTOCOL_RESPONSE_BYTES
+                    })
+                    .unwrap_or(false)
+            {
+                generated = true;
+                break;
+            }
         }
     }
-    if !generated && crate::formats::family(&extension) == crate::formats::MediaFamily::Raw {
+    if !generated && is_raw {
         let preview = process::run(
             ProcessSpec::new("ExifTool", "exiftool")
                 .args(["-b", "-PreviewImage", source.as_str()])

@@ -1,5 +1,7 @@
 # Lumina
 
+Versão atual: **0.24.0-beta.1**. Consulte [RELEASE-0.24-BETA.md](RELEASE-0.24-BETA.md) e [VALIDATION-0.24-BETA.md](VALIDATION-0.24-BETA.md).
+
 Versão candidata atual: **0.23.0-beta.2**. Ela preserva a baseline resiliente homologada na 0.22.2 e consolida produtividade, tipografia embarcada, atividade, duplicatas e insights para nova homologação.
 
 Fontes vigentes: [escopo preservado](SCOPE-0.22.2.md), [contrato não funcional](NFR-0.22.2-RESILIENCE.md), [arquitetura-alvo](ARCHITECTURE-0.22.2.md), [auditoria arquitetural](ARCHITECTURE-AUDIT-0.22.2.md), [plano de remediação](REMEDIATION-0.22.2.md) e [matriz de rastreabilidade](TRACEABILITY-0.22.2.md).

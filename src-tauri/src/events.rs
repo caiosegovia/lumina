@@ -162,6 +162,8 @@ fn recent_runtime_logs(paths: Vec<PathBuf>, limit: usize) -> Vec<String> {
 }
 
 pub fn export_diagnostics(cfg: &LibraryConfig) -> Result<ReportExport, String> {
+    let generated_utc = chrono::Utc::now();
+    let generated_local = generated_utc.with_timezone(&chrono::Local);
     let conn = catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite"))
         .map_err(|error| error.to_string())?;
     let integrity = conn
@@ -184,8 +186,11 @@ pub fn export_diagnostics(cfg: &LibraryConfig) -> Result<ReportExport, String> {
     let runtime_logs = recent_runtime_logs(crate::diagnostics::log_files(), 5000);
     let recent_jobs = grouped(&conn,"SELECT COALESCE(job_kind,'import'),state,COUNT(*) FROM jobs GROUP BY COALESCE(job_kind,'import'),state ORDER BY 1,2")?;
     let document = serde_json::json!({
-        "schemaVersion":3,
-        "generatedAt":chrono::Utc::now().to_rfc3339(),
+        "schemaVersion":4,
+        "generatedAtUtc":generated_utc.to_rfc3339(),
+        "generatedAtLocal":generated_local.to_rfc3339(),
+        "utcOffset":generated_local.format("%:z").to_string(),
+        "timezone":std::env::var("TZ").unwrap_or_else(|_| generated_local.format("%Z").to_string()),
         "application":{"name":"Lumina","version":env!("CARGO_PKG_VERSION"),"platform":std::env::consts::OS,"architecture":std::env::consts::ARCH},
         "privacy":{"containsPaths":false,"containsFilenames":false,"containsCoordinates":false,"containsHashes":false},
         "catalog":{"integrity":integrity,"assets":assets,"bytes":bytes,"sources":sources,"jobs":jobs,"processFailures":failures},
@@ -204,7 +209,7 @@ pub fn export_diagnostics(cfg: &LibraryConfig) -> Result<ReportExport, String> {
     fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
     let path = dir.join(format!(
         "lumina-diagnostics-{}.json",
-        chrono::Utc::now().format("%Y%m%d-%H%M%S")
+        generated_local.format("%Y%m%d-%H%M%S")
     ));
     storage::atomic_write(&path, &bytes).map_err(|error| error.to_string())?;
     Ok(ReportExport {

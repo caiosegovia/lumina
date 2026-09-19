@@ -592,6 +592,8 @@ pub struct JobOverview {
     pub created_at: String,
     pub updated_at: String,
     pub interruption_reason: Option<String>,
+    pub queue_pending: i64,
+    pub queue_processing: i64,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

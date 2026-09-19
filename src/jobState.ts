@@ -45,11 +45,14 @@ export function jobHeartbeat(job:JobOverview,now=Date.now()):JobHeartbeat {
   if(!Number.isFinite(updated))return "current";
   const age=Math.max(0,now-updated);
   if(job.state==="queued")return age>=120_000?"waiting":"current";
-  return age>=120_000?"stalled":"current";
+  // A file copy can legitimately take minutes. A durable processing item is
+  // stronger evidence of liveness than the UI timestamp alone.
+  if((job.queueProcessing??0)>0)return "current";
+  return age>=180_000?"stalled":"current";
 }
 
 export function heartbeatLabel(job:JobOverview,now=Date.now()):string {
   const seconds=Math.floor(Math.max(0,now-new Date(job.updatedAt).getTime())/1000);
   const duration=seconds<60?`${seconds}s`:`${Math.floor(seconds/60)} min`;
-  return jobHeartbeat(job,now)==="waiting"?`Na fila há ${duration}`:`Sem evolução registrada há ${duration}`;
+  return jobHeartbeat(job,now)==="waiting"?`Na fila há ${duration}`:`Fila sem worker ativo há ${duration}`;
 }

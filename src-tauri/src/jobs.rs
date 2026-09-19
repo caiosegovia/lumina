@@ -30,6 +30,7 @@ struct Inner {
     library: Mutex<Option<LibraryConfig>>,
     thumbnail_worker_active: AtomicBool,
     thumbnail_dispatcher_active: AtomicBool,
+    watchdog_active: AtomicBool,
     thumbnail_requests: Mutex<VecDeque<(LibraryConfig, String, i64)>>,
     background_cancel: CancellationToken,
     shutting_down: AtomicBool,
@@ -82,6 +83,7 @@ impl JobManager {
                 library: Mutex::new(None),
                 thumbnail_worker_active: AtomicBool::new(false),
                 thumbnail_dispatcher_active: AtomicBool::new(false),
+                watchdog_active: AtomicBool::new(false),
                 thumbnail_requests: Mutex::new(VecDeque::new()),
                 background_cancel: CancellationToken::default(),
                 shutting_down: AtomicBool::new(false),
@@ -317,7 +319,7 @@ impl JobManager {
             let path = Path::new(&cfg.master_path).join(".lumina/catalog.sqlite");
             catalog::open(&path).ok().and_then(|conn| {
                 conn.query_row(
-                    "SELECT id,source_path,COALESCE((SELECT name FROM sources WHERE id=jobs.source_id),'Fonte'),stage,COALESCE(job_kind,'import') FROM jobs WHERE state='queued' ORDER BY created_at,id LIMIT 1",
+                    "SELECT id,source_path,COALESCE((SELECT name FROM sources WHERE id=jobs.source_id),'Fonte'),stage,COALESCE(job_kind,'import') FROM jobs WHERE state='queued' OR (state='protection_pending' AND EXISTS(SELECT 1 FROM work_queue q WHERE q.job_id=jobs.id AND q.kind='backup' AND q.state='pending')) ORDER BY CASE state WHEN 'queued' THEN 0 ELSE 1 END,created_at,id LIMIT 1",
                     [],
                     |row| Ok(PendingWork { cfg: cfg.clone(), job: row.get(0)?, path: row.get(1)?, name: row.get(2)?, stage: row.get(3)?, kind: row.get(4)? }),
                 ).ok()
@@ -629,6 +631,40 @@ impl JobManager {
             .lock()
             .map(|x| x.is_some())
             .unwrap_or(true)
+    }
+    /// Keeps durable work moving even if a worker exits between releasing its
+    /// lease and dispatching the next catalog item. The database remains the
+    /// source of truth; this thread owns no second job queue.
+    pub fn start_watchdog(&self, cfg: LibraryConfig) -> Result<(), String> {
+        *self
+            .inner
+            .library
+            .lock()
+            .map_err(|_| "Biblioteca indisponível".to_string())? = Some(cfg.clone());
+        if self.inner.watchdog_active.swap(true, Ordering::AcqRel) {
+            return Ok(());
+        }
+        let manager = self.clone();
+        std::thread::Builder::new().name("lumina-job-watchdog".into()).spawn(move||{
+            while !manager.inner.shutting_down.load(Ordering::Acquire) {
+                std::thread::sleep(Duration::from_secs(5));
+                if manager.has_active(){continue}
+                let Some(cfg)=manager.inner.library.lock().ok().and_then(|value|value.clone()) else {continue};
+                let candidate=catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite")).ok().and_then(|conn|{
+                    let now=Utc::now().to_rfc3339();
+                    let _=conn.execute("UPDATE work_queue SET state='pending',updated_at=?1 WHERE state='processing' AND job_id IN(SELECT id FROM jobs WHERE lease_expires_at IS NOT NULL AND lease_expires_at<?1)",[&now]);
+                    let _=conn.execute("UPDATE jobs SET instance_id=NULL,lease_expires_at=NULL,state=CASE WHEN stage IN('backup','backup_space_check') THEN 'protection_pending' ELSE 'interrupted' END,updated_at=?1 WHERE lease_expires_at IS NOT NULL AND lease_expires_at<?1",[&now]);
+                    conn.query_row("SELECT id FROM jobs WHERE state='queued' OR (state='protection_pending' AND EXISTS(SELECT 1 FROM work_queue q WHERE q.job_id=jobs.id AND q.kind='backup' AND q.state='pending')) ORDER BY CASE state WHEN 'queued' THEN 0 ELSE 1 END,created_at,id LIMIT 1",[],|row|row.get::<_,String>(0)).ok()
+                });
+                if let Some(job)=candidate {
+                    crate::diagnostics::append("watchdog_dispatch",&format!("job={}",&job[..job.len().min(12)]));
+                    if let Err(error)=manager.resume(cfg.clone(),job.clone()){
+                        crate::diagnostics::append("watchdog_dispatch_failed",&format!("job={} error={}",&job[..job.len().min(12)],crate::process::sanitize(&error)));
+                    }
+                }
+            }
+        }).map_err(|error|{self.inner.watchdog_active.store(false,Ordering::Release);error.to_string()})?;
+        Ok(())
     }
     pub fn resume(&self, cfg: LibraryConfig, job: String) -> Result<(), String> {
         let conn = catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite"))
