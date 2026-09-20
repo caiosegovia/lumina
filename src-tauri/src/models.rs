@@ -391,6 +391,15 @@ pub struct ThumbnailAudit {
     pub corrupt: i64,
     pub regenerated: i64,
     pub failed: i64,
+    pub failure_categories: Vec<ThumbnailFailureCategory>,
+}
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThumbnailFailureCategory {
+    pub key: String,
+    pub label: String,
+    pub items: i64,
+    pub recoverable: bool,
 }
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

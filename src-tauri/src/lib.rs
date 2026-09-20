@@ -1890,7 +1890,35 @@ fn reveal_asset_in_folder(asset_id: String, state: State<AppState>) -> Result<()
         return Err("O arquivo não está disponível no acervo mestre".into());
     }
     #[cfg(windows)]
-    reveal_path_native(&std::fs::canonicalize(&path).map_err(|error| error.to_string())?)?;
+    {
+        let canonical = std::fs::canonicalize(&path).map_err(|error| error.to_string())?;
+        match reveal_path_native(&canonical) {
+            Ok(()) => {
+                diagnostics::append("explorer_reveal", "strategy=shell_select result=success")
+            }
+            Err(shell_error) => {
+                let parent = canonical
+                    .parent()
+                    .ok_or_else(|| "O arquivo não possui uma pasta válida".to_string())?;
+                diagnostics::append(
+                    "explorer_reveal",
+                    &format!(
+                        "strategy=shell_select result=failed error={}",
+                        process::sanitize(&shell_error)
+                    ),
+                );
+                std::process::Command::new("explorer.exe")
+                    .arg(normalize_shell_path(parent))
+                    .spawn()
+                    .map_err(|error| {
+                        format!(
+                            "Não foi possível selecionar o arquivo nem abrir sua pasta: {error}"
+                        )
+                    })?;
+                diagnostics::append("explorer_reveal", "strategy=open_parent result=success");
+            }
+        }
+    }
     #[cfg(not(windows))]
     return Err("Abrir localização ainda não é suportado neste sistema".into());
     Ok(())
@@ -1902,7 +1930,8 @@ fn reveal_path_native(path: &Path) -> Result<(), String> {
         System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED},
         UI::Shell::{ILCreateFromPathW, ILFree, SHOpenFolderAndSelectItems},
     };
-    let wide = path
+    let shell_path = normalize_shell_path(path);
+    let wide = shell_path
         .as_os_str()
         .encode_wide()
         .chain(std::iter::once(0))
@@ -1929,6 +1958,17 @@ fn reveal_path_native(path: &Path) -> Result<(), String> {
         }
     }
     Ok(())
+}
+#[cfg(windows)]
+fn normalize_shell_path(path: &Path) -> PathBuf {
+    let value = path.as_os_str().to_string_lossy();
+    if let Some(rest) = value.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{}", rest));
+    }
+    if let Some(rest) = value.strip_prefix(r"\\?\") {
+        return PathBuf::from(rest);
+    }
+    path.to_path_buf()
 }
 #[tauri::command]
 fn get_media_url(asset_id: String, state: State<AppState>) -> Result<String, String> {
@@ -2367,11 +2407,15 @@ pub fn run() {
 
 #[cfg(test)]
 mod protocol_tests {
+    #[cfg(windows)]
+    use super::normalize_shell_path;
     use super::{
         compute_dashboard, quick_dashboard, valid_thumbnail_asset_id, MetadataPermit,
         PhotoPreviewPermit,
     };
     use crate::{catalog, models::LibraryConfig};
+    #[cfg(windows)]
+    use std::path::{Path, PathBuf};
     use std::{
         fs,
         sync::{
@@ -2387,6 +2431,19 @@ mod protocol_tests {
         assert!(!valid_thumbnail_asset_id("../catalog.sqlite"));
         assert!(!valid_thumbnail_asset_id("folder/asset"));
         assert!(!valid_thumbnail_asset_id(""));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn shell_paths_remove_verbatim_prefixes_without_losing_unc_paths() {
+        assert_eq!(
+            normalize_shell_path(Path::new(r"\\?\C:\Fotos\a.jpg")),
+            PathBuf::from(r"C:\Fotos\a.jpg")
+        );
+        assert_eq!(
+            normalize_shell_path(Path::new(r"\\?\UNC\server\fotos\a.jpg")),
+            PathBuf::from(r"\\server\fotos\a.jpg")
+        );
     }
 
     #[test]

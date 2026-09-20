@@ -103,7 +103,7 @@ export default function App() {
     api.getLibrary().then(setLibrary);
   }, []);
   useEffect(()=>{
-    const error=(event:ErrorEvent)=>void api.recordClientError("frontend_error",event.message||"Erro não identificado");
+    const error=(event:ErrorEvent)=>{if(event.message?.startsWith("ResizeObserver loop"))return;void api.recordClientError("frontend_error",event.message||"Erro não identificado")};
     const rejection=(event:PromiseRejectionEvent)=>void api.recordClientError("unhandled_rejection",event.reason instanceof Error?event.reason.message:String(event.reason));
     window.addEventListener("error",error);
     window.addEventListener("unhandledrejection",rejection);
@@ -1083,6 +1083,7 @@ function Protection() {
             <strong>{thumbnailHealth?.valid ?? 0}</strong> válidas ·{" "}
             <strong>{(thumbnailHealth?.missing ?? 0) + (thumbnailHealth?.stale ?? 0) + (thumbnailHealth?.corrupt ?? 0)}</strong> para reparar
           </p>
+          {!!thumbnailHealth?.failureCategories.length&&<div className="thumbnail-failure-categories" aria-label="Causas das falhas de preview">{thumbnailHealth.failureCategories.map(category=><span key={category.key} className={category.recoverable?"recoverable":"permanent"}><strong>{category.items}</strong> {category.label}<small>{category.recoverable?"Pode ser reprocessada":"Limitação permanente"}</small></span>)}</div>}
           {repairing && (
             <div className="thumbnail-repair-progress" role="progressbar" aria-label="Reparo de miniaturas em andamento">
               <span>Verificando {repairProgress?.processed || 0} de {repairProgress?.total || thumbnailHealth?.total || 0} mídias</span>

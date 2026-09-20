@@ -464,7 +464,9 @@ pub fn generate_thumbnail(
     } else {
         let mut args = vec!["-y".to_string(), "-v".into(), "error".into()];
         if crate::formats::family(&ext) == crate::formats::MediaFamily::Video {
-            args.extend(["-ss".into(), "1".into()])
+            // The first decodable frame also covers sub-second clips. Seeking
+            // to one second made valid short videos produce no thumbnail.
+            args.extend(["-ss".into(), "0".into()])
         }
         args.extend([
             "-i".into(),
@@ -886,6 +888,7 @@ pub fn audit_thumbnails(cfg: &LibraryConfig, repair: bool) -> Result<ThumbnailAu
         corrupt: 0,
         regenerated: 0,
         failed: 0,
+        failure_categories: Vec::new(),
     };
     let cache = Path::new(&cfg.master_path).join(".lumina/cache");
     for (id, master, ext, hash, path, version, state) in rows {
@@ -936,6 +939,30 @@ pub fn audit_thumbnails(cfg: &LibraryConfig, repair: bool) -> Result<ThumbnailAu
     if repair {
         REPAIR_RUNNING.store(0, Ordering::Relaxed);
     }
+    let mut failures=conn.prepare("SELECT CASE WHEN LOWER(COALESCE(t.last_error,'')) LIKE '%sem pr%via embarcada%' THEN 'raw_without_preview' WHEN LOWER(COALESCE(t.last_error,'')) LIKE '%n%o est% dispon%vel%' OR LOWER(COALESCE(t.last_error,'')) LIKE '%not found%' THEN 'missing_file' WHEN LOWER(COALESCE(t.last_error,'')) LIKE '%timeout%' OR LOWER(COALESCE(t.last_error,'')) LIKE '%tempo limite%' THEN 'timeout' WHEN LOWER(COALESCE(t.last_error,'')) LIKE '%n%o produziu%' THEN 'no_output' WHEN LOWER(COALESCE(t.last_error,'')) LIKE '%ffmpeg%' THEN 'ffmpeg' WHEN LOWER(COALESCE(t.last_error,'')) LIKE '%exiftool%' THEN 'exiftool' WHEN LOWER(COALESCE(t.last_error,'')) LIKE '%corromp%' OR LOWER(COALESCE(t.last_error,'')) LIKE '%decode%' THEN 'corrupt' ELSE 'other' END category,COUNT(*) FROM thumbnails t WHERE t.state='failed' GROUP BY 1 ORDER BY 2 DESC").map_err(|error|error.to_string())?;
+    out.failure_categories = failures
+        .query_map([], |row| {
+            let key: String = row.get(0)?;
+            let (label, recoverable) = match key.as_str() {
+                "raw_without_preview" => ("RAW sem preview embarcado", false),
+                "missing_file" => ("Arquivo indisponível", true),
+                "timeout" => ("Tempo limite excedido", true),
+                "no_output" => ("Gerador sem saída", true),
+                "ffmpeg" => ("Falha no FFmpeg", true),
+                "exiftool" => ("Falha no ExifTool", true),
+                "corrupt" => ("Arquivo corrompido ou ilegível", false),
+                _ => ("Falha não classificada", true),
+            };
+            Ok(crate::models::ThumbnailFailureCategory {
+                key,
+                label: label.into(),
+                items: row.get(1)?,
+                recoverable,
+            })
+        })
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
     Ok(out)
 }
 

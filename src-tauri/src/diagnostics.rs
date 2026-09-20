@@ -108,7 +108,7 @@ pub fn runtime_sample(
 ) {
     let (pending, processing, failed) = queue.unwrap_or_default();
     let rust_memory = working_set_bytes();
-    let memory = process_tree_working_set_bytes();
+    let (memory, webview_memory, tool_memory) = process_tree_memory();
     let heartbeat = FRONTEND_HEARTBEAT_MS.load(Ordering::Relaxed);
     let heartbeat_age = if heartbeat == 0 {
         0
@@ -126,10 +126,12 @@ pub fn runtime_sample(
     append(
         "runtime_metric",
         &format!(
-            "pid={} working_set_bytes={} rust_working_set_bytes={} process_cpu_ms={} ui_heartbeat_age_ms={} resource_pressure={} active_job={} stage={} queue_pending={} queue_processing={} queue_failed={}",
+            "pid={} working_set_bytes={} rust_working_set_bytes={} webview_working_set_bytes={} tool_working_set_bytes={} process_cpu_ms={} ui_heartbeat_age_ms={} resource_pressure={} active_job={} stage={} queue_pending={} queue_processing={} queue_failed={}",
             std::process::id(),
             memory,
             rust_memory,
+            webview_memory,
+            tool_memory,
             process_cpu_ms(),
             heartbeat_age,
             pressure,
@@ -193,7 +195,7 @@ pub(crate) fn working_set_bytes() -> u64 {
 }
 
 #[cfg(windows)]
-fn process_tree_working_set_bytes() -> u64 {
+fn process_tree_memory() -> (u64, u64, u64) {
     use std::collections::{HashMap, HashSet, VecDeque};
     use windows_sys::Win32::{
         Foundation::{CloseHandle, INVALID_HANDLE_VALUE},
@@ -209,17 +211,27 @@ fn process_tree_working_set_bytes() -> u64 {
 
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if snapshot == INVALID_HANDLE_VALUE {
-        return working_set_bytes();
+        return (working_set_bytes(), 0, 0);
     }
     let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
     entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
     let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    let mut names: HashMap<u32, String> = HashMap::new();
     let mut ok = unsafe { Process32FirstW(snapshot, &mut entry) };
     while ok != 0 {
         children
             .entry(entry.th32ParentProcessID)
             .or_default()
             .push(entry.th32ProcessID);
+        let end = entry
+            .szExeFile
+            .iter()
+            .position(|value| *value == 0)
+            .unwrap_or(entry.szExeFile.len());
+        names.insert(
+            entry.th32ProcessID,
+            String::from_utf16_lossy(&entry.szExeFile[..end]).to_ascii_lowercase(),
+        );
         ok = unsafe { Process32NextW(snapshot, &mut entry) };
     }
     unsafe { CloseHandle(snapshot) };
@@ -228,6 +240,8 @@ fn process_tree_working_set_bytes() -> u64 {
     let mut queue = VecDeque::from([root]);
     let mut seen = HashSet::new();
     let mut total = 0u64;
+    let mut webview = 0u64;
+    let mut tools = 0u64;
     while let Some(pid) = queue.pop_front() {
         if !seen.insert(pid) {
             continue;
@@ -249,16 +263,27 @@ fn process_tree_working_set_bytes() -> u64 {
             )
         } != 0
         {
-            total = total.saturating_add(counters.WorkingSetSize as u64);
+            let bytes = counters.WorkingSetSize as u64;
+            total = total.saturating_add(bytes);
+            let name = names.get(&pid).map(String::as_str).unwrap_or_default();
+            if name.contains("msedgewebview2") {
+                webview = webview.saturating_add(bytes)
+            }
+            if matches!(
+                name,
+                "ffmpeg.exe" | "ffprobe.exe" | "exiftool.exe" | "perl.exe"
+            ) {
+                tools = tools.saturating_add(bytes)
+            }
         }
         unsafe { CloseHandle(process) };
     }
-    total.max(working_set_bytes())
+    (total.max(working_set_bytes()), webview, tools)
 }
 
 #[cfg(not(windows))]
-fn process_tree_working_set_bytes() -> u64 {
-    working_set_bytes()
+fn process_tree_memory() -> (u64, u64, u64) {
+    (working_set_bytes(), 0, 0)
 }
 
 #[cfg(windows)]

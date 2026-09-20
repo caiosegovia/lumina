@@ -108,6 +108,6 @@ export const api = {
   exportDiagnostics:()=>call<ReportExport>("export_diagnostics",undefined,()=>({path:"lumina-diagnostics-demo.json",rows:1})),
   verifyBackup: () => call<string>("verify_backup", undefined, () => "demo-verification"),
   clearCache: () => call<number>("clear_thumbnail_cache", undefined, () => 18)
-  ,auditThumbnails:(repair=true)=>call<ThumbnailAudit>("audit_thumbnail_cache",{repair},()=>({total:18,valid:16,missing:2,stale:0,corrupt:0,regenerated:repair?2:0,failed:0}))
+  ,auditThumbnails:(repair=true)=>call<ThumbnailAudit>("audit_thumbnail_cache",{repair},()=>({total:18,valid:16,missing:2,stale:0,corrupt:0,regenerated:repair?2:0,failed:0,failureCategories:[]}))
   ,thumbnailRepairProgress:()=>call<ThumbnailRepairProgress>("get_thumbnail_repair_progress",undefined,()=>({running:false,processed:18,total:18,regenerated:2,failed:0}))
 };

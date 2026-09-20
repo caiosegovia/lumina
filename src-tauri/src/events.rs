@@ -186,7 +186,7 @@ pub fn export_diagnostics(cfg: &LibraryConfig) -> Result<ReportExport, String> {
     let runtime_logs = recent_runtime_logs(crate::diagnostics::log_files(), 5000);
     let recent_jobs = grouped(&conn,"SELECT COALESCE(job_kind,'import'),state,COUNT(*) FROM jobs GROUP BY COALESCE(job_kind,'import'),state ORDER BY 1,2")?;
     let document = serde_json::json!({
-        "schemaVersion":4,
+        "schemaVersion":5,
         "generatedAtUtc":generated_utc.to_rfc3339(),
         "generatedAtLocal":generated_local.to_rfc3339(),
         "utcOffset":generated_local.format("%:z").to_string(),
@@ -199,6 +199,7 @@ pub fn export_diagnostics(cfg: &LibraryConfig) -> Result<ReportExport, String> {
         "validation":grouped(&conn,"SELECT tool,state,COUNT(*) FROM media_validation GROUP BY tool,state ORDER BY 1,2")?,
         "technicalInventory":grouped(&conn,"SELECT support_level,inventory_state,COUNT(*) FROM asset_technical_metadata GROUP BY support_level,inventory_state ORDER BY 1,2")?,
         "thumbnails":grouped(&conn,"SELECT 'thumbnail',state,COUNT(*) FROM thumbnails GROUP BY state ORDER BY state")?,
+        "thumbnailFailures":grouped(&conn,"SELECT CASE WHEN LOWER(COALESCE(last_error,'')) LIKE '%sem pr%via embarcada%' THEN 'raw_without_preview' WHEN LOWER(COALESCE(last_error,'')) LIKE '%n%o est% dispon%vel%' OR LOWER(COALESCE(last_error,'')) LIKE '%not found%' THEN 'missing_file' WHEN LOWER(COALESCE(last_error,'')) LIKE '%timeout%' OR LOWER(COALESCE(last_error,'')) LIKE '%tempo limite%' THEN 'timeout' WHEN LOWER(COALESCE(last_error,'')) LIKE '%n%o produziu%' THEN 'no_output' WHEN LOWER(COALESCE(last_error,'')) LIKE '%ffmpeg%' THEN 'ffmpeg' WHEN LOWER(COALESCE(last_error,'')) LIKE '%exiftool%' THEN 'exiftool' WHEN LOWER(COALESCE(last_error,'')) LIKE '%corromp%' OR LOWER(COALESCE(last_error,'')) LIKE '%decode%' THEN 'corrupt' ELSE 'other' END,LOWER(COALESCE((SELECT extension FROM assets WHERE id=thumbnails.asset_id),'unknown')),COUNT(*) FROM thumbnails WHERE state='failed' GROUP BY 1,2 ORDER BY 3 DESC")?,
         "dashboard":latest_dashboard,
         "jobs":recent_jobs,
         "runtimeLogNewestFirst":runtime_logs,

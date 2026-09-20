@@ -654,7 +654,7 @@ impl JobManager {
                     let now=Utc::now().to_rfc3339();
                     let _=conn.execute("UPDATE work_queue SET state='pending',updated_at=?1 WHERE state='processing' AND job_id IN(SELECT id FROM jobs WHERE lease_expires_at IS NOT NULL AND lease_expires_at<?1)",[&now]);
                     let _=conn.execute("UPDATE jobs SET instance_id=NULL,lease_expires_at=NULL,state=CASE WHEN stage IN('backup','backup_space_check') THEN 'protection_pending' ELSE 'interrupted' END,updated_at=?1 WHERE lease_expires_at IS NOT NULL AND lease_expires_at<?1",[&now]);
-                    conn.query_row("SELECT id FROM jobs WHERE state='queued' OR (state='protection_pending' AND EXISTS(SELECT 1 FROM work_queue q WHERE q.job_id=jobs.id AND q.kind='backup' AND q.state='pending')) ORDER BY CASE state WHEN 'queued' THEN 0 ELSE 1 END,created_at,id LIMIT 1",[],|row|row.get::<_,String>(0)).ok()
+                    conn.query_row("SELECT id FROM jobs WHERE source_path NOT LIKE 'lumina://%' AND ((state='queued' AND EXISTS(SELECT 1 FROM work_queue q WHERE q.job_id=jobs.id AND q.state='pending')) OR (state='protection_pending' AND EXISTS(SELECT 1 FROM work_queue q WHERE q.job_id=jobs.id AND q.kind='backup' AND q.state='pending'))) ORDER BY CASE state WHEN 'queued' THEN 0 ELSE 1 END,created_at,id LIMIT 1",[],|row|row.get::<_,String>(0)).ok()
                 });
                 if let Some(job)=candidate {
                     crate::diagnostics::append("watchdog_dispatch",&format!("job={}",&job[..job.len().min(12)]));
@@ -945,6 +945,13 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
         assert!(source.join("photo.jpg").is_file());
+        while manager.has_active() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            !manager.has_active(),
+            "worker não liberou o lease apó concluir"
+        );
         fs::remove_dir_all(root).unwrap();
     }
 

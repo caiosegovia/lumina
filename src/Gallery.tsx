@@ -927,6 +927,7 @@ function Preview({
   const [fileAction, setFileAction] = useState("");
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const drag = useRef<{ x: number; y: number; left: number; top: number }>();
+  const changeZoom=(next:number)=>{const bounded=Math.min(4,Math.max(1,Math.round(next*4)/4));setPreviewZoom(bounded);if(bounded===1)setPan({x:0,y:0})};
 
   useEffect(() => {
     let live = true;
@@ -960,6 +961,9 @@ function Preview({
       if (event.key === "ArrowLeft") navigate(-1);
       if (event.key === "ArrowRight") navigate(1);
       if (event.key === "Escape" && fullscreen) setFullscreen(false);
+      if (["+","="].includes(event.key)) {event.preventDefault();setPreviewZoom(value=>Math.min(4,Math.round((value+.25)*4)/4))}
+      if (event.key === "-") {event.preventDefault();setPreviewZoom(value=>{const next=Math.max(1,Math.round((value-.25)*4)/4);if(next===1)setPan({x:0,y:0});return next})}
+      if (event.key === "0") {event.preventDefault();changeZoom(1)}
     };
     window.addEventListener("keydown", keyboard);
     return () => window.removeEventListener("keydown", keyboard);
@@ -984,7 +988,7 @@ function Preview({
       >
         <X />
       </button>
-      <div className={`preview-stage ${previewZoom > 1 ? "pannable" : ""}`} onPointerDown={(event)=>{if(previewZoom===1)return;event.currentTarget.setPointerCapture(event.pointerId);drag.current={x:event.clientX,y:event.clientY,left:pan.x,top:pan.y}}} onPointerMove={(event)=>{if(!drag.current)return;setPan({x:drag.current.left+event.clientX-drag.current.x,y:drag.current.top+event.clientY-drag.current.y})}} onPointerUp={(event)=>{drag.current=undefined;event.currentTarget.releasePointerCapture(event.pointerId)}}>
+      <div className={`preview-stage ${previewZoom > 1 ? "pannable" : ""}`} onDoubleClick={()=>changeZoom(previewZoom===1?2:1)} onWheel={(event)=>{if(!event.ctrlKey)return;event.preventDefault();changeZoom(previewZoom+(event.deltaY<0?.25:-.25))}} onPointerDown={(event)=>{if(previewZoom===1)return;event.currentTarget.setPointerCapture?.(event.pointerId);drag.current={x:event.clientX,y:event.clientY,left:pan.x,top:pan.y}}} onPointerMove={(event)=>{if(!drag.current)return;setPan({x:drag.current.left+event.clientX-drag.current.x,y:drag.current.top+event.clientY-drag.current.y})}} onPointerUp={(event)=>{drag.current=undefined;if(event.currentTarget.hasPointerCapture?.(event.pointerId))event.currentTarget.releasePointerCapture?.(event.pointerId)}} onPointerCancel={()=>{drag.current=undefined}}>
         {asset.mediaType === "video" && mediaUrl ? (
           <ManagedVideo key={`${asset.id}-${mediaUrl}`} className="drawer-video" src={mediaUrl} />
         ) : (asset.mediaType === "photo" || asset.mediaType === "raw") && (highQualityUrl || mediaUrl) ? (
@@ -993,8 +997,10 @@ function Preview({
           <MediaThumb key={asset.id} asset={asset} className={`drawer-preview preview-zoom-${previewZoom}`} />
         )}
         <div className="preview-tools">
-          <button aria-label="Diminuir zoom" disabled={previewZoom === 1} onClick={() => setPreviewZoom((value) => Math.max(1, value - 1))}><ZoomOut /></button>
-          <button aria-label="Aumentar zoom" disabled={previewZoom === 3} onClick={() => setPreviewZoom((value) => Math.min(3, value + 1))}><ZoomIn /></button>
+          <button aria-label="Ajustar imagem à tela" disabled={previewZoom === 1} onClick={() => changeZoom(1)}>Ajustar</button>
+          <button aria-label="Diminuir zoom" disabled={previewZoom === 1} onClick={() => changeZoom(previewZoom-.25)}><ZoomOut /></button>
+          <span className="zoom-level" aria-label="Nível de zoom">{Math.round(previewZoom*100)}%</span>
+          <button aria-label="Aumentar zoom" disabled={previewZoom === 4} onClick={() => changeZoom(previewZoom+.25)}><ZoomIn /></button>
           <button aria-label={fullscreen ? "Sair da tela cheia" : "Abrir em tela cheia"} onClick={() => setFullscreen((value) => !value)}>{fullscreen ? <Minimize2 /> : <Maximize2 />}</button>
         </div>
         {qualityState === "loading" && <span className="preview-quality"><LoaderCircle className="spin"/> Preparando alta qualidade</span>}

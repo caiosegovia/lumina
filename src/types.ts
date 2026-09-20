@@ -23,7 +23,8 @@ export interface PersonInfo{id:string;name:string;assetCount:number}
 export interface FilterOption { value:string; label:string; count:number }
 export interface GallerySummary { total:number; bytes:number; photos:number; videos:number; raw:number; protected:number; withLocation:number; duplicateAssets:number; favorites?:number; incompleteMetadata?:number; pendingProtection?:number; years:{year:string;count:number;bytes:number}[] }
 export interface GalleryResult { assets:MediaAsset[]; matched:number; nextCursor?:string; summary:GallerySummary; options:{cameras:FilterOption[];sources:FilterOption[];extensions:FilterOption[];tags:FilterOption[];albums:FilterOption[]} }
-export interface ThumbnailAudit { total:number;valid:number;missing:number;stale:number;corrupt:number;regenerated:number;failed:number }
+export interface ThumbnailFailureCategory {key:string;label:string;items:number;recoverable:boolean}
+export interface ThumbnailAudit { total:number;valid:number;missing:number;stale:number;corrupt:number;regenerated:number;failed:number;failureCategories:ThumbnailFailureCategory[] }
 export interface ThumbnailRepairProgress{running:boolean;processed:number;total:number;regenerated:number;failed:number}
 export interface ImportIssue { kind: string; extension: string; items: number; bytes: number; message: string }
 export interface ImportSummary { jobId: string; sourceId: string; sourcePath: string; discovered: number; newFiles: number; duplicates: number; invalid: number; requiredBytes: number; availableBytes: number; excluded: number; issues: ImportIssue[] }
