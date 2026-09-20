@@ -33,7 +33,7 @@ fn decode_bounded<R: std::io::BufRead + std::io::Seek>(
     reader.decode().map_err(|error| error.to_string())
 }
 
-pub const THUMBNAIL_VERSION: i64 = 2;
+pub const THUMBNAIL_VERSION: i64 = 3;
 pub const VIEWER_PREVIEW_VERSION: i64 = 2;
 const VIEWER_PREVIEW_EDGE: u32 = 2560;
 const VIEWER_CACHE_LIMIT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
@@ -384,6 +384,48 @@ fn normalize_embedded_preview(
     .map_err(|error| error.message)
 }
 
+const RAW_PREVIEW_TAGS: [&str; 4] = [
+    "-PreviewImage",
+    "-JpgFromRaw",
+    "-OtherImage",
+    "-ThumbnailImage",
+];
+
+fn extract_raw_preview(
+    source: &Path,
+    cancel: &CancellationToken,
+    logical: &str,
+) -> Result<(Vec<u8>, &'static str), String> {
+    let mut last_error = None;
+    for tag in RAW_PREVIEW_TAGS {
+        let result = process::run(
+            ProcessSpec::new("ExifTool", "exiftool")
+                .args(["-b", tag, source.to_string_lossy().as_ref()])
+                .timeout(Duration::from_secs(30))
+                .logical(&format!("{logical} {tag}")),
+            cancel,
+        );
+        match result {
+            Ok(value) if value.stdout.len() >= 32 => {
+                if value.stdout.len() > MAX_EMBEDDED_PREVIEW_BYTES {
+                    last_error = Some(format!(
+                        "Preview RAW {tag} excede o limite seguro de {} MiB",
+                        MAX_EMBEDDED_PREVIEW_BYTES / 1024 / 1024
+                    ));
+                    continue;
+                }
+                return Ok((value.stdout, tag));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind == ProcessErrorKind::MissingDependency => {
+                return Err(error.message)
+            }
+            Err(error) => last_error = Some(error.message),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| "RAW sem preview embarcado compativel".into()))
+}
+
 pub fn generate_thumbnail(
     source: &Path,
     extension: &str,
@@ -431,25 +473,9 @@ pub fn generate_thumbnail(
         )
         .map_err(|error| error.message)?;
     } else if crate::formats::family(&ext) == crate::formats::MediaFamily::Raw {
-        let preview = process::run(
-            ProcessSpec::new("ExifTool", "exiftool")
-                .args(["-b", "-PreviewImage", source.to_string_lossy().as_ref()])
-                .timeout(Duration::from_secs(30))
-                .logical("ExifTool RAW thumbnail"),
-            cancel,
-        )
-        .map_err(|e| e.message)?;
-        if preview.stdout.is_empty() {
-            return Err("RAW sem prévia embarcada".into());
-        }
-        if preview.stdout.len() > MAX_EMBEDDED_PREVIEW_BYTES {
-            return Err(format!(
-                "Prévia RAW excede o limite seguro de {} MiB",
-                MAX_EMBEDDED_PREVIEW_BYTES / 1024 / 1024
-            ));
-        }
+        let (preview, _tag) = extract_raw_preview(source, cancel, "ExifTool RAW thumbnail")?;
         let preview_path = temporary.with_extension("preview.jpg");
-        fs::write(&preview_path, &preview.stdout).map_err(|e| e.to_string())?;
+        fs::write(&preview_path, &preview).map_err(|e| e.to_string())?;
         let orientation = read_orientation(source, cancel);
         let result = normalize_embedded_preview(
             &preview_path,
@@ -622,25 +648,10 @@ pub fn viewer_preview_file(cfg: &LibraryConfig, asset: &str) -> Result<PathBuf, 
         }
     }
     if !generated && is_raw {
-        let preview = process::run(
-            ProcessSpec::new("ExifTool", "exiftool")
-                .args(["-b", "-PreviewImage", source.as_str()])
-                .timeout(Duration::from_secs(45))
-                .logical("Embedded RAW viewer preview"),
-            &cancel,
-        )
-        .map_err(|error| error.message)?;
-        if preview.stdout.is_empty() {
-            return Err("RAW sem prévia embarcada".into());
-        }
-        if preview.stdout.len() > MAX_EMBEDDED_PREVIEW_BYTES {
-            return Err(format!(
-                "Prévia RAW excede o limite seguro de {} MiB",
-                MAX_EMBEDDED_PREVIEW_BYTES / 1024 / 1024
-            ));
-        }
+        let (preview, _tag) =
+            extract_raw_preview(Path::new(&source), &cancel, "Embedded RAW viewer preview")?;
         let embedded = temporary.with_extension("embedded.jpg");
-        fs::write(&embedded, &preview.stdout).map_err(|error| error.to_string())?;
+        fs::write(&embedded, &preview).map_err(|error| error.to_string())?;
         let result = normalize_embedded_preview(
             &embedded,
             &temporary,
@@ -1069,7 +1080,7 @@ mod tests {
         let second =
             generate_thumbnail(&real, "png", hash, &root, &CancellationToken::default()).unwrap();
         assert_eq!(first, second);
-        assert!(first.to_string_lossy().contains("v2"));
+        assert!(first.to_string_lossy().contains("v3"));
         fs::remove_dir_all(root).unwrap()
     }
     #[test]

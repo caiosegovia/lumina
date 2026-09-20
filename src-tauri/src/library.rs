@@ -60,8 +60,9 @@ pub fn migrate_master(
     let reserve = 1024u64 * 1024 * 1024;
     if total_bytes.max(0) as u64 + reserve > available {
         return Err(format!(
-            "O novo acervo precisa de {} bytes e possui {} bytes livres",
-            total_bytes, available
+            "O novo acervo precisa de {} e possui {} livres",
+            crate::storage::human_bytes(total_bytes.max(0) as u64),
+            crate::storage::human_bytes(available)
         ));
     }
     let id = Uuid::new_v4().to_string();

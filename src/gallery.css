@@ -60,5 +60,8 @@
 .metadata-action.success{background:#e3f2e9;color:#287253}
 .metadata-action.error{background:#f8e7e4;color:var(--red)}
 
+/* Viewer zoom: only promote the active transform to its own compositor layer. */
+.drawer-photo{will-change:auto;transition:transform .12s ease-out}.preview-stage.pannable{cursor:grab}.preview-stage.pannable:active{cursor:grabbing}.preview-stage.pannable .drawer-photo{will-change:transform}
+
 /* 0.19 progressive duplicate review */
 .duplicate-group{position:relative}.duplicate-group.selected{border-color:#5f8d7c;box-shadow:0 0 0 2px #dcebe5}.duplicate-select{position:absolute;z-index:2;left:14px;top:20px;width:28px;height:28px;display:grid;place-items:center;border:1px solid var(--line);border-radius:8px;background:var(--paper);color:transparent}.duplicate-select:hover{border-color:#5f8d7c;background:#f1f7f4}.duplicate-select[aria-pressed=true]{border-color:#245f4c;background:#245f4c;color:#fff}.duplicate-select svg{width:15px}.duplicate-summary{padding-left:54px}.duplicate-bulk-bar{position:sticky;z-index:5;top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 12px;padding:10px 12px;border:1px solid #bed5cb;border-radius:12px;background:#f3faf6f2;box-shadow:0 8px 24px #173d3214;backdrop-filter:blur(8px)}.duplicate-bulk-bar strong{margin-right:auto;color:#214c3e}.duplicate-bulk-bar button{border:1px solid #bed5cb;border-radius:999px;background:#fff;padding:7px 11px;color:#214c3e;font-size:10px;font-weight:700}.duplicate-bulk-bar button:not(:disabled):hover{background:#e5f2ec}.duplicate-bulk-bar button:disabled{opacity:.45}.duplicate-bulk-bar .ghost{border-color:transparent;background:transparent}.duplicate-details-loading{grid-column:1/-1;margin:8px 0;color:var(--muted)}

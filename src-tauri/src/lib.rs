@@ -1873,7 +1873,7 @@ fn prefetch_thumbnails(
 }
 
 #[tauri::command]
-fn reveal_asset_in_folder(asset_id: String, state: State<AppState>) -> Result<(), String> {
+fn reveal_asset_in_folder(asset_id: String, state: State<AppState>) -> Result<String, String> {
     if !valid_thumbnail_asset_id(&asset_id) {
         return Err("Identificador inválido".into());
     }
@@ -1892,9 +1892,10 @@ fn reveal_asset_in_folder(asset_id: String, state: State<AppState>) -> Result<()
     #[cfg(windows)]
     {
         let canonical = std::fs::canonicalize(&path).map_err(|error| error.to_string())?;
-        match reveal_path_native(&canonical) {
+        let outcome = match reveal_path_native(&canonical) {
             Ok(()) => {
-                diagnostics::append("explorer_reveal", "strategy=shell_select result=success")
+                diagnostics::append("explorer_reveal", "strategy=shell_select result=success");
+                "selected"
             }
             Err(shell_error) => {
                 let parent = canonical
@@ -1916,12 +1917,15 @@ fn reveal_asset_in_folder(asset_id: String, state: State<AppState>) -> Result<()
                         )
                     })?;
                 diagnostics::append("explorer_reveal", "strategy=open_parent result=success");
+                "folder_opened"
             }
-        }
+        };
+        return Ok(outcome.into());
     }
     #[cfg(not(windows))]
     return Err("Abrir localização ainda não é suportado neste sistema".into());
-    Ok(())
+    #[allow(unreachable_code)]
+    Ok("unsupported".into())
 }
 #[cfg(windows)]
 fn reveal_path_native(path: &Path) -> Result<(), String> {

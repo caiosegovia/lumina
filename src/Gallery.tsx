@@ -926,8 +926,13 @@ function Preview({
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [fileAction, setFileAction] = useState("");
   const [pan, setPan] = useState({ x: 0, y: 0 });
+  const stageRef = useRef<HTMLDivElement>(null);
+  const imageSize = useRef({width:0,height:0});
   const drag = useRef<{ x: number; y: number; left: number; top: number }>();
-  const changeZoom=(next:number)=>{const bounded=Math.min(4,Math.max(1,Math.round(next*4)/4));setPreviewZoom(bounded);if(bounded===1)setPan({x:0,y:0})};
+  const clampPan=(next:{x:number;y:number},scale=previewZoom)=>{const stage=stageRef.current,natural=imageSize.current;if(!stage||!natural.width||!natural.height||scale<=1)return{x:0,y:0};const rect=stage.getBoundingClientRect(),fit=Math.min(rect.width/natural.width,rect.height/natural.height),maxX=Math.max(0,(natural.width*fit*scale-rect.width)/2),maxY=Math.max(0,(natural.height*fit*scale-rect.height)/2);return{x:Math.max(-maxX,Math.min(maxX,next.x)),y:Math.max(-maxY,Math.min(maxY,next.y))}};
+  const changeZoom=(next:number,anchor?:{x:number;y:number})=>{const bounded=Math.min(8,Math.max(1,Math.round(next*4)/4)),nextPan=anchor?{x:anchor.x-(anchor.x-pan.x)*(bounded/previewZoom),y:anchor.y-(anchor.y-pan.y)*(bounded/previewZoom)}:pan;setPreviewZoom(bounded);setPan(clampPan(nextPan,bounded))};
+  const actualSize=()=>{const stage=stageRef.current,natural=imageSize.current;if(!stage||!natural.width)return;const rect=stage.getBoundingClientRect(),fit=Math.min(rect.width/natural.width,rect.height/natural.height);changeZoom(Math.max(1,1/fit))};
+  const fillStage=()=>{const stage=stageRef.current,natural=imageSize.current;if(!stage||!natural.width)return;const rect=stage.getBoundingClientRect(),fit=Math.min(rect.width/natural.width,rect.height/natural.height),fill=Math.max(rect.width/natural.width,rect.height/natural.height);changeZoom(Math.max(1,fill/fit))};
 
   useEffect(() => {
     let live = true;
@@ -988,19 +993,21 @@ function Preview({
       >
         <X />
       </button>
-      <div className={`preview-stage ${previewZoom > 1 ? "pannable" : ""}`} onDoubleClick={()=>changeZoom(previewZoom===1?2:1)} onWheel={(event)=>{if(!event.ctrlKey)return;event.preventDefault();changeZoom(previewZoom+(event.deltaY<0?.25:-.25))}} onPointerDown={(event)=>{if(previewZoom===1)return;event.currentTarget.setPointerCapture?.(event.pointerId);drag.current={x:event.clientX,y:event.clientY,left:pan.x,top:pan.y}}} onPointerMove={(event)=>{if(!drag.current)return;setPan({x:drag.current.left+event.clientX-drag.current.x,y:drag.current.top+event.clientY-drag.current.y})}} onPointerUp={(event)=>{drag.current=undefined;if(event.currentTarget.hasPointerCapture?.(event.pointerId))event.currentTarget.releasePointerCapture?.(event.pointerId)}} onPointerCancel={()=>{drag.current=undefined}}>
+      <div ref={stageRef} className={`preview-stage ${previewZoom > 1 ? "pannable" : ""}`} onDoubleClick={()=>changeZoom(previewZoom===1?2:1)} onWheel={(event)=>{event.preventDefault();const rect=event.currentTarget.getBoundingClientRect();changeZoom(previewZoom+(event.deltaY<0?.25:-.25),{x:event.clientX-(rect.left+rect.width/2),y:event.clientY-(rect.top+rect.height/2)})}} onPointerDown={(event)=>{if(previewZoom===1)return;event.currentTarget.setPointerCapture?.(event.pointerId);drag.current={x:event.clientX,y:event.clientY,left:pan.x,top:pan.y}}} onPointerMove={(event)=>{if(!drag.current)return;setPan(clampPan({x:drag.current.left+event.clientX-drag.current.x,y:drag.current.top+event.clientY-drag.current.y}))}} onPointerUp={(event)=>{drag.current=undefined;if(event.currentTarget.hasPointerCapture?.(event.pointerId))event.currentTarget.releasePointerCapture?.(event.pointerId)}} onPointerCancel={()=>{drag.current=undefined}}>
         {asset.mediaType === "video" && mediaUrl ? (
           <ManagedVideo key={`${asset.id}-${mediaUrl}`} className="drawer-video" src={mediaUrl} />
         ) : (asset.mediaType === "photo" || asset.mediaType === "raw") && (highQualityUrl || mediaUrl) ? (
-          <img key={`${asset.id}-${highQualityUrl ? "hq" : "fast"}`} className="drawer-photo" src={highQualityUrl || mediaUrl} alt={`Prévia de ${asset.filename}`} draggable={false} style={{transform:`translate(${pan.x}px,${pan.y}px) scale(${previewZoom})`}} />
+          <img key={`${asset.id}-${highQualityUrl ? "hq" : "fast"}`} className="drawer-photo" src={highQualityUrl || mediaUrl} alt={`Prévia de ${asset.filename}`} draggable={false} onLoad={event=>{imageSize.current={width:event.currentTarget.naturalWidth,height:event.currentTarget.naturalHeight};setPan(value=>clampPan(value))}} style={{transform:`translate(${pan.x}px,${pan.y}px) scale(${previewZoom})`}} />
         ) : (
           <MediaThumb key={asset.id} asset={asset} className={`drawer-preview preview-zoom-${previewZoom}`} />
         )}
         <div className="preview-tools">
           <button aria-label="Ajustar imagem à tela" disabled={previewZoom === 1} onClick={() => changeZoom(1)}>Ajustar</button>
+          <button aria-label="Mostrar tamanho real" onClick={actualSize}>100%</button>
+          <button aria-label="Preencher área" onClick={fillStage}>Preencher</button>
           <button aria-label="Diminuir zoom" disabled={previewZoom === 1} onClick={() => changeZoom(previewZoom-.25)}><ZoomOut /></button>
           <span className="zoom-level" aria-label="Nível de zoom">{Math.round(previewZoom*100)}%</span>
-          <button aria-label="Aumentar zoom" disabled={previewZoom === 4} onClick={() => changeZoom(previewZoom+.25)}><ZoomIn /></button>
+          <button aria-label="Aumentar zoom" disabled={previewZoom === 8} onClick={() => changeZoom(previewZoom+.25)}><ZoomIn /></button>
           <button aria-label={fullscreen ? "Sair da tela cheia" : "Abrir em tela cheia"} onClick={() => setFullscreen((value) => !value)}>{fullscreen ? <Minimize2 /> : <Maximize2 />}</button>
         </div>
         {qualityState === "loading" && <span className="preview-quality"><LoaderCircle className="spin"/> Preparando alta qualidade</span>}
@@ -1137,7 +1144,7 @@ function Preview({
           </div>
         </div>
       ))}
-      <button className="reveal-file" onClick={async()=>{setFileAction("");try{await api.revealAsset(asset.id);setFileAction("Arquivo selecionado no Explorador.")}catch(error){const message=String(error);setFileAction(message);void api.recordClientError("reveal_error",message)}}}><HardDrive/> Mostrar arquivo no Explorador</button>
+      <button className="reveal-file" onClick={async()=>{setFileAction("");try{const result=await api.revealAsset(asset.id);setFileAction(result==="selected"?"Arquivo selecionado no Explorador.":"O Explorer abriu a pasta, mas o Windows não selecionou o arquivo.")}catch(error){const message=String(error);setFileAction(message);void api.recordClientError("reveal_error",message)}}}><HardDrive/> Mostrar arquivo no Explorador</button>
       {fileAction&&<p className={fileAction.includes("selecionado")||fileAction.includes("copiadas")?"metadata-action success":"metadata-action error"} role="status">{fileAction}</p>}
       </MetadataSection>
       <MetadataSection id="catalog" title="Catálogo">

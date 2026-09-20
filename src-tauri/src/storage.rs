@@ -241,10 +241,29 @@ pub fn safe_destination(
     }
     Ok(destination)
 }
+pub fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut value = bytes as f64;
+    let mut unit = 0usize;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
 #[cfg(test)]
 pub fn ensure_space(required: u64, available: u64) -> Result<(), String> {
     if required > available {
-        Err(format!("Espaço insuficiente: são necessários {required} bytes e existem {available} bytes livres"))
+        Err(format!(
+            "Espaço insuficiente: são necessários {} e existem {} livres",
+            human_bytes(required),
+            human_bytes(available)
+        ))
     } else {
         Ok(())
     }
@@ -271,7 +290,7 @@ mod tests {
     #[test]
     fn rejects_insufficient_space_before_copy() {
         let error = ensure_space(101, 100).unwrap_err();
-        assert!(error.contains("101"));
+        assert!(error.contains("101 B"));
         assert!(ensure_space(100, 100).is_ok());
     }
     #[test]

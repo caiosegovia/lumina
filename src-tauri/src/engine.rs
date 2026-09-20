@@ -1565,6 +1565,37 @@ pub fn process_thumbnail_queue(
         params![job, generated, failed],
     )
     .ok();
+    if job == "_thumbnail_background" {
+        let remaining: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM work_queue WHERE kind='thumbnail' AND state IN('pending','processing')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        let limitations: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM work_queue WHERE kind='thumbnail' AND state='failed'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        let now = Utc::now().to_rfc3339();
+        if remaining == 0 {
+            let note = if limitations > 0 {
+                Some(format!(
+                    "Processamento concluido com {limitations} arquivos sem preview compativel"
+                ))
+            } else {
+                None
+            };
+            conn.execute(
+                "UPDATE jobs SET state='completed',stage='completed',processed_items=?2,total_items=?2,interruption_reason=?3,finished_at=?4,updated_at=?4 WHERE id=?1",
+                params![job, generated + failed, note, now],
+            )
+            .ok();
+        }
+    }
     Ok(())
 }
 
@@ -1932,8 +1963,9 @@ pub fn protect_job(
     let available = fs2::available_space(Path::new(&cfg.backup_path)).map_err(|e| e.to_string())?;
     if pending_bytes.max(0) as u64 > available {
         let reason = format!(
-            "A réplica precisa de {} bytes e possui {} bytes livres",
-            pending_bytes, available
+            "A réplica precisa de {} e possui {} livres",
+            crate::storage::human_bytes(pending_bytes.max(0) as u64),
+            crate::storage::human_bytes(available)
         );
         conn.execute("UPDATE jobs SET state='waiting_backup_space',stage='backup_space_check',backup_state='pending',interruption_reason=?2,updated_at=?3 WHERE id=?1",params![job,reason,Utc::now().to_rfc3339()]).ok();
         return Ok(());

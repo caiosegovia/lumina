@@ -211,6 +211,24 @@ impl JobManager {
         let conn = catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite"))
             .map_err(|e| e.to_string())?;
         let now = Utc::now().to_rfc3339();
+        // A version bump may add recovery strategies without changing the
+        // bytes of healthy previews. Keep ready cache entries and retry only
+        // failures that the new generator can plausibly recover.
+        conn.execute(
+            "UPDATE thumbnails SET generator_version=?2,updated_at=?1 WHERE state='ready' AND generator_version<?2",
+            params![&now, crate::media::THUMBNAIL_VERSION],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE thumbnails SET generator_version=?2,state='pending',last_error=NULL,updated_at=?1 WHERE state='failed' AND generator_version<?2 AND asset_id IN(SELECT id FROM assets WHERE LOWER(extension) IN('dng','cr2','cr3','nef','arw','raf','rw2','orf','pef','srw','mp4','mov','m4v','avi','mkv','webm'))",
+            params![&now, crate::media::THUMBNAIL_VERSION],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE work_queue SET state='pending',attempts=0,last_error=NULL,updated_at=?1 WHERE kind='thumbnail' AND state='failed' AND asset_id IN(SELECT asset_id FROM thumbnails WHERE generator_version=?2 AND state='pending')",
+            params![&now, crate::media::THUMBNAIL_VERSION],
+        )
+        .map_err(|e| e.to_string())?;
         conn.execute(
             "UPDATE work_queue SET state='pending',updated_at=?1 WHERE kind='thumbnail' AND state='processing'",
             [&now],
@@ -232,6 +250,23 @@ impl JobManager {
         )
         .map_err(|e| e.to_string())?;
         let pending:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM work_queue WHERE kind='thumbnail' AND state='pending')",[],|row|row.get(0)).map_err(|e|e.to_string())?;
+        if !pending {
+            let limitations: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM work_queue WHERE kind='thumbnail' AND state='failed'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0);
+            let note = if limitations > 0 {
+                Some(format!(
+                    "Processamento concluido com {limitations} arquivos sem preview compativel"
+                ))
+            } else {
+                None
+            };
+            conn.execute("UPDATE jobs SET state='completed',stage='completed',interruption_reason=?1,finished_at=?2,updated_at=?2 WHERE id='_thumbnail_background'",params![note,&now]).ok();
+        }
         drop(conn);
         if pending {
             self.start_thumbnail_worker(cfg)?
@@ -992,7 +1027,7 @@ mod tests {
                 |row| row.get::<_, String>(0)
             )
             .unwrap(),
-            "queued"
+            "completed"
         );
         assert_eq!(
             conn.query_row(
