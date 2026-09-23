@@ -100,6 +100,14 @@ Escopo, ordem e gates estão em `NFR-0.22.2-RESILIENCE.md`, `ARCHITECTURE-AUDIT-
 - Políticas de bateria e agendamento por janela de uso.
 - Mapa privado opcional e pacotes geográficos regionais atualizáveis.
 
+## Em homologação — 0.25: experiência da galeria
+
+- Visualizador refeito sobre transformação geométrica testada, responsivo ao painel, tela cheia e DPI.
+- Inspetor integrado redimensionável e preferência persistente.
+- Filtros rápidos de localização e revisão e remoção da jornada de pessoas do produto.
+- Manutenção concluída deixa de ocupar Atividades; limitações permanecem explicáveis.
+- Preserva lista operacional, duplicatas progressivas, insights amostrais/sob demanda, lugares e bursts da baseline homologada.
+
 ## Depois — 1.0: prontidão de produção
 
 - Telemetria local longitudinal de SLOs, migração e recuperação validadas em múltiplos dispositivos.
