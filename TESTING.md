@@ -36,6 +36,8 @@ Esses comandos detectam regressões comuns. Eles não aprovam budgets de memóri
 5. Upgrade da 0.22.1 e instalação limpa preservam/constroem o catálogo corretamente.
 6. Matriz `TRACEABILITY-0.22.2.md` preenchida com artefatos e métricas.
 7. Nenhum P0/P1 aberto e todos os requisitos de integridade, privacidade e memória aprovados.
+8. O smoke instalado deve concluir setup, validar mestre/réplica e importar um fixture; manter a janela aberta não constitui aprovação.
+9. Executar a matriz de estado persistido de `REMEDIATION-0.25.1.md`, incluindo reinstalação, volumes ausentes e garantia de zero jobs órfãos.
 
 ## Ambiente mínimo de desempenho
 

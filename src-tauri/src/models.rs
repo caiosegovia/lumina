@@ -12,6 +12,13 @@ pub struct LibraryConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct LibraryStartupStatus {
+    pub state: String,
+    pub issues: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DashboardStats {
     pub total_assets: i64,
     pub photos: i64,

@@ -126,6 +126,24 @@ fn current(state: &State<AppState>) -> Result<LibraryConfig, String> {
 fn get_library(state: State<AppState>) -> Option<LibraryConfig> {
     state.library.lock().ok().and_then(|v| v.clone())
 }
+#[tauri::command]
+fn get_library_startup_status(state: State<AppState>) -> LibraryStartupStatus {
+    let Some(cfg) = state.library.lock().ok().and_then(|value| value.clone()) else {
+        return LibraryStartupStatus {
+            state: "unconfigured".into(),
+            issues: Vec::new(),
+        };
+    };
+    let issues = library::configuration_issues(&cfg);
+    LibraryStartupStatus {
+        state: if issues.is_empty() {
+            "ready".into()
+        } else {
+            "needs_repair".into()
+        },
+        issues,
+    }
+}
 fn persist_config(state: &State<AppState>, cfg: &LibraryConfig) -> Result<(), String> {
     storage::atomic_write(
         &state.config_path,
@@ -270,12 +288,18 @@ fn create_library(
     if master_abs.starts_with(&backup_abs) || backup_abs.starts_with(&master_abs) {
         return Err("As pastas do acervo e do backup não podem estar contidas uma na outra".into());
     }
+    let previous = state.library.lock().ok().and_then(|value| value.clone());
     let cfg = LibraryConfig {
-        id: Uuid::new_v4().to_string(),
+        id: previous
+            .as_ref()
+            .map(|value| value.id.clone())
+            .unwrap_or_else(|| Uuid::new_v4().to_string()),
         name,
-        master_path,
-        backup_path,
-        created_at: Utc::now().to_rfc3339(),
+        master_path: master_abs.to_string_lossy().into(),
+        backup_path: backup_abs.to_string_lossy().into(),
+        created_at: previous
+            .map(|value| value.created_at)
+            .unwrap_or_else(|| Utc::now().to_rfc3339()),
     };
     let guard =
         library::LibraryLock::acquire(Path::new(&cfg.master_path), &Uuid::new_v4().to_string())?;
@@ -2126,19 +2150,25 @@ pub fn run() {
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok());
     let manager = jobs::JobManager::new();
-    let library_lock = config.as_ref().and_then(|cfg| {
-        library::LibraryLock::acquire(Path::new(&cfg.master_path), manager.instance_id()).ok()
-    });
-    if library_lock.is_some() {
-        if let Some(cfg) = config.as_mut() {
-            reconcile_config_from_catalog(&config_path, cfg);
-        }
+    if let Some(cfg) = config.as_mut() {
+        reconcile_config_from_catalog(&config_path, cfg);
     }
-    if let Some(cfg) = config.as_ref() {
-        let _ = jobs::JobManager::interrupt_running(cfg);
-        let _ = manager.resume_background(cfg.clone());
-        let _ = manager.start_watchdog(cfg.clone());
-        diagnostics::spawn_monitor(cfg.clone());
+    let configuration_ready = config
+        .as_ref()
+        .is_some_and(|cfg| library::configuration_issues(cfg).is_empty());
+    let library_lock = config
+        .as_ref()
+        .filter(|_| configuration_ready)
+        .and_then(|cfg| {
+            library::LibraryLock::acquire(Path::new(&cfg.master_path), manager.instance_id()).ok()
+        });
+    if configuration_ready {
+        if let Some(cfg) = config.as_ref() {
+            let _ = jobs::JobManager::interrupt_running(cfg);
+            let _ = manager.resume_background(cfg.clone());
+            let _ = manager.start_watchdog(cfg.clone());
+            diagnostics::spawn_monitor(cfg.clone());
+        }
     }
     tauri::Builder::default()
         .register_uri_scheme_protocol("lumina-thumb", |context, request| {
@@ -2310,6 +2340,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_library,
+            get_library_startup_status,
             update_backup_path,
             migrate_master_path,
             frontend_ready,

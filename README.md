@@ -1,6 +1,6 @@
 # Lumina
 
-Versão atual: **0.25.0-beta.1**. Consulte [RELEASE-0.25-BETA.md](RELEASE-0.25-BETA.md) e [VALIDATION-0.25-BETA.md](VALIDATION-0.25-BETA.md).
+Versão atual: **0.25.1-beta.1**. Consulte [REMEDIATION-0.25.1.md](REMEDIATION-0.25.1.md), [RELEASE-0.25-BETA.md](RELEASE-0.25-BETA.md) e [VALIDATION-0.25-BETA.md](VALIDATION-0.25-BETA.md).
 
 Versão candidata atual: **0.23.0-beta.2**. Ela preserva a baseline resiliente homologada na 0.22.2 e consolida produtividade, tipografia embarcada, atividade, duplicatas e insights para nova homologação.
 

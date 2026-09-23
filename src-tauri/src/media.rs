@@ -402,7 +402,7 @@ fn extract_raw_preview(
             ProcessSpec::new("ExifTool", "exiftool")
                 .args(["-b", tag, source.to_string_lossy().as_ref()])
                 .timeout(Duration::from_secs(30))
-                .logical(&format!("{logical} {tag}")),
+                .logical(format!("{logical} {tag}")),
             cancel,
         );
         match result {

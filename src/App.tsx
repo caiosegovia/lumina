@@ -48,6 +48,7 @@ import type {
   JobOverview,
   JobProgress,
   LibraryConfig,
+  LibraryStartupStatus,
   LibraryHealth,
   PersonInfo,
   ProtectionQueueStats,
@@ -76,6 +77,7 @@ document.title = "Lumina Ready";
 void api.signalReady();
 export default function App() {
   const [library, setLibrary] = useState<LibraryConfig | null | undefined>(),
+    [startup, setStartup] = useState<LibraryStartupStatus>(),
     [view, setView] = useState<View>("dashboard"),
     [importOpen, setImportOpen] = useState(false),
     [jobId, setJobId] = useState<string>(),
@@ -100,7 +102,10 @@ export default function App() {
     return () => media?.removeEventListener?.("change", apply);
   }, [theme]);
   useEffect(() => {
-    api.getLibrary().then(setLibrary);
+    Promise.all([api.getLibrary(), api.libraryStartupStatus()]).then(([configured, status]) => {
+      setLibrary(configured);
+      setStartup(status);
+    });
   }, []);
   useEffect(()=>{
     const error=(event:ErrorEvent)=>{if(event.message?.startsWith("ResizeObserver loop"))return;void api.recordClientError("frontend_error",event.message||"Erro não identificado")};
@@ -147,14 +152,15 @@ export default function App() {
     schedule();
     return () => clearTimeout(timer);
   }, [library]);
-  if (library === undefined)
+  if (library === undefined || startup === undefined)
     return (
       <div className="splash">
         <LoaderCircle className="spin" />
         Preparando sua biblioteca…
       </div>
     );
-  if (!library) return <Onboarding done={setLibrary} />;
+  if (!library || startup.state === "needs_repair")
+    return <Onboarding initial={library || undefined} issues={startup.issues} done={(next) => { setLibrary(next); setStartup({state:"ready",issues:[]}); }} />;
   const openJob = (id: string) => {
       setJobId(id);
       setImportOpen(true);
@@ -249,11 +255,11 @@ export default function App() {
     </div>
   );
 }
-function Onboarding({ done }: { done: (x: LibraryConfig) => void }) {
+function Onboarding({ done, initial, issues=[] }: { done: (x: LibraryConfig) => void; initial?:LibraryConfig; issues?:string[] }) {
   const [form, setForm] = useState({
-      name: "Minha biblioteca",
-      master: "D:\\Lumina\\Originais",
-      backup: "G:\\Meu Drive\\Lumina Backup",
+      name: initial?.name || "Minha biblioteca",
+      master: initial?.masterPath || "",
+      backup: initial?.backupPath || "",
     }),
     [busy, setBusy] = useState(false),
     [error, setError] = useState("");
@@ -266,6 +272,10 @@ function Onboarding({ done }: { done: (x: LibraryConfig) => void }) {
       setError(String(e));
       setBusy(false);
     }
+  };
+  const choose = async (field:"master"|"backup") => {
+    const selected = await api.chooseFolder();
+    if (selected) setForm(current => ({...current,[field]:selected}));
   };
   return (
     <div className="onboarding">
@@ -289,8 +299,9 @@ function Onboarding({ done }: { done: (x: LibraryConfig) => void }) {
         </div>
       </div>
       <form className="setup-card" onSubmit={submit}>
-        <p className="step">CONFIGURAÇÃO INICIAL</p>
-        <h2>Crie sua biblioteca</h2>
+        <p className="step">{initial ? "REPARO DA CONFIGURAÇÃO" : "CONFIGURAÇÃO INICIAL"}</p>
+        <h2>{initial ? "Reconecte sua biblioteca" : "Crie sua biblioteca"}</h2>
+        {issues.length > 0 && <div className="setup-issues" role="alert"><strong>Os caminhos salvos precisam de atenção</strong>{issues.map(issue=><p key={issue}>{issue}</p>)}</div>}
         <label>
           Nome
           <input
@@ -300,23 +311,15 @@ function Onboarding({ done }: { done: (x: LibraryConfig) => void }) {
         </label>
         <label>
           Pasta-mestre
-          <input
-            aria-label="Pasta-mestre"
-            value={form.master}
-            onChange={(e) => setForm({ ...form, master: e.target.value })}
-          />
+          <span className="setup-folder"><input aria-label="Pasta-mestre" placeholder="Selecione a pasta do acervo" value={form.master} onChange={(e) => setForm({ ...form, master: e.target.value })}/><button type="button" onClick={()=>void choose("master")}><FolderOpen/>Selecionar</button></span>
         </label>
         <label>
           Pasta de backup
-          <input
-            aria-label="Pasta de backup"
-            value={form.backup}
-            onChange={(e) => setForm({ ...form, backup: e.target.value })}
-          />
+          <span className="setup-folder"><input aria-label="Pasta de backup" placeholder="Selecione a pasta da réplica" value={form.backup} onChange={(e) => setForm({ ...form, backup: e.target.value })}/><button type="button" onClick={()=>void choose("backup")}><FolderOpen/>Selecionar</button></span>
         </label>
         {error && <p className="error">{error}</p>}
-        <button className="primary" disabled={busy}>
-          <Archive /> Criar biblioteca
+        <button className="primary" disabled={busy || !form.master.trim() || !form.backup.trim()}>
+          <Archive /> {initial ? "Validar e continuar" : "Criar biblioteca"}
         </button>
       </form>
     </div>

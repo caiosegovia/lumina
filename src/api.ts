@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { Album, AppPreferences, AssetDetails, BackgroundWorkStatus, BatchResult, CleanupPlan, DashboardStats, DiscoveryIndexResult, DiscoveryOverview, LocationResolveResult, DuplicateGroup, DuplicateOccurrence, DuplicateStatus, GalleryFilters, GalleryResult, GallerySort, ImportEvent, ImportSummary, InsightReport, InsightRequest, JobEventPage, JobOverview, JobProgress, LibraryConfig, LibraryHealth, MediaAsset, MigrationProgress, PersonInfo, ProtectionQueueStats, RecoverableJob, ReportExport, ReviewSummary, SavedView, SelectionResult, Source, StoragePlan, TagInfo, ThumbnailAudit, ThumbnailRepairProgress } from "./types";
+import type { Album, AppPreferences, AssetDetails, BackgroundWorkStatus, BatchResult, CleanupPlan, DashboardStats, DiscoveryIndexResult, DiscoveryOverview, LocationResolveResult, DuplicateGroup, DuplicateOccurrence, DuplicateStatus, GalleryFilters, GalleryResult, GallerySort, ImportEvent, ImportSummary, InsightReport, InsightRequest, JobEventPage, JobOverview, JobProgress, LibraryConfig, LibraryStartupStatus, LibraryHealth, MediaAsset, MigrationProgress, PersonInfo, ProtectionQueueStats, RecoverableJob, ReportExport, ReviewSummary, SavedView, SelectionResult, Source, StoragePlan, TagInfo, ThumbnailAudit, ThumbnailRepairProgress } from "./types";
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
 const now = new Date();
@@ -36,6 +36,7 @@ export const api = {
   heartbeat: async () => { if (isTauri()) await invoke("frontend_heartbeat"); },
   chooseFolder: async () => isTauri() ? await open({ directory: true, multiple: false }) as string | null : null,
   getLibrary: () => call<LibraryConfig | null>("get_library", undefined, () => config),
+  libraryStartupStatus: () => call<LibraryStartupStatus>("get_library_startup_status", undefined, () => ({state:config?"ready":"unconfigured",issues:[]})),
   createLibrary: (name: string, masterPath: string, backupPath: string) => call<LibraryConfig>("create_library", { name, masterPath, backupPath }, () => config = { id: crypto.randomUUID(), name, masterPath, backupPath, createdAt: new Date().toISOString() }),
   dashboard: () => call<DashboardStats>("get_dashboard", undefined, () => demoDashboard()),
   refreshDashboard: () => call<DashboardStats>("refresh_dashboard", undefined, () => ({...demoDashboard(),stale:false,snapshotGeneratedAt:new Date().toISOString()})),
