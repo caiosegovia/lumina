@@ -1,7 +1,9 @@
+mod app_paths;
 mod backup;
 mod catalog;
 mod diagnostics;
 mod discovery;
+mod discovery_work;
 mod duplicates;
 mod engine;
 mod events;
@@ -902,6 +904,16 @@ fn get_review_summary(state: State<AppState>) -> Result<ReviewSummary, String> {
     review::summary(&current(&state)?)
 }
 #[tauri::command]
+async fn get_technical_failures(
+    offset: i64,
+    state: State<'_, AppState>,
+) -> Result<review::FailurePage, String> {
+    let cfg = current(&state)?;
+    tauri::async_runtime::spawn_blocking(move || review::failures(&cfg, offset))
+        .await
+        .map_err(|e| e.to_string())?
+}
+#[tauri::command]
 fn get_library_health(state: State<AppState>) -> Result<LibraryHealth, String> {
     health::inspect(&current(&state)?)
 }
@@ -1142,6 +1154,14 @@ async fn build_discovery_index(state: State<'_, AppState>) -> Result<DiscoveryIn
     tauri::async_runtime::spawn_blocking(move || discovery::build_index(&cfg))
         .await
         .map_err(|e| e.to_string())?
+}
+#[tauri::command]
+fn get_discovery_work() -> discovery_work::Progress {
+    discovery_work::progress()
+}
+#[tauri::command]
+fn cancel_discovery_work() {
+    discovery_work::cancel();
 }
 #[tauri::command]
 async fn get_discovery_overview(state: State<'_, AppState>) -> Result<DiscoveryOverview, String> {
@@ -2144,7 +2164,7 @@ fn clear_thumbnail_cache(state: State<AppState>) -> Result<i64, String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     diagnostics::start_session();
-    let base = dirs::data_local_dir().unwrap_or_else(|| PathBuf::from("."));
+    let base = app_paths::local_data();
     let config_path = base.join("Lumina/library.json");
     let mut config: Option<LibraryConfig> = fs::read(&config_path)
         .ok()
@@ -2353,6 +2373,7 @@ pub fn run() {
             list_sources,
             start_source_sync,
             get_review_summary,
+            get_technical_failures,
             get_library_health,
             record_client_error,
             undo_last_edit,
@@ -2370,6 +2391,8 @@ pub fn run() {
             list_jobs,
             get_background_work_status,
             build_discovery_index,
+            get_discovery_work,
+            cancel_discovery_work,
             get_discovery_overview,
             resolve_location_names,
             rename_location,
@@ -2433,6 +2456,7 @@ pub fn run() {
         .expect("erro ao iniciar Lumina")
         .run(|app, event| {
             if matches!(event, tauri::RunEvent::Exit) {
+                discovery_work::cancel();
                 let manager = app.state::<jobs::JobManager>();
                 let _ = manager.shutdown(std::time::Duration::from_secs(2));
                 diagnostics::finish_session();

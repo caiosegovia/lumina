@@ -47,9 +47,7 @@ pub fn frontend_heartbeat() {
 }
 
 fn root() -> PathBuf {
-    dirs::data_local_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("Lumina/diagnostics")
+    crate::app_paths::local_data().join("Lumina/diagnostics")
 }
 
 pub fn begin_operation(kind: &str, detail: &str) -> ActiveOperation {

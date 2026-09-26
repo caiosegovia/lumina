@@ -1,5 +1,17 @@
 # Roteiro de homologação — 0.25 beta 1
 
+## Feedback recebido em 26/09/2026 — visualizador reprovado
+
+Durante a homologação da entrega 0.25.1-beta.1, o usuário relatou:
+
+- Zoom continua ruim e não funciona, tanto em fotos quanto em vídeos.
+- Responsividade muito ruim ao abrir uma foto na galeria.
+- Barras desaparecem durante a interação com a mídia.
+
+Este relato reprova o gate do visualizador, apesar dos testes automatizados anteriores. A causa técnica e quais barras desaparecem ainda precisam ser identificadas. Não implica novo resultado para setup, importação ou proteção.
+
+Reteste após a correção: abrir e alternar fotos/vídeos, usar zoom e arraste, redimensionar painel/janela e alternar tela cheia. As barras devem permanecer acessíveis, a interface deve responder às ações e os controles de reprodução devem continuar funcionais. Incluir diferentes escalas do Windows e validação no executável instalado.
+
 ## Atualização
 
 1. Instale sobre a 0.24.2 e confirme catálogo, favoritos, tags, álbuns, lugares e proteção.

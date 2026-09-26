@@ -3,6 +3,8 @@ export type ProtectionState = "source_only" | "consolidated" | "replica_verified
 
 export interface LibraryConfig { id: string; name: string; masterPath: string; backupPath: string; createdAt: string }
 export interface LibraryStartupStatus { state:"unconfigured"|"ready"|"needs_repair"; issues:string[] }
+export interface TechnicalFailure {assetId:string;filename:string;path:string;previewError?:string;metadataError?:string;previewUpdatedAt?:string;metadataUpdatedAt?:string}
+export interface FailurePage {items:TechnicalFailure[];total:number;nextOffset?:number|null}
 export interface DashboardBreakdown{key:string;items:number;bytes:number}
 export interface DashboardStorage{masterTotalBytes:number;masterUsedBytes:number;masterFreeBytes:number;libraryBytes:number;cacheBytes:number;temporaryBytes:number;backupTotalBytes:number;backupUsedBytes:number;backupFreeBytes:number;pendingBackupBytes:number;projectedBackupFreeBytes:number;reserveBytes:number;estimatedAdditionalItems:number;averageAssetBytes:number;p90AssetBytes:number;backupAvailable:boolean}
 export interface DashboardTechnical{enriched:number;complete:number;partial:number;preservation:number;unknown:number;mismatches:number;codecKnown:number;codecMissing:number;thumbnailsReady:number;thumbnailsPending:number;thumbnailsFailed:number;metadataComplete:number;reviewItems:number;reviewBytes:number}

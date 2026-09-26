@@ -15,8 +15,8 @@ use std::{
     time::Duration,
 };
 
-const ALGORITHM_VERSION: i64 = 1;
-const LOCATION_ALGORITHM_VERSION: i64 = 3;
+const ALGORITHM_VERSION: i64 = 2;
+const LOCATION_ALGORITHM_VERSION: i64 = 4;
 
 const CITIES: &[(&str, &str, &str, f64, f64)] = &[
     ("São Paulo", "SP", "Brasil", -23.5505, -46.6333),
@@ -114,13 +114,19 @@ fn number_tag(value: &serde_json::Value, names: &[&str]) -> Option<f64> {
     })
 }
 
-fn embedded_geolocations(rows: &[(String, f64, f64, String)]) -> HashMap<String, EmbeddedLocation> {
+fn embedded_geolocations(
+    rows: &[(String, f64, f64, String)],
+    cancel: &crate::process::CancellationToken,
+) -> HashMap<String, EmbeddedLocation> {
     let ids = rows
         .iter()
         .map(|(id, _, _, path)| (normalized_path(path), id.clone()))
         .collect::<HashMap<_, _>>();
     let mut found = HashMap::new();
     for batch in rows.chunks(100) {
+        if cancel.is_cancelled() {
+            break;
+        }
         let mut args = vec![
             OsString::from("-json"),
             OsString::from("-api"),
@@ -128,6 +134,7 @@ fn embedded_geolocations(rows: &[(String, f64, f64, String)]) -> HashMap<String,
             OsString::from("-GeolocationCity"),
             OsString::from("-GeolocationRegion"),
             OsString::from("-GeolocationCountry"),
+            OsString::from("-GeolocationDistance#"),
             OsString::from("-City"),
             OsString::from("-State"),
             OsString::from("-Country"),
@@ -150,7 +157,7 @@ fn embedded_geolocations(rows: &[(String, f64, f64, String)]) -> HashMap<String,
                 .args(args)
                 .timeout(Duration::from_secs(120))
                 .logical("ExifTool offline geolocation"),
-            &crate::process::CancellationToken::default(),
+            cancel,
         );
         let Ok(output) = output else { continue };
         let Ok(values) = serde_json::from_slice::<Vec<serde_json::Value>>(&output.stdout) else {
@@ -201,6 +208,14 @@ fn embedded_geolocations(rows: &[(String, f64, f64, String)]) -> HashMap<String,
                 || native_region.is_some()
                 || native_country.is_some()
                 || sublocation.is_some();
+            // Reverse geocoding names the nearest populated place, not an address.
+            // Do not present a remote locality as the capture location.
+            if !native
+                && number_tag(&value, &["GeolocationDistance"])
+                    .is_none_or(|km| !km.is_finite() || km > 25.0)
+            {
+                continue;
+            }
             // Never compose a trustworthy native phone place with unrelated
             // reverse-geocoder fragments. Native fields stay together; the
             // offline result is only used when the file has no place names.
@@ -230,6 +245,7 @@ fn embedded_geolocations(rows: &[(String, f64, f64, String)]) -> HashMap<String,
 }
 
 pub fn resolve_locations(cfg: &LibraryConfig) -> Result<LocationResolveResult, String> {
+    let work = crate::discovery_work::Work::begin("Lugares")?;
     let mut conn = db(cfg)?;
     let rows = {
         let mut s=conn.prepare("SELECT id,latitude,longitude,master_path FROM assets WHERE latitude IS NOT NULL AND longitude IS NOT NULL").map_err(|e|e.to_string())?;
@@ -247,7 +263,7 @@ pub fn resolve_locations(cfg: &LibraryConfig) -> Result<LocationResolveResult, S
             .map_err(|e| e.to_string())?;
         values
     };
-    let embedded = embedded_geolocations(&rows);
+    work.update(0, rows.len());
     let manual_names = {
         let mut statement = conn.prepare("SELECT al.asset_id,o.display_name FROM asset_locations al JOIN location_overrides o ON o.cell_key=al.cell_key")
             .map_err(|e| e.to_string())?;
@@ -260,103 +276,113 @@ pub fn resolve_locations(cfg: &LibraryConfig) -> Result<LocationResolveResult, S
             .map_err(|e| e.to_string())?;
         values
     };
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
     let now = Utc::now().to_rfc3339();
     let mut named = 0;
     let mut approximate = 0;
-    for (id, lat, lon, _) in &rows {
-        let key = cell_key(*lat, *lon);
-        let nearest = CITIES
-            .iter()
-            .map(|city| (city, distance_km(*lat, *lon, city.3, city.4)))
-            .min_by(|a, b| a.1.total_cmp(&b.1));
-        let (
-            city,
-            region,
-            country,
-            sublocation,
-            altitude,
-            accuracy,
-            detail_source,
-            label,
-            source,
-            precision,
-        ) = match embedded.get(id) {
-            Some(location) => {
-                let label = [
-                    location.sublocation.as_deref(),
-                    location.city.as_deref(),
-                    location.region.as_deref(),
-                    location.country.as_deref(),
-                ]
-                .into_iter()
-                .flatten()
-                .filter(|x| !x.is_empty())
-                .fold(Vec::<&str>::new(), |mut values, item| {
-                    if !values.iter().any(|value| value.eq_ignore_ascii_case(item)) {
-                        values.push(item);
-                    }
-                    values
-                })
-                .join(" · ");
-                (
-                    location.city.as_deref(),
-                    location.region.as_deref(),
-                    location.country.as_deref(),
-                    location.sublocation.as_deref(),
-                    location.altitude,
-                    location.accuracy_m,
-                    location.source,
-                    label,
-                    "offline",
-                    location
-                        .accuracy_m
-                        .map(|meters| meters / 1000.0)
-                        .unwrap_or(0.1),
-                )
-            }
-            None => match nearest {
-                Some((c, d)) if d <= 45.0 => (
-                    Some(c.0),
-                    Some(c.1),
-                    Some(c.2),
-                    None,
-                    None,
-                    None,
-                    "offline",
-                    format!("{}, {} · {}", c.0, c.1, c.2),
-                    "offline",
-                    d,
-                ),
-                _ => (
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    "approximate",
-                    format!("Região {:.2}, {:.2}", lat, lon),
-                    "approximate",
-                    8.0,
-                ),
-            },
-        };
-        if source == "offline" {
-            named += 1
-        } else {
-            approximate += 1
-        };
-        tx.execute("INSERT INTO location_cells(cell_key,latitude,longitude,city,region,country,display_name,source,precision_km,resolved_at)VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)ON CONFLICT(cell_key)DO UPDATE SET latitude=excluded.latitude,longitude=excluded.longitude,city=excluded.city,region=excluded.region,country=excluded.country,display_name=excluded.display_name,source=excluded.source,precision_km=excluded.precision_km,resolved_at=excluded.resolved_at",params![key,lat,lon,city,region,country,label,source,precision,now]).map_err(|e|e.to_string())?;
-        tx.execute("INSERT INTO asset_locations(asset_id,cell_key)VALUES(?1,?2)ON CONFLICT(asset_id)DO UPDATE SET cell_key=excluded.cell_key",params![id,key]).map_err(|e|e.to_string())?;
-        tx.execute("INSERT INTO asset_location_details(asset_id,altitude,accuracy_m,sublocation,city,region,country,source,algorithm_version,resolved_at)VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)ON CONFLICT(asset_id)DO UPDATE SET altitude=excluded.altitude,accuracy_m=excluded.accuracy_m,sublocation=excluded.sublocation,city=excluded.city,region=excluded.region,country=excluded.country,source=excluded.source,algorithm_version=excluded.algorithm_version,resolved_at=excluded.resolved_at",params![id,altitude,accuracy,sublocation,city,region,country,detail_source,LOCATION_ALGORITHM_VERSION,now]).map_err(|e|e.to_string())?;
-        if let Some(manual_name) = manual_names.get(id) {
-            tx.execute("INSERT INTO location_overrides(cell_key,display_name,updated_at)VALUES(?1,?2,?3)ON CONFLICT(cell_key)DO UPDATE SET display_name=excluded.display_name,updated_at=excluded.updated_at",params![key,manual_name,now]).map_err(|e|e.to_string())?;
+    for batch in rows.chunks(50) {
+        if work.token.is_cancelled() {
+            break;
         }
+        let embedded = embedded_geolocations(batch, &work.token);
+        if work.token.is_cancelled() {
+            break;
+        }
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        for (id, lat, lon, _) in batch {
+            let key = cell_key(*lat, *lon);
+            let nearest = CITIES
+                .iter()
+                .map(|city| (city, distance_km(*lat, *lon, city.3, city.4)))
+                .min_by(|a, b| a.1.total_cmp(&b.1));
+            let (
+                city,
+                region,
+                country,
+                sublocation,
+                altitude,
+                accuracy,
+                detail_source,
+                label,
+                source,
+                precision,
+            ) = match embedded.get(id) {
+                Some(location) => {
+                    let label = [
+                        location.sublocation.as_deref(),
+                        location.city.as_deref(),
+                        location.region.as_deref(),
+                        location.country.as_deref(),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .filter(|x| !x.is_empty())
+                    .fold(Vec::<&str>::new(), |mut values, item| {
+                        if !values.iter().any(|value| value.eq_ignore_ascii_case(item)) {
+                            values.push(item);
+                        }
+                        values
+                    })
+                    .join(" · ");
+                    (
+                        location.city.as_deref(),
+                        location.region.as_deref(),
+                        location.country.as_deref(),
+                        location.sublocation.as_deref(),
+                        location.altitude,
+                        location.accuracy_m,
+                        location.source,
+                        label,
+                        "offline",
+                        location
+                            .accuracy_m
+                            .map(|meters| meters / 1000.0)
+                            .unwrap_or(0.1),
+                    )
+                }
+                None => match nearest {
+                    Some((c, d)) if d <= 45.0 => (
+                        Some(c.0),
+                        Some(c.1),
+                        Some(c.2),
+                        None,
+                        None,
+                        None,
+                        "approximate",
+                        format!("Próximo de {}, {} · {} (≈{d:.0} km)", c.0, c.1, c.2),
+                        "approximate",
+                        d,
+                    ),
+                    _ => (
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        "approximate",
+                        format!("Região {:.2}, {:.2}", lat, lon),
+                        "approximate",
+                        8.0,
+                    ),
+                },
+            };
+            if source == "offline" {
+                named += 1
+            } else {
+                approximate += 1
+            };
+            tx.execute("INSERT INTO location_cells(cell_key,latitude,longitude,city,region,country,display_name,source,precision_km,resolved_at)VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)ON CONFLICT(cell_key)DO UPDATE SET latitude=excluded.latitude,longitude=excluded.longitude,city=excluded.city,region=excluded.region,country=excluded.country,display_name=excluded.display_name,source=excluded.source,precision_km=excluded.precision_km,resolved_at=excluded.resolved_at",params![key,lat,lon,city,region,country,label,source,precision,now]).map_err(|e|e.to_string())?;
+            tx.execute("INSERT INTO asset_locations(asset_id,cell_key)VALUES(?1,?2)ON CONFLICT(asset_id)DO UPDATE SET cell_key=excluded.cell_key",params![id,key]).map_err(|e|e.to_string())?;
+            tx.execute("INSERT INTO asset_location_details(asset_id,altitude,accuracy_m,sublocation,city,region,country,source,algorithm_version,resolved_at)VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)ON CONFLICT(asset_id)DO UPDATE SET altitude=excluded.altitude,accuracy_m=excluded.accuracy_m,sublocation=excluded.sublocation,city=excluded.city,region=excluded.region,country=excluded.country,source=excluded.source,algorithm_version=excluded.algorithm_version,resolved_at=excluded.resolved_at",params![id,altitude,accuracy,sublocation,city,region,country,detail_source,LOCATION_ALGORITHM_VERSION,now]).map_err(|e|e.to_string())?;
+            if let Some(manual_name) = manual_names.get(id) {
+                tx.execute("INSERT INTO location_overrides(cell_key,display_name,updated_at)VALUES(?1,?2,?3)ON CONFLICT(cell_key)DO UPDATE SET display_name=excluded.display_name,updated_at=excluded.updated_at",params![key,manual_name,now]).map_err(|e|e.to_string())?;
+            }
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        work.update((named + approximate) as usize, rows.len());
     }
-    tx.commit().map_err(|e| e.to_string())?;
     Ok(LocationResolveResult {
-        resolved: rows.len() as i64,
+        resolved: named + approximate,
         named,
         approximate,
     })
@@ -395,12 +421,16 @@ struct VisualFeatures {
     labels: String,
 }
 fn analyze(path: &Path) -> Result<VisualFeatures, String> {
-    let image = ImageReader::open(path)
+    let mut reader = ImageReader::open(path)
         .map_err(|e| e.to_string())?
         .with_guessed_format()
-        .map_err(|e| e.to_string())?
-        .decode()
         .map_err(|e| e.to_string())?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(1024);
+    limits.max_image_height = Some(1024);
+    limits.max_alloc = Some(16 * 1024 * 1024);
+    reader.limits(limits);
+    let image = reader.decode().map_err(|e| e.to_string())?;
     let (width, height) = image.dimensions();
     let sample = image
         .resize(256, 256, image::imageops::FilterType::Triangle)
@@ -483,32 +513,62 @@ fn analyze(path: &Path) -> Result<VisualFeatures, String> {
 }
 
 pub fn build_index(cfg: &LibraryConfig) -> Result<DiscoveryIndexResult, String> {
+    let work = crate::discovery_work::Work::begin("Índice visual")?;
     let mut conn = db(cfg)?;
     let rows = {
-        let mut stmt = conn.prepare("SELECT a.id,a.master_path FROM assets a LEFT JOIN asset_visual_fingerprints f ON f.asset_id=a.id AND f.algorithm_version=?1 LEFT JOIN asset_visual_traits t ON t.asset_id=a.id AND t.algorithm_version=?1 WHERE a.media_type IN('photo','raw') AND (f.asset_id IS NULL OR t.asset_id IS NULL) ORDER BY a.captured_at DESC").map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare("SELECT a.id,a.master_path,a.extension,a.hash FROM assets a LEFT JOIN asset_visual_fingerprints f ON f.asset_id=a.id AND f.algorithm_version=?1 LEFT JOIN asset_visual_traits t ON t.asset_id=a.id AND t.algorithm_version=?1 WHERE a.media_type IN('photo','raw') AND (f.asset_id IS NULL OR t.asset_id IS NULL) ORDER BY a.captured_at DESC").map_err(|e| e.to_string())?;
         let mapped = stmt
             .query_map([ALGORITHM_VERSION], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
             })
             .map_err(|e| e.to_string())?;
         mapped
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?
     };
-    let transaction = conn.transaction().map_err(|e| e.to_string())?;
+    let total = rows.len();
+    work.update(0, total);
+    let cache = Path::new(&cfg.master_path).join(".lumina/cache/discovery");
     let mut result = DiscoveryIndexResult {
         indexed: 0,
         skipped: 0,
         failed: 0,
     };
-    for (id, raw_path) in rows {
+    for (position, (id, raw_path, extension, hash)) in rows.into_iter().enumerate() {
+        if work.token.is_cancelled() {
+            break;
+        }
+        work.update(position, total);
         let path = PathBuf::from(raw_path);
         if !path.is_file() {
             result.skipped += 1;
             continue;
         }
-        match analyze(&path) {
+        // Never decode originals in the desktop process. Dedicated small previews
+        // avoid racing the interactive viewer cache; subprocesses share global limits.
+        let features = match crate::media::thumbnail_file(cfg, &id) {
+            Ok(Some(preview)) => analyze(&preview),
+            Ok(None) => {
+                crate::media::generate_thumbnail(&path, &extension, &hash, &cache, &work.token)
+                    .and_then(|preview| {
+                        let result = analyze(&preview);
+                        let _ = std::fs::remove_file(preview);
+                        result
+                    })
+            }
+            Err(error) => Err(error),
+        };
+        if work.token.is_cancelled() {
+            break;
+        }
+        match features {
             Ok(features) => {
+                let transaction = conn.transaction().map_err(|e| e.to_string())?;
                 let hash = features.hash;
                 let bands = [
                     (hash & 0xffff) as i64,
@@ -518,12 +578,22 @@ pub fn build_index(cfg: &LibraryConfig) -> Result<DiscoveryIndexResult, String> 
                 ];
                 transaction.execute("INSERT INTO asset_visual_fingerprints(asset_id,dhash,band0,band1,band2,band3,algorithm_version,indexed_at)VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(asset_id) DO UPDATE SET dhash=excluded.dhash,band0=excluded.band0,band1=excluded.band1,band2=excluded.band2,band3=excluded.band3,algorithm_version=excluded.algorithm_version,indexed_at=excluded.indexed_at", params![id,hash as i64,bands[0],bands[1],bands[2],bands[3],ALGORITHM_VERSION,Utc::now().to_rfc3339()]).map_err(|e| e.to_string())?;
                 transaction.execute("INSERT INTO asset_visual_traits(asset_id,width,height,brightness,colorfulness,sharpness,quality_score,labels,algorithm_version,indexed_at)VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT(asset_id) DO UPDATE SET width=excluded.width,height=excluded.height,brightness=excluded.brightness,colorfulness=excluded.colorfulness,sharpness=excluded.sharpness,quality_score=excluded.quality_score,labels=excluded.labels,algorithm_version=excluded.algorithm_version,indexed_at=excluded.indexed_at",params![id,features.width,features.height,features.brightness,features.colorfulness,features.sharpness,features.quality,features.labels,ALGORITHM_VERSION,Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
+                transaction.commit().map_err(|e| e.to_string())?;
                 result.indexed += 1;
             }
-            Err(_) => result.failed += 1,
+            Err(error) => {
+                result.failed += 1;
+                crate::diagnostics::append(
+                    "discovery_index_failure",
+                    &format!("asset={id} error={}", crate::process::sanitize(&error)),
+                );
+            }
         }
     }
-    transaction.commit().map_err(|e| e.to_string())?;
+    work.update(
+        (result.indexed + result.skipped + result.failed) as usize,
+        total,
+    );
     Ok(result)
 }
 
@@ -546,8 +616,10 @@ fn item(row: &rusqlite::Row<'_>) -> rusqlite::Result<DiscoveryItem> {
 }
 
 fn all_items(conn: &rusqlite::Connection) -> Result<Vec<DiscoveryItem>, String> {
-    let mut stmt=conn.prepare("SELECT a.id,a.filename,a.media_type,a.captured_at,a.camera,t.quality_score,t.labels FROM assets a LEFT JOIN asset_visual_traits t ON t.asset_id=a.id AND t.algorithm_version=1 ORDER BY a.captured_at DESC,a.id").map_err(|e|e.to_string())?;
-    let mapped = stmt.query_map([], item).map_err(|e| e.to_string())?;
+    let mut stmt=conn.prepare("SELECT a.id,a.filename,a.media_type,a.captured_at,a.camera,t.quality_score,t.labels FROM assets a LEFT JOIN asset_visual_traits t ON t.asset_id=a.id AND t.algorithm_version=?1 ORDER BY a.captured_at DESC,a.id").map_err(|e|e.to_string())?;
+    let mapped = stmt
+        .query_map([ALGORITHM_VERSION], item)
+        .map_err(|e| e.to_string())?;
     mapped
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())
@@ -598,6 +670,34 @@ fn location_groups(
     by_id: &HashMap<String, DiscoveryItem>,
 ) -> Result<(Vec<DiscoveryGroup>, Vec<DiscoveryGroup>), String> {
     type PlaceEntry = (String, Option<String>, Option<String>, f64, f64);
+    let evidence = {
+        let mut statement=conn.prepare("SELECT al.cell_key,CASE WHEN o.cell_key IS NOT NULL THEN 'manual' ELSE COALESCE(d.source,'approximate') END,COUNT(*) FROM asset_locations al LEFT JOIN asset_location_details d ON d.asset_id=al.asset_id LEFT JOIN location_overrides o ON o.cell_key=al.cell_key GROUP BY al.cell_key,2").map_err(|e|e.to_string())?;
+        let values = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        let mut result: HashMap<String, Vec<String>> = HashMap::new();
+        for (key, source, count) in values {
+            let label = match source.as_str() {
+                "manual" => "nome manual",
+                "embedded" => "nome registrado no arquivo",
+                "offline" => "nome estimado offline",
+                _ => "coordenadas aproximadas",
+            };
+            result
+                .entry(key)
+                .or_default()
+                .push(format!("{count} com {label}"));
+        }
+        result
+    };
     let mut statement = conn
         .prepare("SELECT a.id,a.captured_at,a.latitude,a.longitude,al.cell_key,COALESCE(o.display_name,c.display_name) FROM assets a LEFT JOIN asset_locations al ON al.asset_id=a.id LEFT JOIN location_cells c ON c.cell_key=al.cell_key LEFT JOIN location_overrides o ON o.cell_key=al.cell_key WHERE a.latitude IS NOT NULL AND a.longitude IS NOT NULL ORDER BY a.captured_at,a.id")
         .map_err(|error| error.to_string())?;
@@ -651,10 +751,7 @@ fn location_groups(
                     .take(12)
                     .collect(),
                 recommended_id: None,
-                recommendation: Some(
-                    "Agrupamento local aproximado; nenhum local foi inferido para arquivos sem GPS"
-                        .into(),
-                ),
+                recommendation: Some(evidence.get(&group_key).map(|labels|labels.join(" · ")).unwrap_or_else(||"Coordenadas sem nome confirmado; nenhum local inferido para arquivos sem GPS".into())),
                 place_key: entries.iter().find_map(|x| x.1.clone()),
             }
         })
@@ -690,9 +787,10 @@ fn location_groups(
         let first = taken.first().map(|row| row.1).unwrap();
         let last = taken.last().map(|row| row.1).unwrap();
         let label = taken.iter().find_map(|row| row.5.clone());
-        let place_key = taken.iter().find_map(|row| row.4.clone());
+        // A trip can span several places: filtering by only the first one is wrong.
+        let place_key = None;
         trips.push(DiscoveryGroup {
-            id: format!("trip-{}", first.format("%Y%m%d")),
+            id: format!("trip-{}-{}", first.format("%Y%m%d"), taken[0].0),
             title: label
                 .as_ref()
                 .map(|name| format!("Viagem a {name}"))
@@ -736,7 +834,10 @@ fn location_groups(
     for row in trip_rows {
         let joins = current
             .last()
-            .map(|last| (row.1 - last.1).num_days() <= 3)
+            .map(|last| {
+                (row.1 - last.1).num_hours() <= 72
+                    && distance_km(row.2, row.3, last.2, last.3) <= 250.0
+            })
             .unwrap_or(true);
         if !joins {
             flush(&mut current, &mut trips);
@@ -982,6 +1083,15 @@ mod tests {
     fn perceptual_distance_is_stable() {
         assert_eq!((0b1010_u64 ^ 0b1110_u64).count_ones(), 1);
     }
+    #[test]
+    fn internal_analysis_rejects_oversized_preview_dimensions() {
+        let root = std::env::temp_dir().join(format!("lumina-analysis-limit-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("oversized.png");
+        image::GrayImage::new(1025, 1).save(&path).unwrap();
+        assert!(analyze(&path).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn date_parser_accepts_catalog_formats() {
@@ -1041,6 +1151,7 @@ mod tests {
 
     #[test]
     fn gps_records_form_local_places_and_trips_without_inference() {
+        let _test = crate::discovery_work::TEST_LOCK.lock().unwrap();
         let root = std::env::temp_dir().join(format!("lumina-places-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let cfg = LibraryConfig {
@@ -1067,10 +1178,11 @@ mod tests {
         assert_eq!(trips[0].items.len(), 3);
         drop(conn);
         let resolved = resolve_locations(&cfg).unwrap();
-        assert_eq!(resolved.named, 3);
+        assert_eq!(resolved.approximate, 3);
         let found = overview(&cfg).unwrap();
-        assert_eq!(found.places[0].title, "São Paulo, SP · Brasil");
-        assert_eq!(found.location_status.named, 3);
+        assert!(found.places[0].title.starts_with("Próximo de São Paulo"));
+        assert_eq!(found.location_status.approximate, 3);
+        assert!(found.trips[0].place_key.is_none());
         rename_location(&cfg, found.places[0].place_key.as_deref().unwrap(), "Casa").unwrap();
         assert_eq!(overview(&cfg).unwrap().places[0].title, "Casa");
         let resolved_again = resolve_locations(&cfg).unwrap();
@@ -1081,6 +1193,7 @@ mod tests {
 
     #[test]
     fn local_index_finds_a_visual_pair_without_touching_sources() {
+        let _test = crate::discovery_work::TEST_LOCK.lock().unwrap();
         let root = std::env::temp_dir().join(format!("lumina-discovery-{}", Uuid::new_v4()));
         let master = root.join("master");
         let backup = root.join("backup");
@@ -1110,12 +1223,19 @@ mod tests {
             conn.execute("INSERT INTO assets(id,hash,filename,media_type,extension,captured_at,date_source,bytes,master_path,created_at)VALUES(?1,?2,?3,'photo','png',?4,'metadata',100,?5,?4)",params![id,id.repeat(64),name,date,path.to_string_lossy()]).unwrap();
         }
         drop(conn);
+        let original = std::fs::read(&first).unwrap();
         let indexed = build_index(&cfg).unwrap();
         assert_eq!(indexed.indexed, 2);
+        assert_eq!(
+            build_index(&cfg).unwrap().indexed,
+            0,
+            "Índice incremental não deve reprocessar itens confirmados"
+        );
         let found = overview(&cfg).unwrap();
         assert_eq!(found.indexed, 2);
         assert_eq!(found.similar.len(), 1);
         assert!(first.exists() && second.exists());
+        assert_eq!(std::fs::read(&first).unwrap(), original);
         std::fs::remove_dir_all(root).unwrap();
     }
 }

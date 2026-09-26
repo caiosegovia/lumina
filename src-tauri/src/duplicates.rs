@@ -193,7 +193,7 @@ pub fn create_plan(cfg: &LibraryConfig) -> Result<CleanupPlan, String> {
         .map_err(|error| error.to_string())?;
     let id = Uuid::new_v4().to_string();
     let created_at = Utc::now().to_rfc3339();
-    let mut statement=conn.prepare("SELECT o.id,o.asset_id,a.filename,s.name,o.path,a.bytes,CASE WHEN a.protection_state='replica_verified' THEN 'eligible' ELSE 'blocked' END,CASE WHEN a.protection_state='replica_verified' THEN 'Réplica verificada; ocorrência adicional' ELSE 'Réplica ainda não verificada' END FROM(SELECT ao.*,ROW_NUMBER()OVER(PARTITION BY ao.asset_id ORDER BY ao.seen_at,ao.id)position FROM active_occurrences ao)o JOIN assets a ON a.id=o.asset_id JOIN sources s ON s.id=o.source_id WHERE(SELECT COUNT(*)FROM active_occurrences x WHERE x.asset_id=o.asset_id)>1 AND o.position>1 ORDER BY a.filename,s.name,o.path").map_err(|error|error.to_string())?;
+    let mut statement=conn.prepare("SELECT o.id,o.asset_id,a.filename,s.name,o.path,a.bytes,CASE WHEN a.protection_state='replica_verified' AND COALESCE(g.decision,'') NOT IN('keep_all','review') AND COALESCE(d.decision,'') NOT IN('keep','review') AND (g.decision='remove_candidates' OR d.decision='remove_candidate') THEN 'eligible' ELSE 'blocked' END,CASE WHEN g.decision='keep_all' OR d.decision='keep' THEN 'Decisão de manter preservada' WHEN g.decision='review' OR d.decision='review' THEN 'Aguardando revisão humana' WHEN a.protection_state!='replica_verified' THEN 'Réplica ainda não verificada' WHEN g.decision='remove_candidates' OR d.decision='remove_candidate' THEN 'Candidata explicitamente marcada; réplica verificada' ELSE 'Sem decisão de remoção' END FROM(SELECT ao.*,ROW_NUMBER()OVER(PARTITION BY ao.asset_id ORDER BY ao.seen_at,ao.id)position FROM active_occurrences ao)o JOIN assets a ON a.id=o.asset_id JOIN sources s ON s.id=o.source_id LEFT JOIN duplicate_decisions g ON g.asset_id=a.id LEFT JOIN occurrence_decisions d ON d.occurrence_id=o.id WHERE(SELECT COUNT(*)FROM active_occurrences x WHERE x.asset_id=o.asset_id)>1 AND o.position>1 ORDER BY a.filename,s.name,o.path").map_err(|e|e.to_string())?;
     let items = statement
         .query_map([], |row| {
             Ok(CleanupPlanItem {
@@ -336,6 +336,20 @@ mod tests {
             1
         );
         let groups = list(&cfg).unwrap();
+        assert_eq!(
+            create_plan(&cfg).unwrap().candidates,
+            0,
+            "Manter todas bloqueia candidatas individuais"
+        );
+        decide_group(&cfg, "a", "remove_candidates", "test").unwrap();
+        assert_eq!(create_plan(&cfg).unwrap().candidates, 1);
+        decide_occurrence(&cfg, "o2", "keep").unwrap();
+        assert_eq!(
+            create_plan(&cfg).unwrap().candidates,
+            0,
+            "Manter ocorrência prevalece sobre candidatas do grupo"
+        );
+        decide_occurrence(&cfg, "o2", "remove_candidate").unwrap();
         assert_eq!(groups[0].decision.as_deref(), Some("keep_all"));
         assert_eq!(groups[0].occurrence_count, 2);
         assert!(groups[0].occurrences.is_empty());

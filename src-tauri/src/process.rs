@@ -408,13 +408,19 @@ mod tests {
     }
     #[test]
     fn queued_process_permit_observes_cancellation() {
-        let first = limiter()
+        // This unit test owns its queue; unrelated integration subprocesses
+        // must not consume its permits and turn a 1-second setup into a timeout.
+        static TEST_LIMITER: Limiter = Limiter {
+            active: Mutex::new(0),
+            available: Condvar::new(),
+        };
+        let first = TEST_LIMITER
             .acquire(
                 &CancellationToken::default(),
                 Instant::now() + Duration::from_secs(1),
             )
             .unwrap();
-        let second = limiter()
+        let second = TEST_LIMITER
             .acquire(
                 &CancellationToken::default(),
                 Instant::now() + Duration::from_secs(1),
@@ -423,7 +429,7 @@ mod tests {
         let token = CancellationToken::default();
         let waiting = token.clone();
         let worker = std::thread::spawn(move || {
-            limiter().acquire(&waiting, Instant::now() + Duration::from_secs(5))
+            TEST_LIMITER.acquire(&waiting, Instant::now() + Duration::from_secs(5))
         });
         std::thread::sleep(Duration::from_millis(25));
         token.cancel();

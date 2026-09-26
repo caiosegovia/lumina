@@ -108,6 +108,38 @@ Escopo, ordem e gates estão em `NFR-0.22.2-RESILIENCE.md`, `ARCHITECTURE-AUDIT-
 - Manutenção concluída deixa de ocupar Atividades; limitações permanecem explicáveis.
 - Preserva lista operacional, duplicatas progressivas, insights amostrais/sob demanda, lugares e bursts da baseline homologada.
 
+## Correção prioritária — visualizador reprovado em homologação (26/09/2026)
+
+Feedback do usuário durante os testes da entrega 0.25.1-beta.1: zoom continua ruim e não funciona em fotos e vídeos; a interface responde mal ao abrir fotos na galeria; barras desaparecem. O gate do visualizador da 0.25 permanece reprovado. Causa ainda não diagnosticada; barras específicas, resolução e escala do Windows ainda não identificadas.
+
+- Rever o layout e a resposta da interface ao abrir e trocar mídias, redimensionar o painel e entrar/sair da tela cheia.
+- Manter barras e controles visíveis e acessíveis durante essas transições.
+- Corrigir e validar zoom e arraste em fotos e vídeos, preservando os controles de reprodução de vídeo.
+- Homologar o executável no dispositivo de teste, em diferentes tamanhos de janela e escalas do Windows; aprovação de testes unitários não encerra este defeito.
+- Aceite: abertura e navegação responsivas, controles sem desaparecimento, zoom previsível e enquadramento recuperável, tanto em fotos quanto em vídeos.
+
+Registro de demanda para o próximo pacote corretivo; nenhuma implementação efetuada por este registro. Demais jornadas mantêm seus resultados de homologação independentes.
+
+## Melhoria solicitada — detalhes das falhas técnicas na Revisão (26/09/2026)
+
+- Ao clicar em “Falhas técnicas” na seção Revisão, abrir uma lista dos arquivos afetados vinculada ao contador exibido.
+- Permitir expandir cada item para consultar nome/caminho, etapa afetada (por exemplo, preview ou metadados), motivo da falha e última tentativa, quando essas informações estiverem disponíveis.
+- Apresentar explicação compreensível e orientação de próxima ação; distinguir falhas recuperáveis de limitações de formato e informar quando não houver detalhe registrado.
+- Aceite: o clique permite identificar quais arquivos falharam e por quê; a lista explica sua relação com o contador e oferece estado vazio quando não há falhas.
+
+Demanda registrada para implementação futura; comportamento ainda não implementado por este registro.
+
+## Candidata à homologação — 0.26: galeria, revisão e descoberta
+
+- Corrige o visualizador reprovado na 0.25, com testes reais de layout/transformação em foto e vídeo. A aprovação no dispositivo do usuário permanece pendente.
+- Implementa detalhamento paginado das falhas técnicas e preserva o histórico dos erros anteriores.
+- Descobrir com carregamento progressivo, cache curto por biblioteca, índice visual de prévias limitadas, transações curtas, progresso e cancelamento.
+- Nomes de lugares com proveniência e aproximação explícitas; preservação de nomes manuais e critérios geográficos de viagens.
+- Simulação de limpeza respeita decisões humanas e proteção verificada, sem exclusão automática.
+- Mantém setup, importação, proteção, datas, Explorer, temas e tipografia fora de alterações funcionais.
+
+Escopo fechado: [RELEASE-0.26-BETA.md](RELEASE-0.26-BETA.md). Arquitetura: [ARCHITECTURE-0.26.md](ARCHITECTURE-0.26.md). Homologação e evidências: [VALIDATION-0.26-BETA.md](VALIDATION-0.26-BETA.md).
+
 ## Depois — 1.0: prontidão de produção
 
 - Telemetria local longitudinal de SLOs, migração e recuperação validadas em múltiplos dispositivos.

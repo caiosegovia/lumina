@@ -14,8 +14,6 @@ import {
   List,
   LoaderCircle,
   MapPin,
-  Maximize2,
-  Minimize2,
   Rows3,
   Search,
   Star,
@@ -30,7 +28,7 @@ import {
 import { api } from "./api";
 import { captureDate, formatBytes, formatCaptureDate } from "./format";
 import { BoundedLru } from "./lru";
-import { actualSizeScale, clampTransform, fillScale, fittedSize, zoomAt, type ViewerTransform } from "./viewerTransform";
+import MediaViewer from "./MediaViewer";
 import type { Album, AssetDetails, GalleryFilters, GalleryResult, GallerySort, MediaAsset, SavedView } from "./types";
 const thumbs = new BoundedLru<string, string | null>(512),
   empty: GalleryFilters = { query: "" };
@@ -916,67 +914,24 @@ function Preview({
   const [description, setDescription] = useState(asset.description);
   const [saving, setSaving] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
-  const [transform, setTransform] = useState<ViewerTransform>({scale:1,x:0,y:0});
-  const [viewport,setViewport]=useState({width:0,height:0});
-  const [zoomMode,setZoomMode]=useState<"fit"|"actual"|"fill"|"free">("fit");
-  const [mediaUrl, setMediaUrl] = useState("");
-  const [highQualityUrl, setHighQualityUrl] = useState("");
-  const [qualityState, setQualityState] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [details, setDetails] = useState<AssetDetails>();
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [fileAction, setFileAction] = useState("");
-  const stageRef = useRef<HTMLDivElement>(null);
-  const [imageSize,setImageSize]=useState({width:0,height:0});
-  const drag = useRef<{ x: number; y: number; left: number; top: number }>();
-  const changeZoom=(next:number,anchor={x:0,y:0})=>{setZoomMode("free");setTransform(current=>zoomAt(current,next,anchor,viewport,imageSize))};
-  const fitImage=()=>{setZoomMode("fit");setTransform({scale:1,x:0,y:0})};
-  const actualSize=()=>{setZoomMode("actual");setTransform(current=>zoomAt(current,actualSizeScale(viewport,imageSize),{x:0,y:0},viewport,imageSize))};
-  const fillStage=()=>{setZoomMode("fill");setTransform(current=>zoomAt(current,fillScale(viewport,imageSize),{x:0,y:0},viewport,imageSize))};
-  const previewZoom=transform.scale,pan={x:transform.x,y:transform.y},fit=fittedSize(viewport,imageSize);
-
   useEffect(() => {
-    let live = true;
-    let previewTimer: number | undefined;
-    setDescription(asset.description);
-    setTransform({scale:1,x:0,y:0});
-    setZoomMode("fit");
-    setImageSize({width:0,height:0});
-    setMediaUrl("");
-    setHighQualityUrl("");
-    setDetails(undefined);
-    setDetailsLoading(true);
-    setFileAction("");
-    // Never point a photo element at the original media route. Very large
-    // images can expand to several GiB in WebView2 before the bounded preview
-    // replaces them. Videos keep the range-enabled original route.
-    if (asset.mediaType === "video") {
-      api.mediaUrl(asset.id).then((url)=>{if(live)setMediaUrl(url)}).catch(() => {if(live)setMediaUrl("")});
-    }
-    if (asset.mediaType === "photo" || asset.mediaType === "raw") {
-      setQualityState("loading");
-      const loadPreview=()=>api.photoPreview(asset.id).then((url)=>{if(!live)return;setHighQualityUrl(url);setQualityState("ready")}).catch((cause)=>{if(!live)return;const message=cause instanceof Error?cause.message:String(cause);if(message.includes("PREVIEW_BUSY")){previewTimer=window.setTimeout(loadPreview,300);return}setQualityState("error");void api.recordClientError("media_error",message)});
-      previewTimer=window.setTimeout(loadPreview,150);
-    } else setQualityState("idle");
-    api.assetDetails(asset.id).then((value)=>{if(live)setDetails(value)}).catch(() => {if(live)setDetails(undefined)}).finally(()=>{if(live)setDetailsLoading(false)});
-    return()=>{live=false;if(previewTimer!==undefined)window.clearTimeout(previewTimer)};
-  }, [asset.id, asset.description]);
-
-  useEffect(()=>{const stage=stageRef.current;if(!stage)return;const update=()=>{const rect=stage.getBoundingClientRect();setViewport({width:rect.width,height:rect.height})};update();if(typeof ResizeObserver==="undefined")return;const observer=new ResizeObserver(update);observer.observe(stage);return()=>observer.disconnect()},[fullscreen,asset.id]);
-  useEffect(()=>{if(!viewport.width||!imageSize.width)return;if(zoomMode==="fit")setTransform({scale:1,x:0,y:0});else if(zoomMode==="actual")setTransform(current=>zoomAt(current,actualSizeScale(viewport,imageSize),{x:0,y:0},viewport,imageSize));else if(zoomMode==="fill")setTransform(current=>zoomAt(current,fillScale(viewport,imageSize),{x:0,y:0},viewport,imageSize));else setTransform(current=>clampTransform(current,viewport,imageSize))},[viewport.width,viewport.height,imageSize.width,imageSize.height,zoomMode]);
-
-  useEffect(() => {
-    const keyboard = (event: KeyboardEvent) => {
-      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
-      if (event.key === "ArrowLeft") navigate(-1);
-      if (event.key === "ArrowRight") navigate(1);
-      if (event.key === "Escape" && fullscreen) setFullscreen(false);
-      if (["+","="].includes(event.key)) {event.preventDefault();setZoomMode("free");setTransform(current=>zoomAt(current,current.scale+.25,{x:0,y:0},viewport,imageSize))}
-      if (event.key === "-") {event.preventDefault();setZoomMode("free");setTransform(current=>zoomAt(current,current.scale-.25,{x:0,y:0},viewport,imageSize))}
-      if (event.key === "0") {event.preventDefault();fitImage()}
+    let live=true;
+    setDescription(asset.description);setDetails(undefined);setDetailsLoading(true);setFileAction("");
+    const timer=setTimeout(()=>{api.assetDetails(asset.id).then(value=>{if(live)setDetails(value)}).catch(()=>{}).finally(()=>{if(live)setDetailsLoading(false)})},180);
+    return()=>{live=false;clearTimeout(timer)};
+  },[asset.id]);
+  useEffect(()=>{
+    const keyboard=(event:KeyboardEvent)=>{
+      if((event.target as HTMLElement)?.closest("input,textarea,select,[contenteditable=true],[role=separator]"))return;
+      if(event.key==="ArrowLeft"){event.preventDefault();navigate(-1)}
+      if(event.key==="ArrowRight"){event.preventDefault();navigate(1)}
+      if(event.key==="Escape"){event.preventDefault();if(fullscreen)setFullscreen(false);else close()}
     };
-    window.addEventListener("keydown", keyboard);
-    return () => window.removeEventListener("keydown", keyboard);
-  }, [navigate, fullscreen, viewport, imageSize]);
+    window.addEventListener("keydown",keyboard);return()=>window.removeEventListener("keydown",keyboard);
+  },[navigate,fullscreen,close]);
 
   async function update(state: Partial<Pick<MediaAsset, "favorite" | "rating" | "reviewLater" | "description">>) {
     setSaving(true);
@@ -990,33 +945,8 @@ function Preview({
 
   return (
     <aside className={`drawer gallery-inspector ${fullscreen ? "fullscreen" : ""}`} aria-label="Detalhes da mídia">
-      <button
-        aria-label="Fechar detalhes"
-        className="icon-only close"
-        onClick={close}
-      >
-        <X />
-      </button>
-      <div ref={stageRef} className={`preview-stage photo-viewer ${previewZoom > 1 ? "pannable" : ""}`} onDoubleClick={()=>previewZoom===1?changeZoom(2):fitImage()} onWheel={(event)=>{event.preventDefault();const rect=event.currentTarget.getBoundingClientRect();changeZoom(previewZoom+(event.deltaY<0?.25:-.25),{x:event.clientX-(rect.left+rect.width/2),y:event.clientY-(rect.top+rect.height/2)})}} onPointerDown={(event)=>{if(previewZoom===1)return;event.currentTarget.setPointerCapture?.(event.pointerId);drag.current={x:event.clientX,y:event.clientY,left:pan.x,top:pan.y}}} onPointerMove={(event)=>{if(!drag.current)return;setZoomMode("free");setTransform(current=>clampTransform({...current,x:drag.current!.left+event.clientX-drag.current!.x,y:drag.current!.top+event.clientY-drag.current!.y},viewport,imageSize))}} onPointerUp={(event)=>{drag.current=undefined;if(event.currentTarget.hasPointerCapture?.(event.pointerId))event.currentTarget.releasePointerCapture?.(event.pointerId)}} onPointerCancel={()=>{drag.current=undefined}}>
-        {asset.mediaType === "video" && mediaUrl ? (
-          <ManagedVideo key={`${asset.id}-${mediaUrl}`} className="drawer-video" src={mediaUrl} />
-        ) : (asset.mediaType === "photo" || asset.mediaType === "raw") && (highQualityUrl || mediaUrl) ? (
-          <img key={`${asset.id}-${highQualityUrl ? "hq" : "fast"}`} className="drawer-photo" src={highQualityUrl || mediaUrl} alt={`Prévia de ${asset.filename}`} draggable={false} onLoad={event=>setImageSize({width:event.currentTarget.naturalWidth,height:event.currentTarget.naturalHeight})} style={{width:fit.width||undefined,height:fit.height||undefined,transform:`translate(${pan.x}px,${pan.y}px) scale(${previewZoom})`}} />
-        ) : (
-          <MediaThumb key={asset.id} asset={asset} className={`drawer-preview preview-zoom-${previewZoom}`} />
-        )}
-        <div className="preview-tools">
-          <button aria-label="Ajustar imagem à tela" className={zoomMode==="fit"?"active":""} disabled={zoomMode === "fit"} onClick={fitImage}>Ajustar</button>
-          <button aria-label="Mostrar tamanho real" onClick={actualSize}>100%</button>
-          <button aria-label="Preencher área" onClick={fillStage}>Preencher</button>
-          <button aria-label="Diminuir zoom" disabled={previewZoom === 1} onClick={() => changeZoom(previewZoom-.25)}><ZoomOut /></button>
-          <span className="zoom-level" aria-label="Nível de zoom">{Math.round(previewZoom*100)}%</span>
-          <button aria-label="Aumentar zoom" disabled={previewZoom === 12} onClick={() => changeZoom(previewZoom+.25)}><ZoomIn /></button>
-          <button aria-label={fullscreen ? "Sair da tela cheia" : "Abrir em tela cheia"} onClick={() => setFullscreen((value) => !value)}>{fullscreen ? <Minimize2 /> : <Maximize2 />}</button>
-        </div>
-        {qualityState === "loading" && <span className="preview-quality"><LoaderCircle className="spin"/> Preparando alta qualidade</span>}
-        {qualityState === "ready" && <span className="preview-quality ready">Prévia HD</span>}
-      </div>
+      <div className="inspector-heading"><strong title={asset.filename}>{asset.filename}</strong><button aria-label="Fechar detalhes" className="icon-only close" onClick={close}><X/></button></div>
+      <MediaViewer key={asset.id} asset={asset} fullscreen={fullscreen} toggleFullscreen={()=>setFullscreen(value=>!value)}/>
       <div className="preview-navigation">
         <button
           aria-label="Mídia anterior"
@@ -1034,6 +964,7 @@ function Preview({
           <ChevronRight />
         </button>
       </div>
+      <div className="inspector-details">
       <h2>{asset.filename}</h2>
       <p>{formatCaptureDate(asset.capturedAt)}</p>
       <div className="asset-pills" aria-label="Atributos da mídia">
@@ -1159,6 +1090,7 @@ function Preview({
       </p>
       <button className="copy-value" onClick={()=>navigator.clipboard.writeText(asset.hash)}><Copy/> Copiar SHA-256</button>
       </MetadataSection>
+      </div>
     </aside>
   );
 }

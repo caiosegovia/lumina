@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import type { FailurePage } from "./types";
 import type { Album, AppPreferences, AssetDetails, BackgroundWorkStatus, BatchResult, CleanupPlan, DashboardStats, DiscoveryIndexResult, DiscoveryOverview, LocationResolveResult, DuplicateGroup, DuplicateOccurrence, DuplicateStatus, GalleryFilters, GalleryResult, GallerySort, ImportEvent, ImportSummary, InsightReport, InsightRequest, JobEventPage, JobOverview, JobProgress, LibraryConfig, LibraryStartupStatus, LibraryHealth, MediaAsset, MigrationProgress, PersonInfo, ProtectionQueueStats, RecoverableJob, ReportExport, ReviewSummary, SavedView, SelectionResult, Source, StoragePlan, TagInfo, ThumbnailAudit, ThumbnailRepairProgress } from "./types";
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
@@ -32,6 +33,7 @@ async function call<T>(command: string, args?: Record<string, unknown>, fallback
 }
 
 export const api = {
+  technicalFailures:(offset=0)=>call<FailurePage>("get_technical_failures",{offset},()=>({total:1,items:offset?[]:[{assetId:"demo-1",filename:"IMG_2401.JPG",path:"D:\\Lumina\\IMG_2401.JPG",previewError:"Tempo limite excedido",previewUpdatedAt:new Date().toISOString()}]})),
   signalReady: async () => { if (isTauri()) await invoke("frontend_ready"); },
   heartbeat: async () => { if (isTauri()) await invoke("frontend_heartbeat"); },
   chooseFolder: async () => isTauri() ? await open({ directory: true, multiple: false }) as string | null : null,
@@ -68,6 +70,8 @@ export const api = {
   appPreferences:()=>call<AppPreferences>("get_app_preferences",undefined,()=>({resourceProfile:"balanced",curationRule:"balanced"})),
   updateAppPreferences:(preferences:AppPreferences)=>call<AppPreferences>("update_app_preferences",{preferences},()=>preferences),
   buildDiscoveryIndex:()=>call<DiscoveryIndexResult>("build_discovery_index",undefined,()=>({indexed:0,skipped:0,failed:0})),
+  discoveryWork:()=>call<{running:boolean;stage:string;completed:number;total:number;cancelled:boolean}>("get_discovery_work",undefined,()=>({running:false,stage:"",completed:0,total:0,cancelled:false})),
+  cancelDiscoveryWork:()=>call<void>("cancel_discovery_work",undefined,()=>{}),
   createAlbum:(name:string)=>call<Album>("create_album",{name},()=>{const album={id:crypto.randomUUID(),name,assetCount:0};demoAlbums=[...demoAlbums,album];return album}),
   renameAlbum:(id:string,name:string)=>call<BatchResult>("rename_album",{id,name},()=>{demoAlbums=demoAlbums.map(album=>album.id===id?{...album,name}:album);return{affected:1}}),
   deleteAlbum:(id:string)=>call<BatchResult>("delete_album",{id},()=>{demoAlbums=demoAlbums.filter(album=>album.id!==id);return{affected:1}}),
