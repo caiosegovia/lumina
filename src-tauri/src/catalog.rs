@@ -612,21 +612,21 @@ fn compact_telemetry(db: &Connection) -> Result<usize> {
     )
 }
 
-pub fn snapshot(source_path: &Path, destination: &Path) -> Result<()> {
+pub fn snapshot(source_path: &Path, destination: &Path) -> std::result::Result<(), String> {
     use rusqlite::backup::Backup;
     use std::time::Duration;
     if let Some(parent) = destination.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|_| rusqlite::Error::InvalidPath(parent.to_path_buf()))?;
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
     let temporary = destination.with_extension("sqlite.lumina-replacement");
-    let source = open(source_path)?;
-    let mut target = Connection::open(&temporary)?;
-    Backup::new(&source, &mut target)?.run_to_completion(128, Duration::from_millis(5), None)?;
+    let source = open(source_path).map_err(|error| error.to_string())?;
+    let mut target = Connection::open(&temporary).map_err(|error| error.to_string())?;
+    Backup::new(&source, &mut target)
+        .and_then(|backup| backup.run_to_completion(128, Duration::from_millis(5), None))
+        .map_err(|error| error.to_string())?;
     drop(target);
     drop(source);
     crate::storage::replace_file(&temporary, destination)
-        .map_err(|_| rusqlite::Error::InvalidPath(destination.to_path_buf()))
 }
 
 #[cfg(test)]

@@ -1,4 +1,4 @@
-# Roteiro de homologação — 0.27.0-beta.1
+# Roteiro de homologação — 0.27.0-beta.2
 
 Status: candidata. A aprovação automatizada local não substitui a homologação no catálogo de aproximadamente 9.300 arquivos.
 
@@ -60,9 +60,11 @@ Use por 45–60 minutos no acervo de homologação: navegação rápida, curador
 - `npm test`: 58 testes aprovados em 9 arquivos.
 - `npm run build`: TypeScript e Vite aprovados.
 - `cargo fmt --check` e `cargo clippy --all-targets -- -D warnings`: aprovados.
-- `cargo test --lib -- --test-threads=1`: 147 aprovados, 2 ignorados e nenhuma falha.
+- `cargo test --lib -- --test-threads=1`: 149 aprovados, 2 ignorados e nenhuma falha.
 - `scripts/verify-0.27.ps1 -SkipDebugResourceCopy`: aprovado com perfil isolado.
 - Smoke do viewer no Edge: aprovado em 1400×900/DPR 1, 1100×700/DPR 1,25 e 1000×700/DPR 1,5.
 - Smoke do executável extraído do MSI: setup, análise de foto/vídeo/duplicata, consolidação, réplica verificada, curadoria retomável, comparação, undo atômico, reprodução, zoom e encerramento limpo aprovados.
-- O smoke alterou somente dados sintéticos em `artifacts/0.27/desktop-1790614474303`; o arquivo-fonte permaneceu byte a byte inalterado.
-- Instaladores produzidos: `Lumina_0.27.0-1_x64-setup.exe` e `Lumina_0.27.0-1_x64_en-US.msi`.
+- O smoke final alterou somente dados sintéticos em `artifacts/0.27/desktop-1790617834212`; o arquivo-fonte permaneceu byte a byte inalterado.
+- A regressão de encerramento do lease do job passou 10 vezes consecutivas e também dentro da suíte completa.
+- O teste de bloqueio transitório do Windows manteve deliberadamente um preview aberto e comprovou a promoção posterior sem corromper ou perder o temporário.
+- Instaladores produzidos: `Lumina_0.27.0-2_x64-setup.exe` e `Lumina_0.27.0-2_x64_en-US.msi`.

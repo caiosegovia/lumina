@@ -252,7 +252,7 @@ try {
     join(root, "result.json"),
     JSON.stringify(
       {
-        version: "0.27.0-beta.1",
+        version: "0.27.0-beta.2",
         executable: exe,
         isolatedProfile: true,
         sourceFiles: 5,

@@ -1,6 +1,6 @@
 # Lumina
 
-Versão atual: **0.27.0-beta.1**. Consulte [entregas](RELEASE-0.27-BETA.md), [roteiro de testes](VALIDATION-0.27-BETA.md) e [revisão arquitetural](ARCHITECTURE-0.27.md). O histórico da baseline anterior permanece em [RELEASE-0.26-BETA.md](RELEASE-0.26-BETA.md) e [VALIDATION-0.26-BETA.md](VALIDATION-0.26-BETA.md).
+Versão atual: **0.27.0-beta.2**. Consulte [entregas](RELEASE-0.27-BETA.md), [roteiro de testes](VALIDATION-0.27-BETA.md) e [revisão arquitetural](ARCHITECTURE-0.27.md). O histórico da baseline anterior permanece em [RELEASE-0.26-BETA.md](RELEASE-0.26-BETA.md) e [VALIDATION-0.26-BETA.md](VALIDATION-0.26-BETA.md).
 
 Fontes vigentes: [escopo preservado](SCOPE-0.22.2.md), [contrato não funcional](NFR-0.22.2-RESILIENCE.md), [arquitetura-alvo](ARCHITECTURE-0.22.2.md), [auditoria arquitetural](ARCHITECTURE-AUDIT-0.22.2.md), [plano de remediação](REMEDIATION-0.22.2.md) e [matriz de rastreabilidade](TRACEABILITY-0.22.2.md).
 
