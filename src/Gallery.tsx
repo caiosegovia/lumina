@@ -13,9 +13,9 @@ import {
   Images,
   List,
   LoaderCircle,
+  MoreHorizontal,
   MapPin,
-  Maximize2,
-  Minimize2,
+  MapPinned,
   Rows3,
   Search,
   Star,
@@ -25,12 +25,14 @@ import {
   Video,
   ZoomIn,
   ZoomOut,
+  RotateCcw,
   X,
 } from "lucide-react";
 import { api } from "./api";
 import { captureDate, formatBytes, formatCaptureDate } from "./format";
 import { BoundedLru } from "./lru";
-import type { Album, AssetDetails, GalleryFilters, GalleryResult, GallerySort, MediaAsset, PersonInfo, SavedView } from "./types";
+import MediaViewer from "./MediaViewer";
+import type { Album, AssetDetails, GalleryFilters, GalleryResult, GallerySort, MediaAsset, SavedView, TagInfo } from "./types";
 const thumbs = new BoundedLru<string, string | null>(512),
   empty: GalleryFilters = { query: "" };
 type Mode = "grid" | "list";
@@ -74,11 +76,12 @@ export function openGalleryWithFilters(filters: Partial<GalleryFilters>) {
   session.compare = false;
 }
 export function openGalleryComparison(assetIds:string[]) {
-  session.filters = empty;
+  const ids=assetIds.slice(0,4);
+  session.filters = { ...empty, assetIds:ids };
   session.result = undefined;
   session.assets = [];
   session.scrollY = 0;
-  session.selected = assetIds.slice(0,2);
+  session.selected = ids;
   session.compare = session.selected.length >= 2 && session.selected.length <= 4;
 }
 export default function Gallery() {
@@ -96,12 +99,14 @@ export default function Gallery() {
     [sort, setSort0] = useState<GallerySort>(() => saved("lumina-sort", "captured_desc")),
     [listDensity, setListDensity0] = useState<ListDensity>(() => saved("lumina-list-density", "comfortable")),
     [selection, setSelection] = useState<Set<string>>(()=>new Set(session.selected)),
-    [action, setAction] = useState<"tag" | "album" | "person" | "date">(),
+    [action, setAction] = useState<"tag" | "album" | "date" | "location">(),
     [comparing, setComparing] = useState(()=>session.compare),
     [notice, setNotice] = useState(""),
     [undoAvailable, setUndoAvailable] = useState(false),
     [savedViews, setSavedViews] = useState<SavedView[]>([]),
     [selectedView, setSelectedView] = useState(""),
+    [viewDialog,setViewDialog]=useState<"save"|"rename">(),
+    [inspectorWidth,setInspectorWidth]=useState(()=>Number(localStorage.getItem("lumina-inspector-width"))||410),
     [refresh, setRefresh] = useState(0);
   const seq = useRef(0),
     lastSelected = useRef<string>(),
@@ -275,8 +280,31 @@ export default function Gallery() {
       setDraft(empty);
       setFilters(empty);
     };
+  const applyUserState=useCallback(async(patch:{favorite?:boolean;rating?:number;reviewLater?:boolean},label:string)=>{
+    const ids=[...selection];
+    if(!ids.length)return;
+    try{
+      const changed=await api.updateUserState({assetIds:ids,...patch});
+      setNotice(`${changed.affected} mídias · ${label}`);
+      setUndoAvailable(changed.affected>0);
+      setSelection(new Set());
+      setRefresh(value=>value+1);
+    }catch(cause){setNotice(String(cause))}
+  },[selection]);
+  useEffect(()=>{
+    const onKey=(event:KeyboardEvent)=>{
+      const target=event.target;
+      if((target instanceof Element&&target.closest("input,textarea,select,[contenteditable=true]"))||!selection.size)return;
+      if(event.key==="Escape"){setSelection(new Set());return}
+      if(event.key>="0"&&event.key<="5"){event.preventDefault();void applyUserState({rating:Number(event.key)},`avaliação ${event.key}`);return}
+      if(event.key.toLowerCase()==="f"){event.preventDefault();void applyUserState({favorite:!event.shiftKey},event.shiftKey?"removidas das favoritas":"favoritadas");return}
+      if(event.key.toLowerCase()==="r"){event.preventDefault();void applyUserState({reviewLater:!event.shiftKey},event.shiftKey?"revisão concluída":"revisar depois");}
+    };
+    addEventListener("keydown",onKey);
+    return()=>removeEventListener("keydown",onKey);
+  },[selection,applyUserState]);
   return (
-    <div className={`gallery-workspace ${preview ? "inspector-open" : ""}`}>
+    <div className={`gallery-workspace ${preview ? "inspector-open" : ""}`} style={{"--inspector-width":`${inspectorWidth}px`} as React.CSSProperties}>
       <section className="gallery-canvas" aria-label="Acervo de mídias">
       <div className="gallery-command-center">
       <div className="gallery-aggregate-bar" aria-label="Resumo e filtros rápidos">
@@ -286,6 +314,8 @@ export default function Gallery() {
         <button className={filters.mediaType === "video" ? "active" : ""} onClick={()=>setFilters(value=>({...value,mediaType:value.mediaType === "video" ? undefined : "video"}))}>Vídeos <b>{s?.videos || 0}</b></button>
         <button className={filters.mediaType === "raw" ? "active" : ""} onClick={()=>setFilters(value=>({...value,mediaType:value.mediaType === "raw" ? undefined : "raw"}))}>RAW <b>{s?.raw || 0}</b></button>
         <button className={filters.favorite ? "active accent" : ""} onClick={()=>setFilters(value=>({...value,favorite:value.favorite ? undefined : true}))}>Favoritas <b>{s?.favorites || 0}</b></button>
+        <button className={filters.hasLocation ? "active" : ""} onClick={()=>setFilters(value=>({...value,hasLocation:value.hasLocation ? undefined : true}))}>Com localização <b>{s?.withLocation || 0}</b></button>
+        <button className={filters.reviewLater ? "active warning" : ""} onClick={()=>setFilters(value=>({...value,reviewLater:value.reviewLater ? undefined : true}))}>Revisar depois</button>
         <button className={filters.protectionState === "source_only" ? "active warning" : ""} onClick={()=>setFilters(value=>({...value,protectionState:value.protectionState === "source_only" ? undefined : "source_only"}))}>Sem proteção <b>{s?.pendingProtection || 0}</b></button>
         <span className="aggregate-info">Em várias origens <b>{s?.duplicateAssets || 0}</b></span>
         <span className="aggregate-info">Metadados pendentes <b>{s?.incompleteMetadata || 0}</b></span>
@@ -327,18 +357,7 @@ export default function Gallery() {
             }
           />
         </div>
-        <ChoiceMenu icon={<CalendarDays/>} label="Agrupar" value={group} options={[{value:"day",label:"Por dia"},{value:"month",label:"Por mês"},{value:"year",label:"Por ano"}]} onChange={v=>saveGroup(v as Group)}/>
         <ChoiceMenu icon={<Rows3/>} label="Ordenar" value={sort} options={[{value:"captured_desc",label:"Mais recentes"},{value:"captured_asc",label:"Mais antigas"},{value:"name_asc",label:"Nome A–Z"},{value:"name_desc",label:"Nome Z–A"},{value:"size_desc",label:"Maiores arquivos"},{value:"size_asc",label:"Menores arquivos"}]} onChange={v=>saveSort(v as GallerySort)}/>
-        {mode === "grid" && (
-          <ChoiceMenu icon={<Rows3/>} label="Tamanho da grade" value={zoom} options={[{value:"compact",label:"Compacta"},{value:"normal",label:"Confortável"},{value:"large",label:"Ampla"}]} onChange={v=>saveZoom(v as Zoom)}/>
-        )}
-        {mode === "list" && (
-          <ChoiceMenu icon={<Rows3/>} label="Densidade da lista" value={listDensity} options={[{value:"comfortable",label:"Confortável"},{value:"compact",label:"Compacta"}]} onChange={v=>saveListDensity(v as ListDensity)}/>
-        )}
-        {savedViews.length > 0 && <select aria-label="Visões salvas" value={selectedView} onChange={e=>{setSelectedView(e.target.value);const view=savedViews.find(x=>x.id===e.target.value);if(view){setFilters(view.filters);setDraft(view.filters)}}}><option value="">Visões salvas</option>{savedViews.map(view=><option key={view.id} value={view.id}>{view.smartAlbum?"Álbum inteligente · ":""}{view.name}</option>)}</select>}
-        {selectedView&&<button aria-label="Excluir visão selecionada" onClick={async()=>{await api.deleteSavedView(selectedView);setSavedViews(current=>current.filter(view=>view.id!==selectedView));setSelectedView("");setNotice("Visão removida")}}><X/> Excluir visão</button>}
-        {selectedView&&<button aria-label="Renomear visão selecionada" onClick={async()=>{const current=savedViews.find(view=>view.id===selectedView);const name=prompt("Novo nome da visão",current?.name);if(name){await api.renameSavedView(selectedView,name);setSavedViews(views=>views.map(view=>view.id===selectedView?{...view,name}:view));setNotice("Visão renomeada")}}}>Renomear</button>}
-        <button aria-label="Salvar visão atual" onClick={async()=>{const name=prompt("Nome da visão ou álbum inteligente");if(!name)return;const smartAlbum=confirm("Salvar também como álbum inteligente?");const view=await api.saveView(name,filters,smartAlbum);setSavedViews(v=>[...v.filter(x=>x.id!==view.id&&x.name!==view.name),view]);setNotice("Visão salva")}}><Save/> Salvar visão</button>
         <div className="view-switch">
           <button
             aria-label="Visão em grade"
@@ -364,6 +383,17 @@ export default function Gallery() {
         >
           <Tags /> Filtros {active > 0 && <b>{active}</b>}
         </button>
+        <details className="command-overflow">
+          <summary aria-label="Mais opções da galeria"><MoreHorizontal/></summary>
+          <div>
+            <ChoiceMenu icon={<CalendarDays/>} label="Agrupar" value={group} options={[{value:"day",label:"Por dia"},{value:"month",label:"Por mês"},{value:"year",label:"Por ano"}]} onChange={v=>saveGroup(v as Group)}/>
+            {mode === "grid" ? <ChoiceMenu icon={<Rows3/>} label="Tamanho da grade" value={zoom} options={[{value:"compact",label:"Compacta"},{value:"normal",label:"Confortável"},{value:"large",label:"Ampla"}]} onChange={v=>saveZoom(v as Zoom)}/> : <ChoiceMenu icon={<Rows3/>} label="Densidade da lista" value={listDensity} options={[{value:"comfortable",label:"Confortável"},{value:"compact",label:"Compacta"}]} onChange={v=>saveListDensity(v as ListDensity)}/>}
+            {savedViews.length > 0 && <select aria-label="Visões salvas" value={selectedView} onChange={e=>{setSelectedView(e.target.value);const view=savedViews.find(x=>x.id===e.target.value);if(view){setFilters(view.filters);setDraft(view.filters)}}}><option value="">Visões salvas</option>{savedViews.map(view=><option key={view.id} value={view.id}>{view.smartAlbum?"Álbum inteligente · ":""}{view.name}</option>)}</select>}
+            <button onClick={()=>setViewDialog("save")}><Save/> Salvar visão atual</button>
+            {selectedView&&<button onClick={()=>setViewDialog("rename")}>Renomear visão</button>}
+            {selectedView&&<button className="subtle-danger" onClick={async()=>{await api.deleteSavedView(selectedView);setSavedViews(current=>current.filter(view=>view.id!==selectedView));setSelectedView("");setNotice("Visão removida")}}><X/> Excluir visão</button>}
+          </div>
+        </details>
       </div>
       </div>
       {filterOpen && (
@@ -387,15 +417,20 @@ export default function Gallery() {
       {selection.size > 0 && (
         <div className="bulk-bar">
           <strong>{selection.size} selecionadas</strong>
-          <button onClick={() => setSelection(new Set(assets.map(asset=>asset.id)))}>Selecionar carregadas ({assets.length})</button>
-          <button onClick={() => setAction("tag")}>Aplicar tag</button>
+          <button onClick={() => setAction("tag")}><Tags/> Tags</button>
           <button onClick={() => setAction("album")}>Adicionar ao álbum</button>
-          <button onClick={() => setAction("person")}>Identificar pessoa</button>
-          <button onClick={() => setAction("date")}>Corrigir data</button>
-          <button onClick={async()=>{const r=await api.updateUserState({assetIds:[...selection],favorite:true});setNotice(r.affected+" favoritas");setSelection(new Set());setRefresh(v=>v+1)}}><Star/> Favoritar</button>
-          <button onClick={async()=>{const r=await api.updateUserState({assetIds:[...selection],reviewLater:true});setNotice(r.affected+" marcadas para revisar");setSelection(new Set());setRefresh(v=>v+1)}}><Bookmark/> Revisar depois</button>
+          <button onClick={()=>void applyUserState({favorite:true},"favoritadas")}><Star/> Favoritar</button>
           {selection.size >= 2 && selection.size <= 4 && <button className="primary" onClick={() => setComparing(true)}>Comparar {selection.size}</button>}
-          <button onClick={() => {setSelection(new Set());lastSelected.current=undefined}}>Limpar</button>
+          <details className="command-overflow bulk-overflow"><summary aria-label="Mais ações"><MoreHorizontal/></summary><div>
+            <button onClick={() => setSelection(new Set(assets.map(asset=>asset.id)))}>Selecionar carregadas ({assets.length})</button>
+            <button onClick={() => setAction("date")}>Corrigir data</button>
+            <button onClick={() => setAction("location")}><MapPinned/> Nomear lugar</button>
+            <button onClick={()=>void applyUserState({favorite:false},"removidas das favoritas")}>Remover favorita</button>
+            <button onClick={()=>void applyUserState({reviewLater:true},"revisar depois")}><Bookmark/> Revisar depois</button>
+            <button onClick={()=>void applyUserState({reviewLater:false},"revisão concluída")}>Concluir revisão</button>
+            <ChoiceMenu icon={<Star/>} label="Avaliação" value="" options={[1,2,3,4,5].map(value=>({value:String(value),label:`${value} estrela${value>1?"s":""}`}))} onChange={value=>void applyUserState({rating:Number(value)},`avaliação ${value}`)}/>
+          </div></details>
+          <button className="icon-only" aria-label="Cancelar seleção" onClick={() => {setSelection(new Set());lastSelected.current=undefined}}><X/></button>
         </div>
       )}
       {error && (
@@ -476,6 +511,7 @@ export default function Gallery() {
         </p>
       )}
       </section>
+      {preview && <div className="inspector-resizer" role="separator" aria-label="Redimensionar painel de inspeção" aria-orientation="vertical" tabIndex={0} onKeyDown={event=>{if(!["ArrowLeft","ArrowRight"].includes(event.key))return;const next=Math.min(620,Math.max(340,inspectorWidth+(event.key==="ArrowLeft"?16:-16)));setInspectorWidth(next);localStorage.setItem("lumina-inspector-width",String(next))}} onPointerDown={event=>event.currentTarget.setPointerCapture(event.pointerId)} onPointerMove={event=>{if(!event.currentTarget.hasPointerCapture(event.pointerId))return;setInspectorWidth(Math.min(620,Math.max(340,window.innerWidth-event.clientX-20)))}} onPointerUp={event=>{event.currentTarget.releasePointerCapture(event.pointerId);localStorage.setItem("lumina-inspector-width",String(inspectorWidth))}} />}
       {preview && (
         <Preview
           asset={preview}
@@ -511,8 +547,9 @@ export default function Gallery() {
           }}
         />
       )}
-      {comparing && (
-        <Comparison assets={assets.filter(asset=>selection.has(asset.id)).slice(0,2)} close={()=>setComparing(false)}/>
+      {viewDialog&&<CollectionDialog mode={viewDialog} initialName={viewDialog==="rename"?savedViews.find(view=>view.id===selectedView)?.name||"":""} close={()=>setViewDialog(undefined)} submit={async(name,smart)=>{if(viewDialog==="rename"){await api.renameSavedView(selectedView,name);setSavedViews(views=>views.map(view=>view.id===selectedView?{...view,name}:view));setNotice("Visão renomeada")}else{const view=await api.saveView(name,filters,smart);setSavedViews(value=>[...value.filter(item=>item.id!==view.id&&item.name!==view.name),view]);setNotice(smart?"Álbum inteligente salvo":"Visão salva")}setViewDialog(undefined)}}/>}
+      {comparing && assets.filter(asset=>selection.has(asset.id)).length >= 2 && (
+        <Comparison assets={assets.filter(asset=>selection.has(asset.id)).slice(0,4)} close={()=>setComparing(false)} done={message=>{setNotice(message);setUndoAvailable(true);setRefresh(value=>value+1)}}/>
       )}
     </div>
   );
@@ -584,21 +621,29 @@ function Item({
     </div>
   );
 }
-function Comparison({assets,close}:{assets:MediaAsset[];close:()=>void}){
-  const [zoom,setZoom]=useState(1);
+function CollectionDialog({mode,initialName,close,submit}:{mode:"save"|"rename";initialName:string;close:()=>void;submit:(name:string,smart:boolean)=>Promise<void>}){
+  const[name,setName]=useState(initialName),[smart,setSmart]=useState(true),[busy,setBusy]=useState(false),[error,setError]=useState("");
+  return <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={mode==="save"?"Salvar visão":"Renomear visão"}><form className="modal compact" onSubmit={async event=>{event.preventDefault();if(!name.trim())return;setBusy(true);setError("");try{await submit(name.trim(),smart)}catch(cause){setError(String(cause));setBusy(false)}}}><button type="button" className="icon-only close" onClick={close}><X/></button><p className="eyebrow">COLEÇÃO DINÂMICA</p><h2>{mode==="save"?"Salvar consulta atual":"Renomear consulta"}</h2><p>Os filtros são reavaliados sempre que o acervo muda; nenhum arquivo é movido.</p><label>Nome<input autoFocus maxLength={100} value={name} onChange={event=>setName(event.target.value)}/></label>{mode==="save"&&<label className="check-line"><input type="checkbox" checked={smart} onChange={event=>setSmart(event.target.checked)}/> Exibir como álbum inteligente</label>}{error&&<p role="alert" className="error-text">{error}</p>}<div className="modal-actions"><button type="button" onClick={close}>Cancelar</button><button className="primary" disabled={busy||!name.trim()}>{busy?"Salvando…":"Salvar"}</button></div></form></div>
+}
+function Comparison({assets,close,done}:{assets:MediaAsset[];close:()=>void;done:(message:string)=>void}){
+  const [zoom,setZoom]=useState(1),[synced,setSynced]=useState(true),[pan,setPan]=useState<[number,number]>([50,50]),[perZoom,setPerZoom]=useState<Record<string,number>>({}),[details,setDetails]=useState<Record<string,AssetDetails>>({}),[winner,setWinner]=useState("");
+  useEffect(()=>{let live=true;Promise.all(assets.map(async asset=>[asset.id,await api.assetDetails(asset.id)] as const)).then(entries=>{if(live)setDetails(Object.fromEntries(entries))}).catch(()=>{});return()=>{live=false}},[assets.map(asset=>asset.id).join()]);
   useEffect(()=>{const key=(event:KeyboardEvent)=>{if(event.key==="Escape")close()};addEventListener("keydown",key);return()=>removeEventListener("keydown",key)},[close]);
+  const values=(asset:MediaAsset)=>({dimensions:asset.width&&asset.height?`${asset.width}×${asset.height}`:"",camera:details[asset.id]?.camera||asset.camera||"",lens:details[asset.id]?.lens||"",capture:`${details[asset.id]?.iso||""}/${details[asset.id]?.aperture||""}`,bytes:String(asset.bytes),date:asset.capturedAt,origins:String(asset.sourceNames.length)}),different=new Set(Object.keys(values(assets[0])).filter(key=>new Set(assets.map(asset=>values(asset)[key as keyof ReturnType<typeof values>])).size>1));
+  const choose=async(asset:MediaAsset)=>{try{await api.chooseComparisonWinner(asset.id,assets.map(item=>item.id));setWinner(asset.id);done(`${asset.filename} escolhida; alternativas ficaram em “Revisar depois”`)}catch(cause){done(String(cause))}};
   return <div className="comparison-backdrop" role="dialog" aria-modal="true" aria-label="Comparar mídias">
     <section className="comparison-shell">
-      <header><div><p className="eyebrow">COMPARAÇÃO</p><h2>Lado a lado</h2><p>A comparação é visual e não altera decisões de duplicidade.</p></div><div className="comparison-tools"><button disabled={zoom===1} onClick={()=>setZoom(value=>Math.max(1,value-1))}><ZoomOut/> Reduzir</button><button disabled={zoom===3} onClick={()=>setZoom(value=>Math.min(3,value+1))}><ZoomIn/> Ampliar</button><button className="icon-only" aria-label="Fechar comparação" onClick={close}><X/></button></div></header>
-      <div className="comparison-grid">{assets.map(asset=><ComparisonPane key={asset.id} asset={asset} zoom={zoom}/>)}</div>
+      <header><div><p className="eyebrow">COMPARAÇÃO · {assets.length} MÍDIAS</p><h2>Lado a lado</h2><p>Diferenças estão destacadas. A escolha é reversível e não remove nenhum arquivo.</p></div><div className="comparison-tools"><label className="sync-toggle"><input type="checkbox" checked={synced} onChange={event=>setSynced(event.target.checked)}/> Zoom sincronizado</label>{synced&&<><button disabled={zoom<=1} onClick={()=>setZoom(value=>Math.max(1,value-.25))}><ZoomOut/> Reduzir</button><button disabled={zoom>=4} onClick={()=>setZoom(value=>Math.min(4,value+.25))}><ZoomIn/> Ampliar</button></>}<button className="icon-only" aria-label="Fechar comparação" onClick={close}><X/></button></div></header>
+      {synced&&zoom>1&&<div className="comparison-framing"><label>Enquadramento horizontal <input aria-label="Enquadramento horizontal" type="range" min="0" max="100" value={pan[0]} onChange={event=>setPan([Number(event.target.value),pan[1]])}/></label><label>Vertical <input aria-label="Enquadramento vertical" type="range" min="0" max="100" value={pan[1]} onChange={event=>setPan([pan[0],Number(event.target.value)])}/></label><button onClick={()=>{setZoom(1);setPan([50,50])}}><RotateCcw/> Redefinir</button></div>}
+      <div className="comparison-grid">{assets.map(asset=><ComparisonPane key={asset.id} asset={asset} details={details[asset.id]} different={different} zoom={synced?zoom:perZoom[asset.id]||1} pan={synced?pan:[50,50]} synced={synced} winner={winner===asset.id} choose={()=>void choose(asset)} changeZoom={value=>setPerZoom(current=>({...current,[asset.id]:value}))}/>)}</div>
     </section>
   </div>
 }
-function ComparisonPane({asset,zoom}:{asset:MediaAsset;zoom:number}){
+function ComparisonPane({asset,details,different,zoom,pan,synced,winner,choose,changeZoom}:{asset:MediaAsset;details?:AssetDetails;different:Set<string>;zoom:number;pan:[number,number];synced:boolean;winner:boolean;choose:()=>void;changeZoom:(value:number)=>void}){
   const [url,setUrl]=useState("");
-  const [details,setDetails]=useState<AssetDetails>();
-  useEffect(()=>{let live=true;const media=asset.mediaType==="video"?api.mediaUrl(asset.id):api.photoPreview(asset.id);media.then(value=>live&&setUrl(value)).catch(()=>live&&setUrl(""));api.assetDetails(asset.id).then(value=>live&&setDetails(value)).catch(()=>live&&setDetails(undefined));return()=>{live=false}},[asset.id,asset.mediaType]);
-  return <article className="comparison-pane"><div className="comparison-media">{url?(asset.mediaType==="video"?<ManagedVideo key={url} src={url} className="comparison-video"/>:<img src={url} alt={`Comparação de ${asset.filename}`} style={{transform:`scale(${zoom})`}}/>):<MediaThumb asset={asset}/>}</div><h3>{asset.filename}</h3><p>{formatCaptureDate(asset.capturedAt)}</p><div className="asset-pills"><span>{asset.extension.toUpperCase()}</span><span>{formatBytes(asset.bytes)}</span><span className={asset.protectionState==="replica_verified"?"success":"warning"}>{asset.protectionState==="replica_verified"?"Protegida":"Proteção pendente"}</span></div><dl><div><dt>Dimensões</dt><dd>{asset.width&&asset.height?`${asset.width} × ${asset.height}`:"Não disponível"}</dd></div><div><dt>Câmera</dt><dd>{details?.camera||asset.camera||"Não informada"}</dd></div><div><dt>Lente</dt><dd>{details?.lens||"Não informada"}</dd></div><div><dt>Captura</dt><dd>{details?.iso?`ISO ${details.iso}`:"ISO —"} · {details?.aperture?`f/${details.aperture}`:"f/—"}</dd></div><div><dt>Origens</dt><dd>{asset.sourceNames.length}</dd></div><div><dt>SHA-256</dt><dd><code>{asset.hash.slice(0,16)}…</code></dd></div></dl></article>
+  useEffect(()=>{let live=true;const media=asset.mediaType==="video"?api.mediaUrl(asset.id):api.photoPreview(asset.id);media.then(value=>live&&setUrl(value)).catch(()=>live&&setUrl(""));return()=>{live=false}},[asset.id,asset.mediaType]);
+  const row=(key:string,label:string,value:React.ReactNode)=><div className={different.has(key)?"comparison-difference":""}><dt>{label}{different.has(key)&&<span>difere</span>}</dt><dd>{value}</dd></div>;
+  return <article className={`comparison-pane ${winner?"winner":""}`}><div className="comparison-media"><div style={{transform:`scale(${zoom})`,transformOrigin:`${pan[0]}% ${pan[1]}%`}}>{url?(asset.mediaType==="video"?<ManagedVideo key={url} src={url} className="comparison-video"/>:<img src={url} alt={`Comparação de ${asset.filename}`}/>):<MediaThumb asset={asset}/>}</div></div>{!synced&&<div className="pane-zoom"><button aria-label={`Reduzir ${asset.filename}`} disabled={zoom<=1} onClick={()=>changeZoom(Math.max(1,zoom-.25))}><ZoomOut/></button><span>{Math.round(zoom*100)}%</span><button aria-label={`Ampliar ${asset.filename}`} disabled={zoom>=4} onClick={()=>changeZoom(Math.min(4,zoom+.25))}><ZoomIn/></button></div>}<h3>{asset.filename}</h3><p>{formatCaptureDate(asset.capturedAt)}</p><div className="asset-pills"><span>{asset.extension.toUpperCase()}</span><span className={different.has("bytes")?"different":""}>{formatBytes(asset.bytes)}</span><span className={asset.protectionState==="replica_verified"?"success":"warning"}>{asset.protectionState==="replica_verified"?"Protegida":"Proteção pendente"}</span></div><dl>{row("dimensions","Dimensões",asset.width&&asset.height?`${asset.width} × ${asset.height}`:"Não disponível")}{row("camera","Câmera",details?.camera||asset.camera||"Não informada")}{row("lens","Lente",details?.lens||"Não informada")}{row("capture","Captura",<>{details?.iso?`ISO ${details.iso}`:"ISO —"} · {details?.aperture?`f/${details.aperture}`:"f/—"}</>)}{row("origins","Origens",asset.sourceNames.length)}<div><dt>SHA-256</dt><dd><code>{asset.hash.slice(0,16)}…</code></dd></div></dl><button className="primary comparison-winner" disabled={winner} onClick={choose}>{winner?<><Check/> Escolhida</>:"Escolher esta"}</button></article>
 }
 
 function ManagedVideo({ src, className }: { src: string; className?: string }) {
@@ -620,30 +665,38 @@ function Bulk({
   close,
   done,
 }: {
-  action: "tag" | "album" | "person" | "date";
+  action: "tag" | "album" | "date" | "location";
   assets: MediaAsset[];
   close: () => void;
   done: (x: string) => void;
 }) {
   const [value, setValue] = useState(""),
     [albums, setAlbums] = useState<Album[]>([]),
-    [people, setPeople] = useState<PersonInfo[]>([]),
+    [tags, setTags] = useState<TagInfo[]>([]),
+    [selectedTags, setSelectedTags] = useState<string[]>([]),
     [error, setError] = useState("");
   useEffect(() => {
     if (action === "album") api.albums().then(setAlbums);
-    if (action === "person") api.people().then(setPeople);
+    if (action === "tag") api.tags().then(setTags);
   }, [action]);
   const submit = async () => {
     try {
-      const ids = assets.map((a) => a.id),
+      const ids = assets.map((a) => a.id);
+      if(action === "tag"){
+        const names=[...selectedTags];
+        const candidate=value.trim();
+        if(candidate&&!names.some(name=>name.toLocaleLowerCase("pt-BR")===candidate.toLocaleLowerCase("pt-BR")))names.push(candidate);
+        await Promise.all(names.map(name=>api.applyTag(name,ids)));
+        done(`${ids.length} mídias atualizadas · ${names.length} tag${names.length===1?"":"s"} aplicada${names.length===1?"":"s"}`);
+        return;
+      }
+      const
         r =
-          action === "tag"
-            ? await api.applyTag(value, ids)
-            : action === "album"
+          action === "album"
               ? await api.addToAlbum(value, ids)
-              : action === "person"
-                ? await api.assignPerson(value, ids)
-              : await api.updateCaptureDate(ids, new Date(value).toISOString());
+              : action === "location"
+                ? await api.renameAssetsLocation(ids,value)
+                : await api.updateCaptureDate(ids, new Date(value).toISOString());
       done(`${r.affected} mídias atualizadas`);
     } catch (e) {
       setError(String(e));
@@ -660,22 +713,35 @@ function Bulk({
             ? "Aplicar tag"
             : action === "album"
               ? "Adicionar ao álbum"
-              : action === "person"
-                ? "Identificar pessoa"
-              : "Corrigir data de captura"}
+              : action === "location"
+                ? "Nomear lugar nas selecionadas"
+                : "Corrigir data de captura"}
         </h2>
         <p>
           Aplicar a {assets.length} mídias apenas no catálogo; os originais não
           serão alterados.
         </p>
-        {action === "album" || action === "person" ? (
+        {action === "tag" ? (
+          <div className="tag-picker">
+            <label htmlFor="tag-search">Buscar ou criar tag</label>
+            <input id="tag-search" aria-label="Buscar ou criar tag" autoFocus value={value} onChange={event=>setValue(event.target.value)} placeholder="Ex.: Família, Drone, Trabalho"/>
+            <div className="tag-suggestions" aria-label="Tags existentes">
+              {tags.filter(tag=>!value.trim()||tag.name.toLocaleLowerCase("pt-BR").includes(value.trim().toLocaleLowerCase("pt-BR"))).slice(0,12).map(tag=>{
+                const selected=selectedTags.includes(tag.name);
+                return <button type="button" className={selected?"selected":""} aria-pressed={selected} key={tag.id} onClick={()=>setSelectedTags(current=>selected?current.filter(name=>name!==tag.name):[...current,tag.name])}>{selected&&<Check/>}{tag.name}<small>{tag.assetCount}</small></button>
+              })}
+            </div>
+            {value.trim()&&!tags.some(tag=>tag.name.toLocaleLowerCase("pt-BR")===value.trim().toLocaleLowerCase("pt-BR"))&&<button type="button" className="tag-create" onClick={()=>{setSelectedTags(current=>[...current,value.trim()]);setValue("")}}>+ Criar “{value.trim()}”</button>}
+            {!!selectedTags.length&&<div className="tag-selection"><span>Selecionadas</span>{selectedTags.map(name=><button type="button" key={name} onClick={()=>setSelectedTags(current=>current.filter(tag=>tag!==name))}>{name}<X/></button>)}</div>}
+          </div>
+        ) : action === "album" ? (
           <select
-            aria-label={action === "album" ? "Álbum" : "Pessoa"}
+            aria-label="Álbum"
             value={value}
             onChange={(e) => setValue(e.target.value)}
           >
-            <option value="">{action === "album" ? "Escolha um álbum" : "Escolha uma pessoa"}</option>
-            {(action === "album" ? albums : people).map((a) => (
+            <option value="">Escolha um álbum</option>
+            {albums.map((a) => (
               <option key={a.id} value={a.id}>
                 {a.name}
               </option>
@@ -683,7 +749,7 @@ function Bulk({
           </select>
         ) : (
           <input
-            aria-label={action === "tag" ? "Nome da tag" : "Nova data"}
+            aria-label={action === "location" ? "Nome do lugar" : "Nova data"}
             type={action === "date" ? "datetime-local" : "text"}
             value={value}
             onChange={(e) => setValue(e.target.value)}
@@ -692,8 +758,8 @@ function Bulk({
         {error && <p className="error">{error}</p>}
         <div className="modal-actions">
           <button onClick={close}>Cancelar</button>
-          <button className="primary" disabled={!value} onClick={submit}>
-            Aplicar
+          <button className="primary" disabled={action==="tag"?!selectedTags.length&&!value.trim():!value} onClick={submit}>
+            {action==="tag"?`Aplicar a ${assets.length} arquivo${assets.length===1?"":"s"}`:"Aplicar"}
           </button>
         </div>
       </div>
@@ -918,61 +984,24 @@ function Preview({
   const [description, setDescription] = useState(asset.description);
   const [saving, setSaving] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
-  const [previewZoom, setPreviewZoom] = useState(1);
-  const [mediaUrl, setMediaUrl] = useState("");
-  const [highQualityUrl, setHighQualityUrl] = useState("");
-  const [qualityState, setQualityState] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [details, setDetails] = useState<AssetDetails>();
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [fileAction, setFileAction] = useState("");
-  const [pan, setPan] = useState({ x: 0, y: 0 });
-  const stageRef = useRef<HTMLDivElement>(null);
-  const imageSize = useRef({width:0,height:0});
-  const drag = useRef<{ x: number; y: number; left: number; top: number }>();
-  const clampPan=(next:{x:number;y:number},scale=previewZoom)=>{const stage=stageRef.current,natural=imageSize.current;if(!stage||!natural.width||!natural.height||scale<=1)return{x:0,y:0};const rect=stage.getBoundingClientRect(),fit=Math.min(rect.width/natural.width,rect.height/natural.height),maxX=Math.max(0,(natural.width*fit*scale-rect.width)/2),maxY=Math.max(0,(natural.height*fit*scale-rect.height)/2);return{x:Math.max(-maxX,Math.min(maxX,next.x)),y:Math.max(-maxY,Math.min(maxY,next.y))}};
-  const changeZoom=(next:number,anchor?:{x:number;y:number})=>{const bounded=Math.min(8,Math.max(1,Math.round(next*4)/4)),nextPan=anchor?{x:anchor.x-(anchor.x-pan.x)*(bounded/previewZoom),y:anchor.y-(anchor.y-pan.y)*(bounded/previewZoom)}:pan;setPreviewZoom(bounded);setPan(clampPan(nextPan,bounded))};
-  const actualSize=()=>{const stage=stageRef.current,natural=imageSize.current;if(!stage||!natural.width)return;const rect=stage.getBoundingClientRect(),fit=Math.min(rect.width/natural.width,rect.height/natural.height);changeZoom(Math.max(1,1/fit))};
-  const fillStage=()=>{const stage=stageRef.current,natural=imageSize.current;if(!stage||!natural.width)return;const rect=stage.getBoundingClientRect(),fit=Math.min(rect.width/natural.width,rect.height/natural.height),fill=Math.max(rect.width/natural.width,rect.height/natural.height);changeZoom(Math.max(1,fill/fit))};
-
   useEffect(() => {
-    let live = true;
-    let previewTimer: number | undefined;
-    setDescription(asset.description);
-    setPreviewZoom(1);
-    setPan({ x: 0, y: 0 });
-    setMediaUrl("");
-    setHighQualityUrl("");
-    setDetails(undefined);
-    setDetailsLoading(true);
-    setFileAction("");
-    // Never point a photo element at the original media route. Very large
-    // images can expand to several GiB in WebView2 before the bounded preview
-    // replaces them. Videos keep the range-enabled original route.
-    if (asset.mediaType === "video") {
-      api.mediaUrl(asset.id).then((url)=>{if(live)setMediaUrl(url)}).catch(() => {if(live)setMediaUrl("")});
-    }
-    if (asset.mediaType === "photo" || asset.mediaType === "raw") {
-      setQualityState("loading");
-      const loadPreview=()=>api.photoPreview(asset.id).then((url)=>{if(!live)return;setHighQualityUrl(url);setQualityState("ready")}).catch((cause)=>{if(!live)return;const message=cause instanceof Error?cause.message:String(cause);if(message.includes("PREVIEW_BUSY")){previewTimer=window.setTimeout(loadPreview,300);return}setQualityState("error");void api.recordClientError("media_error",message)});
-      previewTimer=window.setTimeout(loadPreview,150);
-    } else setQualityState("idle");
-    api.assetDetails(asset.id).then((value)=>{if(live)setDetails(value)}).catch(() => {if(live)setDetails(undefined)}).finally(()=>{if(live)setDetailsLoading(false)});
-    return()=>{live=false;if(previewTimer!==undefined)window.clearTimeout(previewTimer)};
-  }, [asset.id, asset.description]);
-
-  useEffect(() => {
-    const keyboard = (event: KeyboardEvent) => {
-      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
-      if (event.key === "ArrowLeft") navigate(-1);
-      if (event.key === "ArrowRight") navigate(1);
-      if (event.key === "Escape" && fullscreen) setFullscreen(false);
-      if (["+","="].includes(event.key)) {event.preventDefault();setPreviewZoom(value=>Math.min(4,Math.round((value+.25)*4)/4))}
-      if (event.key === "-") {event.preventDefault();setPreviewZoom(value=>{const next=Math.max(1,Math.round((value-.25)*4)/4);if(next===1)setPan({x:0,y:0});return next})}
-      if (event.key === "0") {event.preventDefault();changeZoom(1)}
+    let live=true;
+    setDescription(asset.description);setDetails(undefined);setDetailsLoading(true);setFileAction("");
+    const timer=setTimeout(()=>{api.assetDetails(asset.id).then(value=>{if(live)setDetails(value)}).catch(()=>{}).finally(()=>{if(live)setDetailsLoading(false)})},180);
+    return()=>{live=false;clearTimeout(timer)};
+  },[asset.id]);
+  useEffect(()=>{
+    const keyboard=(event:KeyboardEvent)=>{
+      if((event.target as HTMLElement)?.closest("input,textarea,select,[contenteditable=true],[role=separator]"))return;
+      if(event.key==="ArrowLeft"){event.preventDefault();navigate(-1)}
+      if(event.key==="ArrowRight"){event.preventDefault();navigate(1)}
+      if(event.key==="Escape"){event.preventDefault();if(fullscreen)setFullscreen(false);else close()}
     };
-    window.addEventListener("keydown", keyboard);
-    return () => window.removeEventListener("keydown", keyboard);
-  }, [navigate, fullscreen]);
+    window.addEventListener("keydown",keyboard);return()=>window.removeEventListener("keydown",keyboard);
+  },[navigate,fullscreen,close]);
 
   async function update(state: Partial<Pick<MediaAsset, "favorite" | "rating" | "reviewLater" | "description">>) {
     setSaving(true);
@@ -986,33 +1015,8 @@ function Preview({
 
   return (
     <aside className={`drawer gallery-inspector ${fullscreen ? "fullscreen" : ""}`} aria-label="Detalhes da mídia">
-      <button
-        aria-label="Fechar detalhes"
-        className="icon-only close"
-        onClick={close}
-      >
-        <X />
-      </button>
-      <div ref={stageRef} className={`preview-stage ${previewZoom > 1 ? "pannable" : ""}`} onDoubleClick={()=>changeZoom(previewZoom===1?2:1)} onWheel={(event)=>{event.preventDefault();const rect=event.currentTarget.getBoundingClientRect();changeZoom(previewZoom+(event.deltaY<0?.25:-.25),{x:event.clientX-(rect.left+rect.width/2),y:event.clientY-(rect.top+rect.height/2)})}} onPointerDown={(event)=>{if(previewZoom===1)return;event.currentTarget.setPointerCapture?.(event.pointerId);drag.current={x:event.clientX,y:event.clientY,left:pan.x,top:pan.y}}} onPointerMove={(event)=>{if(!drag.current)return;setPan(clampPan({x:drag.current.left+event.clientX-drag.current.x,y:drag.current.top+event.clientY-drag.current.y}))}} onPointerUp={(event)=>{drag.current=undefined;if(event.currentTarget.hasPointerCapture?.(event.pointerId))event.currentTarget.releasePointerCapture?.(event.pointerId)}} onPointerCancel={()=>{drag.current=undefined}}>
-        {asset.mediaType === "video" && mediaUrl ? (
-          <ManagedVideo key={`${asset.id}-${mediaUrl}`} className="drawer-video" src={mediaUrl} />
-        ) : (asset.mediaType === "photo" || asset.mediaType === "raw") && (highQualityUrl || mediaUrl) ? (
-          <img key={`${asset.id}-${highQualityUrl ? "hq" : "fast"}`} className="drawer-photo" src={highQualityUrl || mediaUrl} alt={`Prévia de ${asset.filename}`} draggable={false} onLoad={event=>{imageSize.current={width:event.currentTarget.naturalWidth,height:event.currentTarget.naturalHeight};setPan(value=>clampPan(value))}} style={{transform:`translate(${pan.x}px,${pan.y}px) scale(${previewZoom})`}} />
-        ) : (
-          <MediaThumb key={asset.id} asset={asset} className={`drawer-preview preview-zoom-${previewZoom}`} />
-        )}
-        <div className="preview-tools">
-          <button aria-label="Ajustar imagem à tela" disabled={previewZoom === 1} onClick={() => changeZoom(1)}>Ajustar</button>
-          <button aria-label="Mostrar tamanho real" onClick={actualSize}>100%</button>
-          <button aria-label="Preencher área" onClick={fillStage}>Preencher</button>
-          <button aria-label="Diminuir zoom" disabled={previewZoom === 1} onClick={() => changeZoom(previewZoom-.25)}><ZoomOut /></button>
-          <span className="zoom-level" aria-label="Nível de zoom">{Math.round(previewZoom*100)}%</span>
-          <button aria-label="Aumentar zoom" disabled={previewZoom === 8} onClick={() => changeZoom(previewZoom+.25)}><ZoomIn /></button>
-          <button aria-label={fullscreen ? "Sair da tela cheia" : "Abrir em tela cheia"} onClick={() => setFullscreen((value) => !value)}>{fullscreen ? <Minimize2 /> : <Maximize2 />}</button>
-        </div>
-        {qualityState === "loading" && <span className="preview-quality"><LoaderCircle className="spin"/> Preparando alta qualidade</span>}
-        {qualityState === "ready" && <span className="preview-quality ready">Prévia HD</span>}
-      </div>
+      <div className="inspector-heading"><strong title={asset.filename}>{asset.filename}</strong><button aria-label="Fechar detalhes" className="icon-only close" onClick={close}><X/></button></div>
+      <MediaViewer key={asset.id} asset={asset} fullscreen={fullscreen} toggleFullscreen={()=>setFullscreen(value=>!value)}/>
       <div className="preview-navigation">
         <button
           aria-label="Mídia anterior"
@@ -1030,6 +1034,7 @@ function Preview({
           <ChevronRight />
         </button>
       </div>
+      <div className="inspector-details">
       <h2>{asset.filename}</h2>
       <p>{formatCaptureDate(asset.capturedAt)}</p>
       <div className="asset-pills" aria-label="Atributos da mídia">
@@ -1155,6 +1160,7 @@ function Preview({
       </p>
       <button className="copy-value" onClick={()=>navigator.clipboard.writeText(asset.hash)}><Copy/> Copiar SHA-256</button>
       </MetadataSection>
+      </div>
     </aside>
   );
 }

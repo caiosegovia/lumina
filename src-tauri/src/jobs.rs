@@ -324,17 +324,10 @@ impl JobManager {
         self.reserve_inner(Some(cfg), job)
     }
     fn release(&self, job: &str) {
-        crate::diagnostics::append(
-            "job_released",
-            &format!("job={}", &job[..job.len().min(12)]),
-        );
-        {
-            let mut active = self.inner.active.lock().unwrap();
-            if active.as_deref() == Some(job) {
-                *active = None
-            }
-        }
-        self.inner.active_changed.notify_all();
+        // Keep the worker visible as active until every durable lease/catalog
+        // handle owned by its release path has been closed. Publishing idle
+        // first creates a real race on Windows: shutdown/tests can act on the
+        // catalog while this function still holds it open.
         self.inner.tokens.lock().unwrap().remove(job);
         let cfg = self.inner.library.lock().ok().and_then(|cfg| cfg.clone());
         if let Some(cfg) = cfg.as_ref() {
@@ -360,6 +353,17 @@ impl JobManager {
                 ).ok()
             })
         });
+        {
+            let mut active = self.inner.active.lock().unwrap();
+            if active.as_deref() == Some(job) {
+                *active = None
+            }
+        }
+        self.inner.active_changed.notify_all();
+        crate::diagnostics::append(
+            "job_released",
+            &format!("job={}", &job[..job.len().min(12)]),
+        );
         if let Some(next) = next {
             let job = next.job.clone();
             let result = if next.stage == "discovery" {
@@ -375,6 +379,11 @@ impl JobManager {
                 self.spawn_source_sync(next.cfg.clone(), job.clone())
             } else if next.stage == "technical_enrichment" {
                 self.spawn_format_enrichment(next.cfg.clone(), job.clone())
+            } else if matches!(
+                next.stage.as_str(),
+                "ready" | "batch_pending" | "copying" | "completed"
+            ) {
+                self.start_consolidation(next.cfg.clone(), job.clone())
             } else if matches!(
                 next.stage.as_str(),
                 "protection_pending" | "backup" | "backup_space_check" | "backup_error"
@@ -562,6 +571,29 @@ impl JobManager {
         Ok(())
     }
     pub fn start_consolidation(&self, cfg: LibraryConfig, job: String) -> Result<(), String> {
+        *self
+            .inner
+            .library
+            .lock()
+            .map_err(|_| "Biblioteca indisponível")? = Some(cfg.clone());
+        if self.has_active() {
+            let conn = catalog::open(&Path::new(&cfg.master_path).join(".lumina/catalog.sqlite"))
+                .map_err(|error| error.to_string())?;
+            let state = conn
+                .query_row("SELECT state FROM jobs WHERE id=?1", [&job], |row| {
+                    row.get::<_, String>(0)
+                })
+                .map_err(|error| error.to_string())?;
+            if state == "consolidating" {
+                return Ok(());
+            }
+            conn.execute("UPDATE jobs SET state='queued',interruption_reason='Consolidação aguardando o trabalho atual',updated_at=?2 WHERE id=?1",params![job,Utc::now().to_rfc3339()]).map_err(|error|error.to_string())?;
+            crate::diagnostics::append(
+                "consolidation_queued",
+                &format!("job={}", &job[..job.len().min(12)]),
+            );
+            return Ok(());
+        }
         self.reserve_durable(&cfg, &job)?;
         let cancel = self.token(&job)?;
         let manager = self.clone();
@@ -987,6 +1019,66 @@ mod tests {
             !manager.has_active(),
             "worker não liberou o lease apó concluir"
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn consolidation_requested_while_a_worker_releases_is_durably_dispatched() {
+        let root =
+            std::env::temp_dir().join(format!("lumina-consolidation-dispatch-{}", Uuid::new_v4()));
+        let master = root.join("master");
+        let backup = root.join("backup");
+        fs::create_dir_all(&master).unwrap();
+        fs::create_dir_all(&backup).unwrap();
+        let cfg = LibraryConfig {
+            id: "l".into(),
+            name: "Teste".into(),
+            master_path: master.to_string_lossy().into(),
+            backup_path: backup.to_string_lossy().into(),
+            created_at: Utc::now().to_rfc3339(),
+        };
+        let conn = catalog::open(&master.join(".lumina/catalog.sqlite")).unwrap();
+        conn.execute(
+            "INSERT INTO sources(id,name,path,volume_label)VALUES('s','Fonte','source','v')",
+            [],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO jobs(id,source_id,source_path,state,stage,created_at,updated_at)VALUES('consolidate','s','source','ready','ready',?1,?1)",[Utc::now().to_rfc3339()]).unwrap();
+        drop(conn);
+        let manager = JobManager::new();
+        manager.reserve("busy").unwrap();
+        manager
+            .start_consolidation(cfg.clone(), "consolidate".into())
+            .unwrap();
+        let conn = catalog::open(&master.join(".lumina/catalog.sqlite")).unwrap();
+        assert_eq!(
+            conn.query_row("SELECT state FROM jobs WHERE id='consolidate'", [], |row| {
+                row.get::<_, String>(0)
+            })
+            .unwrap(),
+            "queued"
+        );
+        drop(conn);
+        manager.release("busy");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let conn = catalog::open(&master.join(".lumina/catalog.sqlite")).unwrap();
+            let state = conn
+                .query_row("SELECT state FROM jobs WHERE id='consolidate'", [], |row| {
+                    row.get::<_, String>(0)
+                })
+                .unwrap();
+            drop(conn);
+            if state == "protection_pending" && !manager.has_active() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "consolidação permaneceu em {state}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        drop(manager);
         fs::remove_dir_all(root).unwrap();
     }
 

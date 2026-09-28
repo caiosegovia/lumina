@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="500" viewBox="0 0 1180 500" role="img" aria-labelledby="title desc">
+  <title id="title">Arquitetura da curadoria Lumina 0.27</title>
+  <desc id="desc">Fluxo entre filtros, sessão persistida, página de curadoria, ações reversíveis e catálogo.</desc>
+  <defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#4f7968"/></marker><style>.box{fill:#f5f7f4;stroke:#789486;stroke-width:2}.strong{fill:#e3f0ea;stroke:#2f6d57;stroke-width:2}.title{font:700 18px sans-serif;fill:#173d32}.text{font:14px sans-serif;fill:#3e5149}.line{stroke:#4f7968;stroke-width:2;marker-end:url(#arrow)}</style></defs>
+  <rect width="1180" height="500" rx="24" fill="#fbfaf6"/>
+  <text x="50" y="55" class="title">Curadoria retomável e reversível</text>
+  <rect x="50" y="105" width="190" height="95" rx="14" class="box"/><text x="70" y="138" class="title">Galeria</text><text x="70" y="166" class="text">Filtros + ordenação</text>
+  <rect x="300" y="105" width="220" height="95" rx="14" class="strong"/><text x="320" y="138" class="title">Sessão SQLite</text><text x="320" y="166" class="text">IDs estáveis + progresso</text>
+  <rect x="580" y="105" width="220" height="95" rx="14" class="box"/><text x="600" y="138" class="title">Janela de trabalho</text><text x="600" y="166" class="text">Até 200 mídias</text>
+  <rect x="860" y="105" width="260" height="95" rx="14" class="strong"/><text x="880" y="138" class="title">Decisão humana</text><text x="880" y="166" class="text">Revisar · pular · comparar</text>
+  <line x1="240" y1="152" x2="295" y2="152" class="line"/><line x1="520" y1="152" x2="575" y2="152" class="line"/><line x1="800" y1="152" x2="855" y2="152" class="line"/>
+  <rect x="300" y="300" width="220" height="105" rx="14" class="box"/><text x="320" y="333" class="title">catalog_actions</text><text x="320" y="361" class="text">Snapshot anterior do lote</text><text x="320" y="384" class="text">applied → undone</text>
+  <rect x="660" y="300" width="260" height="105" rx="14" class="box"/><text x="680" y="333" class="title">Estado de catálogo</text><text x="680" y="361" class="text">Favorito · nota · revisão</text><text x="680" y="384" class="text">Tag · álbum · data · lugar</text>
+  <line x1="990" y1="200" x2="800" y2="295" class="line"/><line x1="655" y1="352" x2="525" y2="352" class="line"/><path d="M410 300 C410 245 690 245 790 295" fill="none" class="line"/>
+  <text x="50" y="465" class="text">Fontes e originais permanecem somente leitura. Sessões e correções são dados locais descartáveis/reversíveis.</text>
+</svg>
