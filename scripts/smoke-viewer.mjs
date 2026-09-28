@@ -3,7 +3,7 @@ import { chromium } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
-mkdirSync("artifacts/0.26", { recursive: true });
+mkdirSync("artifacts/0.27", { recursive: true });
 execFileSync(
   "src-tauri/tools/ffmpeg.exe",
   [
@@ -20,7 +20,7 @@ execFileSync(
     "libvpx",
     "-pix_fmt",
     "yuv420p",
-    "artifacts/0.26/smoke.webm",
+    "artifacts/0.27/smoke.webm",
   ],
   { windowsHide: true },
 );
@@ -55,7 +55,7 @@ try {
       const photo = canvas.toDataURL("image/jpeg");
       api.photoPreview = async () => photo;
       api.thumbnail = async () => photo;
-      api.mediaUrl = async () => "/artifacts/0.26/smoke.webm";
+      api.mediaUrl = async () => "/artifacts/0.27/smoke.webm";
     });
     await page.getByLabel("Pasta-mestre").fill("D:\\Teste\\Master");
     await page.getByLabel("Pasta de backup").fill("E:\\Teste\\Replica");
@@ -107,7 +107,7 @@ try {
       }
     };
     await checkControls();
-    await page.screenshot({ path: `artifacts/0.26/photo-${width}.png` });
+    await page.screenshot({ path: `artifacts/0.27/photo-${width}.png` });
     await page
       .getByRole("button", { name: "Sair da tela cheia", exact: true })
       .click();
@@ -137,7 +137,7 @@ try {
       .getByRole("button", { name: "Abrir em tela cheia", exact: true })
       .click();
     await checkControls();
-    await page.screenshot({ path: `artifacts/0.26/video-${width}.png` });
+    await page.screenshot({ path: `artifacts/0.27/video-${width}.png` });
     assert.deepEqual(errors, []);
     await page.close();
     console.log(

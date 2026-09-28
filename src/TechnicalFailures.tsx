@@ -19,13 +19,15 @@ export default function TechnicalFailures({ close }: { close: () => void }) {
     [refresh, setRefresh] = useState(0),
     [loading, setLoading] = useState(true),
     [error, setError] = useState(""),
-    [notice, setNotice] = useState("");
+    [notice, setNotice] = useState(""),
+    [stage,setStage]=useState(""),
+    [query,setQuery]=useState("");
   useEffect(() => {
     let live = true;
     setLoading(true);
     setError("");
     api
-      .technicalFailures(offset)
+      .technicalFailures(offset,stage,query)
       .then((result) => {
         if (live) setPage(result);
       })
@@ -38,7 +40,7 @@ export default function TechnicalFailures({ close }: { close: () => void }) {
     return () => {
       live = false;
     };
-  }, [offset, refresh]);
+  }, [offset, refresh, stage, query]);
   return (
     <section
       className="technical-failures"
@@ -63,6 +65,10 @@ export default function TechnicalFailures({ close }: { close: () => void }) {
           </button>
           <button onClick={close}>Fechar lista</button>
         </div>
+      </div>
+      <div className="failure-filters">
+        <label>Etapa<select value={stage} onChange={event=>{setStage(event.target.value);setOffset(0)}}><option value="">Todas</option><option value="preview">Preview</option><option value="metadata">Metadados</option></select></label>
+        <label>Arquivo<input value={query} onChange={event=>{setQuery(event.target.value);setOffset(0)}} placeholder="Nome ou caminho"/></label>
       </div>
       {notice && <p role="status">{notice}</p>}
       {loading ? (
@@ -118,6 +124,7 @@ export default function TechnicalFailures({ close }: { close: () => void }) {
               >
                 Mostrar arquivo no Explorador
               </button>
+              {item.previewError&&item.retryablePreview&&<button onClick={()=>void api.retryTechnicalPreview(item.assetId).then(result=>{setNotice(result.affected?"Preview recolocado na fila.":"A falha já não estava pendente para nova tentativa.");setRefresh(value=>value+1)}).catch(cause=>setNotice(String(cause)))}>Tentar preview novamente</button>}
             </details>
           ))}
           <div className="failure-pagination">

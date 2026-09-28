@@ -140,6 +140,18 @@ Demanda registrada para implementação futura; comportamento ainda não impleme
 
 Escopo fechado: [RELEASE-0.26-BETA.md](RELEASE-0.26-BETA.md). Arquitetura: [ARCHITECTURE-0.26.md](ARCHITECTURE-0.26.md). Homologação e evidências: [VALIDATION-0.26-BETA.md](VALIDATION-0.26-BETA.md).
 
+## Candidata à homologação — 0.27: produtividade e curadoria
+
+- Seleção por intervalo, atalhos e ações em lote com undo transacional.
+- Visões dinâmicas e sessões de curadoria persistentes/retomáveis.
+- Comparação de duas a quatro mídias com zoom sincronizado ou independente, diferenças destacadas e decisão reversível.
+- Bursts ajustáveis apenas no catálogo e abertura por conjunto exato.
+- Descobrir com cobertura, navegação mensal e snapshot persistente invalidado pelo catálogo.
+- Correção de lugar no escopo das selecionadas e falhas técnicas filtráveis com retry apenas quando aplicável.
+- Preserva os gates de importação, proteção, estabilidade, Explorer, data de captura e visualizador da 0.26.
+
+Escopo: [RELEASE-0.27-BETA.md](RELEASE-0.27-BETA.md). Arquitetura: [ARCHITECTURE-0.27.md](ARCHITECTURE-0.27.md). Homologação: [VALIDATION-0.27-BETA.md](VALIDATION-0.27-BETA.md).
+
 ## Depois — 1.0: prontidão de produção
 
 - Telemetria local longitudinal de SLOs, migração e recuperação validadas em múltiplos dispositivos.

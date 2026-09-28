@@ -9,6 +9,8 @@ import {
   Search,
   Sparkles,
   Video,
+  CalendarDays,
+  SlidersHorizontal,
 } from "lucide-react";
 import { api } from "./api";
 import { openGalleryComparison, openGalleryWithFilters } from "./Gallery";
@@ -99,6 +101,7 @@ function Shelf({
   navigate,
   onRename,
   onCurate,
+  onAdjust,
 }: {
   title: string;
   description: string;
@@ -107,15 +110,16 @@ function Shelf({
   navigate: (view: View) => void;
   onRename?: (group: DiscoveryGroup) => void;
   onCurate?: (group: DiscoveryGroup) => void;
+  onAdjust?: (group: DiscoveryGroup) => void;
 }) {
   const [visible, setVisible] = useState(4);
   const open = (item: DiscoveryItem) => {
-    openGalleryWithFilters({ query: item.filename });
+    openGalleryWithFilters({ assetIds:[item.id] });
     navigate("library");
   };
   const openGroup = (group: DiscoveryGroup) => {
     openGalleryWithFilters(
-      group.placeKey ? { placeKey: group.placeKey } : { query: group.title },
+      group.placeKey ? { placeKey: group.placeKey } : { assetIds:group.items.map(item=>item.id) },
     );
     navigate("library");
   };
@@ -164,6 +168,7 @@ function Shelf({
                       Manter melhor
                     </button>
                   )}
+                  {onAdjust&&<button onClick={()=>onAdjust(group)}><SlidersHorizontal/> Ajustar grupo</button>}
                 </div>
               </header>
               <div className="discovery-strip">
@@ -234,9 +239,12 @@ export default function Discovery({
     };
   }, []);
   const [message, setMessage] = useState("");
+  const [undoAvailable,setUndoAvailable]=useState(false);
   const [query, setQuery] = useState("");
   const [editing, setEditing] = useState<DiscoveryGroup>();
   const [placeName, setPlaceName] = useState("");
+  const [adjusting,setAdjusting]=useState<DiscoveryGroup>();
+  const [included,setIncluded]=useState<Set<string>>(new Set());
   const [preferences, setPreferences] = useState<AppPreferences>({
     resourceProfile: "balanced",
     curationRule: "balanced",
@@ -319,29 +327,19 @@ export default function Discovery({
     if (!group.recommendedId) return;
     setBusy(true);
     try {
-      const alternatives = group.items
-        .filter((item) => item.id !== group.recommendedId)
-        .map((item) => item.id);
       if (preferences.curationRule === "review_all") {
         await api.updateUserState({
           assetIds: group.items.map((item) => item.id),
           reviewLater: true,
         });
         setMessage("Burst inteiro enviado para revisão. Nada foi excluído.");
+        setUndoAvailable(true);
       } else {
-        await api.updateUserState({
-          assetIds: [group.recommendedId],
-          favorite: true,
-          ...(preferences.curationRule === "quality" ? { rating: 5 } : {}),
-        });
-        if (alternatives.length)
-          await api.updateUserState({
-            assetIds: alternatives,
-            reviewLater: true,
-          });
+        await api.chooseComparisonWinner(group.recommendedId,group.items.map(item=>item.id));
         setMessage(
           `${preferences.curationRule === "quality" ? "Melhor qualidade" : "Melhor candidata"} favoritada · alternativas enviadas para revisão. Nada foi excluído.`,
         );
+        setUndoAvailable(true);
       }
     } catch (error) {
       setMessage(String(error));
@@ -420,6 +418,7 @@ export default function Discovery({
       {message && (
         <div className="notice" role="status">
           {message}
+          {undoAvailable&&<button onClick={async()=>{try{const result=await api.undoLastEdit();setMessage(result.affected?"Curadoria desfeita.":"Não havia ação para desfazer.");setUndoAvailable(false)}catch(error){setMessage(String(error))}}}>Desfazer</button>}
         </div>
       )}
       {work.running && (
@@ -522,6 +521,8 @@ export default function Discovery({
           />
         </div>
       </div>
+      {data.coverage&&<section className="discovery-coverage" aria-label="Cobertura das descobertas"><div><strong>{Math.round(data.coverage.percent)}%</strong><span>de cobertura visual</span></div><p>{data.coverage.indexedItems.toLocaleString("pt-BR")} imagens analisadas de {data.coverage.indexableItems.toLocaleString("pt-BR")} elegíveis · {data.coverage.catalogItems.toLocaleString("pt-BR")} mídias no catálogo.</p></section>}
+      {!!data.periods?.length&&<div className="discovery-periods"><span><CalendarDays/> Explorar período</span>{data.periods.slice(0,18).map(period=><button key={period.key} onClick={()=>{const [year,month]=period.key.split("-").map(Number),last=new Date(year,month,0).getDate();openGalleryWithFilters({dateFrom:`${period.key}-01`,dateTo:`${period.key}-${String(last).padStart(2,"0")}`});navigate("library")}}><strong>{period.label}</strong><small>{period.count}</small></button>)}</div>}
       <label className="discovery-search">
         <Search />
         <input
@@ -579,6 +580,7 @@ export default function Discovery({
         empty="Nenhum burst com três ou mais registros foi encontrado."
         navigate={navigate}
         onCurate={curateBurst}
+        onAdjust={group=>{setAdjusting(group);setIncluded(new Set(group.items.map(item=>item.id)))}}
       />
       <Shelf
         title="Visualmente parecidas"
@@ -625,6 +627,7 @@ export default function Discovery({
           </div>
         </div>
       )}
+      {adjusting&&<div className="place-editor" role="dialog" aria-modal="true" aria-label="Ajustar burst"><div className="burst-editor"><h3>Ajustar associação do burst</h3><p>Desmarque apenas os arquivos que não pertencem à sequência. A correção fica no catálogo e não move nem exclui originais.</p><div>{adjusting.items.map(item=><label key={item.id}><input type="checkbox" checked={included.has(item.id)} onChange={event=>setIncluded(current=>{const next=new Set(current);event.target.checked?next.add(item.id):next.delete(item.id);return next})}/><span>{item.filename}</span><small>{new Date(item.capturedAt).toLocaleString("pt-BR")}</small></label>)}</div><footer><button onClick={()=>setAdjusting(undefined)}>Cancelar</button><button className="primary" disabled={included.size<2} onClick={async()=>{try{const excluded=adjusting.items.filter(item=>!included.has(item.id)).map(item=>item.id);await api.setBurstExclusions(adjusting.id,excluded);setAdjusting(undefined);setMessage("Associação corrigida somente no catálogo.");await load()}catch(error){setMessage(String(error))}}}>Salvar associação</button></footer></div></div>}
     </div>
   );
 }

@@ -286,6 +286,7 @@ pub struct AssetDetails {
 #[serde(rename_all = "camelCase", default)]
 pub struct GalleryFilters {
     pub query: String,
+    pub asset_ids: Option<Vec<String>>,
     pub year: Option<i32>,
     pub date_from: Option<String>,
     pub date_to: Option<String>,
@@ -658,6 +659,26 @@ pub struct DiscoveryOverview {
     pub places: Vec<DiscoveryGroup>,
     pub trips: Vec<DiscoveryGroup>,
     pub location_status: LocationStatus,
+    pub periods: Vec<DiscoveryPeriod>,
+    pub coverage: DiscoveryCoverage,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveryPeriod {
+    pub key: String,
+    pub label: String,
+    pub count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveryCoverage {
+    pub catalog_items: i64,
+    pub indexable_items: i64,
+    pub indexed_items: i64,
+    pub percent: f64,
+    pub generated_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

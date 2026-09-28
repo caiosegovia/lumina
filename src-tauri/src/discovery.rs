@@ -1,13 +1,13 @@
 use crate::{
     catalog,
     models::{
-        DiscoveryGroup, DiscoveryIndexResult, DiscoveryItem, DiscoveryOverview, LibraryConfig,
-        LocationResolveResult, LocationStatus,
+        DiscoveryCoverage, DiscoveryGroup, DiscoveryIndexResult, DiscoveryItem, DiscoveryOverview,
+        DiscoveryPeriod, LibraryConfig, LocationResolveResult, LocationStatus,
     },
 };
 use chrono::{Datelike, NaiveDateTime, Utc};
 use image::{GenericImageView, ImageReader};
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use std::{
     collections::{HashMap, HashSet},
     ffi::OsString,
@@ -265,7 +265,7 @@ pub fn resolve_locations(cfg: &LibraryConfig) -> Result<LocationResolveResult, S
     };
     work.update(0, rows.len());
     let manual_names = {
-        let mut statement = conn.prepare("SELECT al.asset_id,o.display_name FROM asset_locations al JOIN location_overrides o ON o.cell_key=al.cell_key")
+        let mut statement = conn.prepare("SELECT al.asset_id,COALESCE(ao.display_name,o.display_name) FROM asset_locations al LEFT JOIN asset_location_overrides ao ON ao.asset_id=al.asset_id LEFT JOIN location_overrides o ON o.cell_key=al.cell_key WHERE ao.display_name IS NOT NULL OR o.display_name IS NOT NULL")
             .map_err(|e| e.to_string())?;
         let values = statement
             .query_map([], |row| {
@@ -401,8 +401,68 @@ pub fn rename_location(cfg: &LibraryConfig, key: &str, name: &str) -> Result<(),
     Ok(())
 }
 
+pub fn rename_assets_location(
+    cfg: &LibraryConfig,
+    asset_ids: &[String],
+    name: &str,
+) -> Result<i64, String> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 120 {
+        return Err("Nome do lugar inválido".into());
+    }
+    if asset_ids.is_empty() || asset_ids.len() > 500 {
+        return Err("Selecione entre 1 e 500 arquivos".into());
+    }
+    let mut conn = db(cfg)?;
+    let tx = conn.transaction().map_err(|error| error.to_string())?;
+    let now = Utc::now().to_rfc3339();
+    let mut affected = 0;
+    let mut previous = Vec::new();
+    for id in asset_ids {
+        let old: Option<String> = tx
+            .query_row(
+                "SELECT display_name FROM asset_location_overrides WHERE asset_id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        affected += tx.execute("INSERT INTO asset_location_overrides(asset_id,display_name,updated_at)SELECT id,?2,?3 FROM assets WHERE id=?1 AND latitude IS NOT NULL AND longitude IS NOT NULL ON CONFLICT(asset_id)DO UPDATE SET display_name=excluded.display_name,updated_at=excluded.updated_at",params![id,name,now]).map_err(|error|error.to_string())? as i64;
+        previous.push(serde_json::json!({"assetId":id,"displayName":old}));
+    }
+    if affected > 0 {
+        tx.execute("INSERT INTO catalog_actions(id,kind,payload,undo_payload,state,created_at)VALUES(?1,'location_name_batch',?2,?3,'applied',?4)",params![uuid::Uuid::new_v4().to_string(),serde_json::json!({"name":name,"affected":affected}).to_string(),serde_json::json!({"items":previous}).to_string(),now]).map_err(|error|error.to_string())?;
+    }
+    tx.commit().map_err(|error| error.to_string())?;
+    Ok(affected)
+}
+
+pub fn set_burst_exclusions(
+    cfg: &LibraryConfig,
+    group_id: &str,
+    asset_ids: &[String],
+) -> Result<i64, String> {
+    if !group_id.starts_with("sequence-") || asset_ids.len() > 500 {
+        return Err("Grupo de burst inválido".into());
+    }
+    let mut conn = db(cfg)?;
+    let tx = conn.transaction().map_err(|error| error.to_string())?;
+    tx.execute(
+        "DELETE FROM discovery_group_exclusions WHERE group_id=?1",
+        [group_id],
+    )
+    .map_err(|error| error.to_string())?;
+    let now = Utc::now().to_rfc3339();
+    let mut affected = 0;
+    for id in asset_ids {
+        affected += tx.execute("INSERT OR IGNORE INTO discovery_group_exclusions(group_id,asset_id,created_at)SELECT ?1,id,?3 FROM assets WHERE id=?2",params![group_id,id,now]).map_err(|error|error.to_string())? as i64;
+    }
+    tx.commit().map_err(|error| error.to_string())?;
+    Ok(affected)
+}
+
 fn location_status(conn: &rusqlite::Connection) -> Result<LocationStatus, String> {
-    conn.query_row("SELECT (SELECT COUNT(*) FROM assets WHERE latitude IS NOT NULL AND longitude IS NOT NULL),(SELECT COUNT(*) FROM asset_locations al JOIN location_cells c ON c.cell_key=al.cell_key WHERE c.source='offline' OR EXISTS(SELECT 1 FROM location_overrides o WHERE o.cell_key=c.cell_key)),(SELECT COUNT(*) FROM asset_locations al JOIN location_cells c ON c.cell_key=al.cell_key WHERE c.source='approximate' AND NOT EXISTS(SELECT 1 FROM location_overrides o WHERE o.cell_key=c.cell_key))",[],|r|Ok(LocationStatus{geotagged:r.get(0)?,named:r.get(1)?,approximate:r.get(2)?})).map_err(|e|e.to_string())
+    conn.query_row("SELECT (SELECT COUNT(*) FROM assets WHERE latitude IS NOT NULL AND longitude IS NOT NULL),(SELECT COUNT(*) FROM asset_locations al JOIN location_cells c ON c.cell_key=al.cell_key WHERE c.source='offline' OR EXISTS(SELECT 1 FROM location_overrides o WHERE o.cell_key=c.cell_key) OR EXISTS(SELECT 1 FROM asset_location_overrides ao WHERE ao.asset_id=al.asset_id)),(SELECT COUNT(*) FROM asset_locations al JOIN location_cells c ON c.cell_key=al.cell_key WHERE c.source='approximate' AND NOT EXISTS(SELECT 1 FROM location_overrides o WHERE o.cell_key=c.cell_key) AND NOT EXISTS(SELECT 1 FROM asset_location_overrides ao WHERE ao.asset_id=al.asset_id))",[],|r|Ok(LocationStatus{geotagged:r.get(0)?,named:r.get(1)?,approximate:r.get(2)?})).map_err(|e|e.to_string())
 }
 
 fn db(cfg: &LibraryConfig) -> Result<rusqlite::Connection, String> {
@@ -671,7 +731,7 @@ fn location_groups(
 ) -> Result<(Vec<DiscoveryGroup>, Vec<DiscoveryGroup>), String> {
     type PlaceEntry = (String, Option<String>, Option<String>, f64, f64);
     let evidence = {
-        let mut statement=conn.prepare("SELECT al.cell_key,CASE WHEN o.cell_key IS NOT NULL THEN 'manual' ELSE COALESCE(d.source,'approximate') END,COUNT(*) FROM asset_locations al LEFT JOIN asset_location_details d ON d.asset_id=al.asset_id LEFT JOIN location_overrides o ON o.cell_key=al.cell_key GROUP BY al.cell_key,2").map_err(|e|e.to_string())?;
+        let mut statement=conn.prepare("SELECT al.cell_key,CASE WHEN ao.asset_id IS NOT NULL OR o.cell_key IS NOT NULL THEN 'manual' ELSE COALESCE(d.source,'approximate') END,COUNT(*) FROM asset_locations al LEFT JOIN asset_location_details d ON d.asset_id=al.asset_id LEFT JOIN location_overrides o ON o.cell_key=al.cell_key LEFT JOIN asset_location_overrides ao ON ao.asset_id=al.asset_id GROUP BY al.cell_key,2").map_err(|e|e.to_string())?;
         let values = statement
             .query_map([], |row| {
                 Ok((
@@ -699,7 +759,7 @@ fn location_groups(
         result
     };
     let mut statement = conn
-        .prepare("SELECT a.id,a.captured_at,a.latitude,a.longitude,al.cell_key,COALESCE(o.display_name,c.display_name) FROM assets a LEFT JOIN asset_locations al ON al.asset_id=a.id LEFT JOIN location_cells c ON c.cell_key=al.cell_key LEFT JOIN location_overrides o ON o.cell_key=al.cell_key WHERE a.latitude IS NOT NULL AND a.longitude IS NOT NULL ORDER BY a.captured_at,a.id")
+        .prepare("SELECT a.id,a.captured_at,a.latitude,a.longitude,al.cell_key,COALESCE(ao.display_name,o.display_name,c.display_name) FROM assets a LEFT JOIN asset_locations al ON al.asset_id=a.id LEFT JOIN location_cells c ON c.cell_key=al.cell_key LEFT JOIN location_overrides o ON o.cell_key=al.cell_key LEFT JOIN asset_location_overrides ao ON ao.asset_id=a.id WHERE a.latitude IS NOT NULL AND a.longitude IS NOT NULL ORDER BY a.captured_at,a.id")
         .map_err(|error| error.to_string())?;
     let rows = statement
         .query_map([], |row| {
@@ -852,6 +912,22 @@ fn location_groups(
 
 pub fn overview(cfg: &LibraryConfig) -> Result<DiscoveryOverview, String> {
     let conn = db(cfg)?;
+    let data_version: i64 = conn
+        .pragma_query_value(None, "data_version", |row| row.get(0))
+        .map_err(|error| error.to_string())?;
+    if let Some(payload) = conn
+        .query_row(
+            "SELECT payload FROM discovery_snapshots WHERE id=1 AND algorithm_version=?1",
+            [ALGORITHM_VERSION],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?
+    {
+        if let Ok(cached) = serde_json::from_str(&payload) {
+            return Ok(cached);
+        }
+    }
     let indexable = conn
         .query_row(
             "SELECT COUNT(*) FROM assets WHERE media_type IN('photo','raw')",
@@ -1027,6 +1103,46 @@ pub fn overview(cfg: &LibraryConfig) -> Result<DiscoveryOverview, String> {
             group.recommendation = Some("Sugestão técnica; sua escolha continua soberana".into())
         }
     }
+    let exclusions = {
+        let mut statement = conn
+            .prepare("SELECT group_id,asset_id FROM discovery_group_exclusions")
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        let mut grouped: HashMap<String, HashSet<String>> = HashMap::new();
+        for (group, asset) in rows {
+            grouped.entry(group).or_default().insert(asset);
+        }
+        grouped
+    };
+    for group in &mut sequences {
+        if let Some(excluded) = exclusions.get(&group.id) {
+            group.items.retain(|item| !excluded.contains(&item.id));
+            group.score = group.items.len() as f64;
+            group.title = format!("Burst com {} registros", group.items.len());
+            if group
+                .recommended_id
+                .as_ref()
+                .is_some_and(|id| excluded.contains(id))
+            {
+                group.recommended_id = group
+                    .items
+                    .iter()
+                    .max_by(|a, b| {
+                        a.quality_score
+                            .unwrap_or(0.0)
+                            .total_cmp(&b.quality_score.unwrap_or(0.0))
+                    })
+                    .map(|item| item.id.clone());
+            }
+        }
+    }
+    sequences.retain(|group| group.items.len() >= 2);
     sequences.sort_by(|a, b| b.score.total_cmp(&a.score));
     sequences.truncate(40);
     let now = Utc::now();
@@ -1062,7 +1178,24 @@ pub fn overview(cfg: &LibraryConfig) -> Result<DiscoveryOverview, String> {
     memories.sort_by(|a, b| b.id.cmp(&a.id));
     memories.truncate(12);
     let (places, trips) = location_groups(&conn, &by_id)?;
-    Ok(DiscoveryOverview {
+    let periods = {
+        let mut statement=conn.prepare("SELECT substr(captured_at,1,7),COUNT(*) FROM assets WHERE substr(captured_at,1,7) GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]' GROUP BY 1 ORDER BY 1 DESC LIMIT 60").map_err(|error|error.to_string())?;
+        let result = statement
+            .query_map([], |row| {
+                let key: String = row.get(0)?;
+                Ok(DiscoveryPeriod {
+                    label: key.clone(),
+                    key,
+                    count: row.get(1)?,
+                })
+            })
+            .map_err(|error| error.to_string())?;
+        result
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?
+    };
+    let catalog_items = assets.len() as i64;
+    let overview = DiscoveryOverview {
         indexed,
         indexable,
         similar,
@@ -1071,7 +1204,31 @@ pub fn overview(cfg: &LibraryConfig) -> Result<DiscoveryOverview, String> {
         places,
         trips,
         location_status: location_status(&conn)?,
-    })
+        periods,
+        coverage: DiscoveryCoverage {
+            catalog_items,
+            indexable_items: indexable,
+            indexed_items: indexed,
+            percent: if indexable == 0 {
+                100.0
+            } else {
+                indexed as f64 * 100.0 / indexable as f64
+            },
+            generated_at: Utc::now().to_rfc3339(),
+        },
+    };
+    let payload = serde_json::to_string(&overview).map_err(|error| error.to_string())?;
+    conn.execute_batch("BEGIN IMMEDIATE")
+        .map_err(|error| error.to_string())?;
+    let current_version: i64 = conn
+        .pragma_query_value(None, "data_version", |row| row.get(0))
+        .map_err(|error| error.to_string())?;
+    if current_version == data_version {
+        conn.execute("INSERT INTO discovery_snapshots(id,algorithm_version,payload,generated_at)VALUES(1,?1,?2,?3)ON CONFLICT(id)DO UPDATE SET algorithm_version=excluded.algorithm_version,payload=excluded.payload,generated_at=excluded.generated_at",params![ALGORITHM_VERSION,payload,Utc::now().to_rfc3339()]).map_err(|error|error.to_string())?;
+    }
+    conn.execute_batch("COMMIT")
+        .map_err(|error| error.to_string())?;
+    Ok(overview)
 }
 
 #[cfg(test)]

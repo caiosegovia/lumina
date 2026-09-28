@@ -28,11 +28,21 @@ fn add(c: &mut Vec<String>, v: &mut Vec<Value>, sql: &str, value: Value) {
 }
 fn conditions(f: &GalleryFilters) -> (Vec<String>, Vec<Value>) {
     let (mut c, mut v) = (Vec::new(), Vec::new());
+    if let Some(ids) = f.asset_ids.as_ref().filter(|ids| !ids.is_empty()) {
+        let ids = ids.iter().take(5_000).collect::<Vec<_>>();
+        let first = v.len() + 1;
+        v.extend(ids.iter().map(|id| Value::Text((*id).clone())));
+        let placeholders = (first..first + ids.len())
+            .map(|index| format!("?{index}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        c.push(format!("a.id IN({placeholders})"));
+    }
     if !f.query.trim().is_empty() {
         let x = Value::Text(format!("%{}%", f.query.trim().to_lowercase()));
         v.extend([x.clone(), x.clone(), x.clone(), x.clone(), x]);
         let n = v.len();
-        c.push(format!("(EXISTS(SELECT 1 FROM assets_fts sf WHERE sf.asset_id=a.id AND (sf.filename LIKE ?{} OR sf.camera LIKE ?{})) OR EXISTS(SELECT 1 FROM asset_tags aq JOIN tags tq ON tq.id=aq.tag_id WHERE aq.asset_id=a.id AND LOWER(tq.name) LIKE ?{}) OR EXISTS(SELECT 1 FROM asset_people ap JOIN people p ON p.id=ap.person_id WHERE ap.asset_id=a.id AND LOWER(p.name) LIKE ?{}) OR EXISTS(SELECT 1 FROM asset_locations al JOIN location_cells lc ON lc.cell_key=al.cell_key LEFT JOIN location_overrides lo ON lo.cell_key=al.cell_key WHERE al.asset_id=a.id AND LOWER(COALESCE(lo.display_name,lc.display_name)) LIKE ?{n}))",n-4,n-3,n-2,n-1));
+        c.push(format!("(EXISTS(SELECT 1 FROM assets_fts sf WHERE sf.asset_id=a.id AND (sf.filename LIKE ?{} OR sf.camera LIKE ?{})) OR EXISTS(SELECT 1 FROM asset_tags aq JOIN tags tq ON tq.id=aq.tag_id WHERE aq.asset_id=a.id AND LOWER(tq.name) LIKE ?{}) OR EXISTS(SELECT 1 FROM asset_people ap JOIN people p ON p.id=ap.person_id WHERE ap.asset_id=a.id AND LOWER(p.name) LIKE ?{}) OR EXISTS(SELECT 1 FROM asset_locations al JOIN location_cells lc ON lc.cell_key=al.cell_key LEFT JOIN location_overrides lo ON lo.cell_key=al.cell_key LEFT JOIN asset_location_overrides ao ON ao.asset_id=al.asset_id WHERE al.asset_id=a.id AND LOWER(COALESCE(ao.display_name,lo.display_name,lc.display_name)) LIKE ?{n}))",n-4,n-3,n-2,n-1));
     }
     if let Some(x) = f.year {
         add(
@@ -191,6 +201,27 @@ fn opts(conn: &Connection, sql: &str) -> Result<Vec<FilterOption>, String> {
 }
 fn options(c: &Connection) -> Result<GalleryFilterOptions, String> {
     Ok(GalleryFilterOptions{cameras:opts(c,"SELECT camera,camera,COUNT(*) FROM assets WHERE camera IS NOT NULL AND camera!='' GROUP BY camera ORDER BY COUNT(*) DESC,camera")?,sources:opts(c,"SELECT s.id,s.name,COUNT(DISTINCT o.asset_id) FROM sources s JOIN active_occurrences o ON o.source_id=s.id GROUP BY s.id ORDER BY COUNT(DISTINCT o.asset_id) DESC,s.name")?,extensions:opts(c,"SELECT LOWER(extension),UPPER(extension),COUNT(*) FROM assets GROUP BY LOWER(extension) ORDER BY COUNT(*) DESC,extension")?,tags:opts(c,"SELECT t.id,t.name,COUNT(at.asset_id) FROM tags t JOIN asset_tags at ON at.tag_id=t.id GROUP BY t.id ORDER BY COUNT(at.asset_id) DESC,t.name")?,albums:opts(c,"SELECT al.id,al.name,COUNT(aa.asset_id) FROM albums al JOIN album_assets aa ON aa.album_id=al.id GROUP BY al.id ORDER BY COUNT(aa.asset_id) DESC,al.name")?})
+}
+
+pub fn matching_asset_ids(
+    conn: &Connection,
+    filters: &GalleryFilters,
+    sort: Option<&str>,
+    maximum: usize,
+) -> Result<Vec<String>, String> {
+    let (clauses, values) = conditions(filters);
+    let (sort_expression, direction, _) = ordering(sort);
+    let maximum = maximum.clamp(1, 50_000);
+    let sql = format!(
+        "SELECT a.id FROM assets a WHERE {} ORDER BY {sort_expression} {direction},a.id {direction} LIMIT {maximum}",
+        where_sql(&clauses)
+    );
+    let mut statement = conn.prepare(&sql).map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(params_from_iter(values.iter()), |row| row.get(0))
+        .map_err(|error| error.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())
 }
 
 fn page_relations(

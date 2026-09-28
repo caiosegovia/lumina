@@ -14,6 +14,7 @@ import {
   List,
   LoaderCircle,
   MapPin,
+  MapPinned,
   Rows3,
   Search,
   Star,
@@ -23,13 +24,14 @@ import {
   Video,
   ZoomIn,
   ZoomOut,
+  RotateCcw,
   X,
 } from "lucide-react";
 import { api } from "./api";
 import { captureDate, formatBytes, formatCaptureDate } from "./format";
 import { BoundedLru } from "./lru";
 import MediaViewer from "./MediaViewer";
-import type { Album, AssetDetails, GalleryFilters, GalleryResult, GallerySort, MediaAsset, SavedView } from "./types";
+import type { Album, AssetDetails, CurationPage, CurationSession, GalleryFilters, GalleryResult, GallerySort, MediaAsset, SavedView } from "./types";
 const thumbs = new BoundedLru<string, string | null>(512),
   empty: GalleryFilters = { query: "" };
 type Mode = "grid" | "list";
@@ -73,11 +75,12 @@ export function openGalleryWithFilters(filters: Partial<GalleryFilters>) {
   session.compare = false;
 }
 export function openGalleryComparison(assetIds:string[]) {
-  session.filters = empty;
+  const ids=assetIds.slice(0,4);
+  session.filters = { ...empty, assetIds:ids };
   session.result = undefined;
   session.assets = [];
   session.scrollY = 0;
-  session.selected = assetIds.slice(0,2);
+  session.selected = ids;
   session.compare = session.selected.length >= 2 && session.selected.length <= 4;
 }
 export default function Gallery() {
@@ -95,12 +98,16 @@ export default function Gallery() {
     [sort, setSort0] = useState<GallerySort>(() => saved("lumina-sort", "captured_desc")),
     [listDensity, setListDensity0] = useState<ListDensity>(() => saved("lumina-list-density", "comfortable")),
     [selection, setSelection] = useState<Set<string>>(()=>new Set(session.selected)),
-    [action, setAction] = useState<"tag" | "album" | "date">(),
+    [action, setAction] = useState<"tag" | "album" | "date" | "location">(),
     [comparing, setComparing] = useState(()=>session.compare),
     [notice, setNotice] = useState(""),
     [undoAvailable, setUndoAvailable] = useState(false),
     [savedViews, setSavedViews] = useState<SavedView[]>([]),
     [selectedView, setSelectedView] = useState(""),
+    [viewDialog,setViewDialog]=useState<"save"|"rename">(),
+    [curationOpen,setCurationOpen]=useState(false),
+    [curationSessions,setCurationSessions]=useState<CurationSession[]>([]),
+    [curationPage,setCurationPage]=useState<CurationPage>(),
     [inspectorWidth,setInspectorWidth]=useState(()=>Number(localStorage.getItem("lumina-inspector-width"))||410),
     [refresh, setRefresh] = useState(0);
   const seq = useRef(0),
@@ -152,6 +159,7 @@ export default function Gallery() {
   );
   useEffect(() => {
     api.savedViews().then(setSavedViews);
+    api.curationSessions().then(setCurationSessions);
   }, []);
   useEffect(()=>{session.selected=[];session.compare=false},[]);
   useEffect(() => {
@@ -275,6 +283,55 @@ export default function Gallery() {
       setDraft(empty);
       setFilters(empty);
     };
+  const applyUserState=useCallback(async(patch:{favorite?:boolean;rating?:number;reviewLater?:boolean},label:string)=>{
+    const ids=[...selection];
+    if(!ids.length)return;
+    try{
+      const changed=await api.updateUserState({assetIds:ids,...patch});
+      setNotice(`${changed.affected} mídias · ${label}`);
+      setUndoAvailable(changed.affected>0);
+      setSelection(new Set());
+      setRefresh(value=>value+1);
+    }catch(cause){setNotice(String(cause))}
+  },[selection]);
+  const resumeCuration=useCallback(async(id:string)=>{
+    try{
+      const page=await api.curationPage(id);
+      setCurationPage(page);
+      setCurationSessions(current=>current.map(item=>item.id===id?page.session:item));
+      setFilters({...empty,assetIds:page.assetIds});
+      setDraft({...empty,assetIds:page.assetIds});
+      saveSort(page.session.sort);
+      setSelection(new Set());
+      setCurationOpen(false);
+      setNotice(page.remaining?`Curadoria “${page.session.name}” retomada`:`Curadoria “${page.session.name}” concluída`);
+    }catch(cause){setNotice(String(cause))}
+  },[]);
+  const decideCuration=useCallback(async(decision:"reviewed"|"skipped")=>{
+    if(!curationPage||!selection.size)return;
+    try{
+      const ids=[...selection];
+      const updated=await api.updateCuration(curationPage.session.id,ids,decision);
+      const page=await api.curationPage(updated.id);
+      setCurationPage(page);
+      setCurationSessions(current=>current.map(item=>item.id===updated.id?updated:item));
+      setFilters({...empty,assetIds:page.assetIds});
+      setSelection(new Set());
+      setNotice(decision==="reviewed"?`${ids.length} mídias revisadas`:`${ids.length} mídias puladas`);
+    }catch(cause){setNotice(String(cause))}
+  },[curationPage,selection]);
+  useEffect(()=>{
+    const onKey=(event:KeyboardEvent)=>{
+      const target=event.target;
+      if((target instanceof Element&&target.closest("input,textarea,select,[contenteditable=true]"))||!selection.size)return;
+      if(event.key==="Escape"){setSelection(new Set());return}
+      if(event.key>="0"&&event.key<="5"){event.preventDefault();void applyUserState({rating:Number(event.key)},`avaliação ${event.key}`);return}
+      if(event.key.toLowerCase()==="f"){event.preventDefault();void applyUserState({favorite:!event.shiftKey},event.shiftKey?"removidas das favoritas":"favoritadas");return}
+      if(event.key.toLowerCase()==="r"){event.preventDefault();void applyUserState({reviewLater:!event.shiftKey},event.shiftKey?"revisão concluída":"revisar depois");}
+    };
+    addEventListener("keydown",onKey);
+    return()=>removeEventListener("keydown",onKey);
+  },[selection,applyUserState]);
   return (
     <div className={`gallery-workspace ${preview ? "inspector-open" : ""}`} style={{"--inspector-width":`${inspectorWidth}px`} as React.CSSProperties}>
       <section className="gallery-canvas" aria-label="Acervo de mídias">
@@ -339,8 +396,9 @@ export default function Gallery() {
         )}
         {savedViews.length > 0 && <select aria-label="Visões salvas" value={selectedView} onChange={e=>{setSelectedView(e.target.value);const view=savedViews.find(x=>x.id===e.target.value);if(view){setFilters(view.filters);setDraft(view.filters)}}}><option value="">Visões salvas</option>{savedViews.map(view=><option key={view.id} value={view.id}>{view.smartAlbum?"Álbum inteligente · ":""}{view.name}</option>)}</select>}
         {selectedView&&<button aria-label="Excluir visão selecionada" onClick={async()=>{await api.deleteSavedView(selectedView);setSavedViews(current=>current.filter(view=>view.id!==selectedView));setSelectedView("");setNotice("Visão removida")}}><X/> Excluir visão</button>}
-        {selectedView&&<button aria-label="Renomear visão selecionada" onClick={async()=>{const current=savedViews.find(view=>view.id===selectedView);const name=prompt("Novo nome da visão",current?.name);if(name){await api.renameSavedView(selectedView,name);setSavedViews(views=>views.map(view=>view.id===selectedView?{...view,name}:view));setNotice("Visão renomeada")}}}>Renomear</button>}
-        <button aria-label="Salvar visão atual" onClick={async()=>{const name=prompt("Nome da visão ou álbum inteligente");if(!name)return;const smartAlbum=confirm("Salvar também como álbum inteligente?");const view=await api.saveView(name,filters,smartAlbum);setSavedViews(v=>[...v.filter(x=>x.id!==view.id&&x.name!==view.name),view]);setNotice("Visão salva")}}><Save/> Salvar visão</button>
+        {selectedView&&<button aria-label="Renomear visão selecionada" onClick={()=>setViewDialog("rename")}>Renomear</button>}
+        <button aria-label="Salvar visão atual" onClick={()=>setViewDialog("save")}><Save/> Salvar visão</button>
+        <button aria-label="Abrir sessões de curadoria" onClick={()=>setCurationOpen(true)}><Bookmark/> Curadoria {curationSessions.filter(item=>item.state==="active").length>0&&<b>{curationSessions.filter(item=>item.state==="active").length}</b>}</button>
         <div className="view-switch">
           <button
             aria-label="Visão em grade"
@@ -380,6 +438,11 @@ export default function Gallery() {
           }}
         />
       )}
+      {curationPage&&<div className="curation-strip">
+        <div><span className="eyebrow">CURADORIA RETOMÁVEL</span><strong>{curationPage.session.name}</strong><small>{curationPage.session.reviewedItems+curationPage.session.skippedItems} de {curationPage.session.totalItems} decididas · {curationPage.remaining} restantes</small></div>
+        <div className="curation-progress"><i style={{width:`${curationPage.session.totalItems?((curationPage.session.reviewedItems+curationPage.session.skippedItems)/curationPage.session.totalItems)*100:100}%`}}/></div>
+        <button onClick={()=>{setFilters(curationPage.session.filters);setDraft(curationPage.session.filters);setCurationPage(undefined);setSelection(new Set())}}>Sair da sessão</button>
+      </div>}
       {notice && (
         <p className="safe-note" role="status">
           {notice}
@@ -393,8 +456,13 @@ export default function Gallery() {
           <button onClick={() => setAction("tag")}>Aplicar tag</button>
           <button onClick={() => setAction("album")}>Adicionar ao álbum</button>
           <button onClick={() => setAction("date")}>Corrigir data</button>
-          <button onClick={async()=>{const r=await api.updateUserState({assetIds:[...selection],favorite:true});setNotice(r.affected+" favoritas");setSelection(new Set());setRefresh(v=>v+1)}}><Star/> Favoritar</button>
-          <button onClick={async()=>{const r=await api.updateUserState({assetIds:[...selection],reviewLater:true});setNotice(r.affected+" marcadas para revisar");setSelection(new Set());setRefresh(v=>v+1)}}><Bookmark/> Revisar depois</button>
+          <button onClick={() => setAction("location")}><MapPinned/> Nomear lugar</button>
+          <button onClick={()=>void applyUserState({favorite:true},"favoritadas")}><Star/> Favoritar <kbd>F</kbd></button>
+          <button onClick={()=>void applyUserState({favorite:false},"removidas das favoritas")}>Remover favorita <kbd>⇧F</kbd></button>
+          <button onClick={()=>void applyUserState({reviewLater:true},"revisar depois")}><Bookmark/> Revisar depois <kbd>R</kbd></button>
+          <button onClick={()=>void applyUserState({reviewLater:false},"revisão concluída")}>Concluir revisão <kbd>⇧R</kbd></button>
+          <ChoiceMenu icon={<Star/>} label="Avaliação" value="" options={[1,2,3,4,5].map(value=>({value:String(value),label:`${value} estrela${value>1?"s":""}`}))} onChange={value=>void applyUserState({rating:Number(value)},`avaliação ${value}`)}/>
+          {curationPage&&<><button className="primary" onClick={()=>void decideCuration("reviewed")}><Check/> Marcar revisadas</button><button onClick={()=>void decideCuration("skipped")}>Pular nesta sessão</button></>}
           {selection.size >= 2 && selection.size <= 4 && <button className="primary" onClick={() => setComparing(true)}>Comparar {selection.size}</button>}
           <button onClick={() => {setSelection(new Set());lastSelected.current=undefined}}>Limpar</button>
         </div>
@@ -513,8 +581,10 @@ export default function Gallery() {
           }}
         />
       )}
-      {comparing && (
-        <Comparison assets={assets.filter(asset=>selection.has(asset.id)).slice(0,2)} close={()=>setComparing(false)}/>
+      {viewDialog&&<CollectionDialog mode={viewDialog} initialName={viewDialog==="rename"?savedViews.find(view=>view.id===selectedView)?.name||"":""} close={()=>setViewDialog(undefined)} submit={async(name,smart)=>{if(viewDialog==="rename"){await api.renameSavedView(selectedView,name);setSavedViews(views=>views.map(view=>view.id===selectedView?{...view,name}:view));setNotice("Visão renomeada")}else{const view=await api.saveView(name,filters,smart);setSavedViews(value=>[...value.filter(item=>item.id!==view.id&&item.name!==view.name),view]);setNotice(smart?"Álbum inteligente salvo":"Visão salva")}setViewDialog(undefined)}}/>}
+      {curationOpen&&<CurationManager sessions={curationSessions} filters={filters} sort={sort} close={()=>setCurationOpen(false)} resume={resumeCuration} changed={setCurationSessions} notice={setNotice}/>}
+      {comparing && assets.filter(asset=>selection.has(asset.id)).length >= 2 && (
+        <Comparison assets={assets.filter(asset=>selection.has(asset.id)).slice(0,4)} close={()=>setComparing(false)} done={message=>{setNotice(message);setUndoAvailable(true);setRefresh(value=>value+1)}}/>
       )}
     </div>
   );
@@ -586,21 +656,34 @@ function Item({
     </div>
   );
 }
-function Comparison({assets,close}:{assets:MediaAsset[];close:()=>void}){
-  const [zoom,setZoom]=useState(1);
+function CollectionDialog({mode,initialName,close,submit}:{mode:"save"|"rename";initialName:string;close:()=>void;submit:(name:string,smart:boolean)=>Promise<void>}){
+  const[name,setName]=useState(initialName),[smart,setSmart]=useState(true),[busy,setBusy]=useState(false),[error,setError]=useState("");
+  return <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={mode==="save"?"Salvar visão":"Renomear visão"}><form className="modal compact" onSubmit={async event=>{event.preventDefault();if(!name.trim())return;setBusy(true);setError("");try{await submit(name.trim(),smart)}catch(cause){setError(String(cause));setBusy(false)}}}><button type="button" className="icon-only close" onClick={close}><X/></button><p className="eyebrow">COLEÇÃO DINÂMICA</p><h2>{mode==="save"?"Salvar consulta atual":"Renomear consulta"}</h2><p>Os filtros são reavaliados sempre que o acervo muda; nenhum arquivo é movido.</p><label>Nome<input autoFocus maxLength={100} value={name} onChange={event=>setName(event.target.value)}/></label>{mode==="save"&&<label className="check-line"><input type="checkbox" checked={smart} onChange={event=>setSmart(event.target.checked)}/> Exibir como álbum inteligente</label>}{error&&<p role="alert" className="error-text">{error}</p>}<div className="modal-actions"><button type="button" onClick={close}>Cancelar</button><button className="primary" disabled={busy||!name.trim()}>{busy?"Salvando…":"Salvar"}</button></div></form></div>
+}
+function CurationManager({sessions,filters,sort,close,resume,changed,notice}:{sessions:CurationSession[];filters:GalleryFilters;sort:GallerySort;close:()=>void;resume:(id:string)=>Promise<void>;changed:(value:CurationSession[])=>void;notice:(value:string)=>void}){
+  const[name,setName]=useState(""),[busy,setBusy]=useState(false),[error,setError]=useState(""),[confirmDelete,setConfirmDelete]=useState("");
+  const create=async(event:React.FormEvent)=>{event.preventDefault();if(!name.trim())return;setBusy(true);setError("");try{const created=await api.createCuration(name.trim(),filters,sort);changed([created,...sessions]);await resume(created.id)}catch(cause){setError(String(cause));setBusy(false)}};
+  return <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Sessões de curadoria"><section className="modal curation-manager"><button className="icon-only close" onClick={close}><X/></button><p className="eyebrow">CURADORIA RETOMÁVEL</p><h2>Revisar o acervo sem perder o ponto</h2><p>A sessão congela a ordem dos resultados atuais. Favoritos, notas e tags continuam no catálogo, mas os arquivos físicos não mudam.</p><form className="curation-create" onSubmit={create}><label>Nome da nova sessão<input value={name} maxLength={100} onChange={event=>setName(event.target.value)} placeholder="Ex.: Seleção de férias 2025"/></label><button className="primary" disabled={busy||!name.trim()}>{busy?"Criando…":`Criar com ${filters.assetIds?.length||"todos os"} resultados`}</button></form>{error&&<p role="alert" className="error-text">{error}</p>}<div className="curation-session-list">{sessions.length?sessions.map(item=>{const decided=item.reviewedItems+item.skippedItems,percent=item.totalItems?Math.round(decided/item.totalItems*100):100;return <article key={item.id}><div><strong>{item.name}</strong><span className={`status-pill ${item.state}`}>{item.state==="completed"?"Concluída":"Em andamento"}</span><small>{decided} de {item.totalItems} · {percent}%</small><div className="curation-progress"><i style={{width:`${percent}%`}}/></div></div><div><button disabled={item.state==="completed"} onClick={()=>void resume(item.id)}>{item.reviewedItems||item.skippedItems?"Retomar":"Começar"}</button>{confirmDelete===item.id?<><button className="subtle-danger" onClick={async()=>{await api.deleteCuration(item.id);changed(sessions.filter(session=>session.id!==item.id));setConfirmDelete("");notice("Sessão removida; decisões das mídias foram preservadas")}}>Confirmar exclusão</button><button onClick={()=>setConfirmDelete("")}>Cancelar</button></>:<button onClick={()=>setConfirmDelete(item.id)}>Excluir sessão</button>}</div></article>}):<p className="empty-state">Nenhuma sessão criada.</p>}</div></section></div>
+}
+function Comparison({assets,close,done}:{assets:MediaAsset[];close:()=>void;done:(message:string)=>void}){
+  const [zoom,setZoom]=useState(1),[synced,setSynced]=useState(true),[pan,setPan]=useState<[number,number]>([50,50]),[perZoom,setPerZoom]=useState<Record<string,number>>({}),[details,setDetails]=useState<Record<string,AssetDetails>>({}),[winner,setWinner]=useState("");
+  useEffect(()=>{let live=true;Promise.all(assets.map(async asset=>[asset.id,await api.assetDetails(asset.id)] as const)).then(entries=>{if(live)setDetails(Object.fromEntries(entries))}).catch(()=>{});return()=>{live=false}},[assets.map(asset=>asset.id).join()]);
   useEffect(()=>{const key=(event:KeyboardEvent)=>{if(event.key==="Escape")close()};addEventListener("keydown",key);return()=>removeEventListener("keydown",key)},[close]);
+  const values=(asset:MediaAsset)=>({dimensions:asset.width&&asset.height?`${asset.width}×${asset.height}`:"",camera:details[asset.id]?.camera||asset.camera||"",lens:details[asset.id]?.lens||"",capture:`${details[asset.id]?.iso||""}/${details[asset.id]?.aperture||""}`,bytes:String(asset.bytes),date:asset.capturedAt,origins:String(asset.sourceNames.length)}),different=new Set(Object.keys(values(assets[0])).filter(key=>new Set(assets.map(asset=>values(asset)[key as keyof ReturnType<typeof values>])).size>1));
+  const choose=async(asset:MediaAsset)=>{try{await api.chooseComparisonWinner(asset.id,assets.map(item=>item.id));setWinner(asset.id);done(`${asset.filename} escolhida; alternativas ficaram em “Revisar depois”`)}catch(cause){done(String(cause))}};
   return <div className="comparison-backdrop" role="dialog" aria-modal="true" aria-label="Comparar mídias">
     <section className="comparison-shell">
-      <header><div><p className="eyebrow">COMPARAÇÃO</p><h2>Lado a lado</h2><p>A comparação é visual e não altera decisões de duplicidade.</p></div><div className="comparison-tools"><button disabled={zoom===1} onClick={()=>setZoom(value=>Math.max(1,value-1))}><ZoomOut/> Reduzir</button><button disabled={zoom===3} onClick={()=>setZoom(value=>Math.min(3,value+1))}><ZoomIn/> Ampliar</button><button className="icon-only" aria-label="Fechar comparação" onClick={close}><X/></button></div></header>
-      <div className="comparison-grid">{assets.map(asset=><ComparisonPane key={asset.id} asset={asset} zoom={zoom}/>)}</div>
+      <header><div><p className="eyebrow">COMPARAÇÃO · {assets.length} MÍDIAS</p><h2>Lado a lado</h2><p>Diferenças estão destacadas. A escolha é reversível e não remove nenhum arquivo.</p></div><div className="comparison-tools"><label className="sync-toggle"><input type="checkbox" checked={synced} onChange={event=>setSynced(event.target.checked)}/> Zoom sincronizado</label>{synced&&<><button disabled={zoom<=1} onClick={()=>setZoom(value=>Math.max(1,value-.25))}><ZoomOut/> Reduzir</button><button disabled={zoom>=4} onClick={()=>setZoom(value=>Math.min(4,value+.25))}><ZoomIn/> Ampliar</button></>}<button className="icon-only" aria-label="Fechar comparação" onClick={close}><X/></button></div></header>
+      {synced&&zoom>1&&<div className="comparison-framing"><label>Enquadramento horizontal <input aria-label="Enquadramento horizontal" type="range" min="0" max="100" value={pan[0]} onChange={event=>setPan([Number(event.target.value),pan[1]])}/></label><label>Vertical <input aria-label="Enquadramento vertical" type="range" min="0" max="100" value={pan[1]} onChange={event=>setPan([pan[0],Number(event.target.value)])}/></label><button onClick={()=>{setZoom(1);setPan([50,50])}}><RotateCcw/> Redefinir</button></div>}
+      <div className="comparison-grid">{assets.map(asset=><ComparisonPane key={asset.id} asset={asset} details={details[asset.id]} different={different} zoom={synced?zoom:perZoom[asset.id]||1} pan={synced?pan:[50,50]} synced={synced} winner={winner===asset.id} choose={()=>void choose(asset)} changeZoom={value=>setPerZoom(current=>({...current,[asset.id]:value}))}/>)}</div>
     </section>
   </div>
 }
-function ComparisonPane({asset,zoom}:{asset:MediaAsset;zoom:number}){
+function ComparisonPane({asset,details,different,zoom,pan,synced,winner,choose,changeZoom}:{asset:MediaAsset;details?:AssetDetails;different:Set<string>;zoom:number;pan:[number,number];synced:boolean;winner:boolean;choose:()=>void;changeZoom:(value:number)=>void}){
   const [url,setUrl]=useState("");
-  const [details,setDetails]=useState<AssetDetails>();
-  useEffect(()=>{let live=true;const media=asset.mediaType==="video"?api.mediaUrl(asset.id):api.photoPreview(asset.id);media.then(value=>live&&setUrl(value)).catch(()=>live&&setUrl(""));api.assetDetails(asset.id).then(value=>live&&setDetails(value)).catch(()=>live&&setDetails(undefined));return()=>{live=false}},[asset.id,asset.mediaType]);
-  return <article className="comparison-pane"><div className="comparison-media">{url?(asset.mediaType==="video"?<ManagedVideo key={url} src={url} className="comparison-video"/>:<img src={url} alt={`Comparação de ${asset.filename}`} style={{transform:`scale(${zoom})`}}/>):<MediaThumb asset={asset}/>}</div><h3>{asset.filename}</h3><p>{formatCaptureDate(asset.capturedAt)}</p><div className="asset-pills"><span>{asset.extension.toUpperCase()}</span><span>{formatBytes(asset.bytes)}</span><span className={asset.protectionState==="replica_verified"?"success":"warning"}>{asset.protectionState==="replica_verified"?"Protegida":"Proteção pendente"}</span></div><dl><div><dt>Dimensões</dt><dd>{asset.width&&asset.height?`${asset.width} × ${asset.height}`:"Não disponível"}</dd></div><div><dt>Câmera</dt><dd>{details?.camera||asset.camera||"Não informada"}</dd></div><div><dt>Lente</dt><dd>{details?.lens||"Não informada"}</dd></div><div><dt>Captura</dt><dd>{details?.iso?`ISO ${details.iso}`:"ISO —"} · {details?.aperture?`f/${details.aperture}`:"f/—"}</dd></div><div><dt>Origens</dt><dd>{asset.sourceNames.length}</dd></div><div><dt>SHA-256</dt><dd><code>{asset.hash.slice(0,16)}…</code></dd></div></dl></article>
+  useEffect(()=>{let live=true;const media=asset.mediaType==="video"?api.mediaUrl(asset.id):api.photoPreview(asset.id);media.then(value=>live&&setUrl(value)).catch(()=>live&&setUrl(""));return()=>{live=false}},[asset.id,asset.mediaType]);
+  const row=(key:string,label:string,value:React.ReactNode)=><div className={different.has(key)?"comparison-difference":""}><dt>{label}{different.has(key)&&<span>difere</span>}</dt><dd>{value}</dd></div>;
+  return <article className={`comparison-pane ${winner?"winner":""}`}><div className="comparison-media"><div style={{transform:`scale(${zoom})`,transformOrigin:`${pan[0]}% ${pan[1]}%`}}>{url?(asset.mediaType==="video"?<ManagedVideo key={url} src={url} className="comparison-video"/>:<img src={url} alt={`Comparação de ${asset.filename}`}/>):<MediaThumb asset={asset}/>}</div></div>{!synced&&<div className="pane-zoom"><button aria-label={`Reduzir ${asset.filename}`} disabled={zoom<=1} onClick={()=>changeZoom(Math.max(1,zoom-.25))}><ZoomOut/></button><span>{Math.round(zoom*100)}%</span><button aria-label={`Ampliar ${asset.filename}`} disabled={zoom>=4} onClick={()=>changeZoom(Math.min(4,zoom+.25))}><ZoomIn/></button></div>}<h3>{asset.filename}</h3><p>{formatCaptureDate(asset.capturedAt)}</p><div className="asset-pills"><span>{asset.extension.toUpperCase()}</span><span className={different.has("bytes")?"different":""}>{formatBytes(asset.bytes)}</span><span className={asset.protectionState==="replica_verified"?"success":"warning"}>{asset.protectionState==="replica_verified"?"Protegida":"Proteção pendente"}</span></div><dl>{row("dimensions","Dimensões",asset.width&&asset.height?`${asset.width} × ${asset.height}`:"Não disponível")}{row("camera","Câmera",details?.camera||asset.camera||"Não informada")}{row("lens","Lente",details?.lens||"Não informada")}{row("capture","Captura",<>{details?.iso?`ISO ${details.iso}`:"ISO —"} · {details?.aperture?`f/${details.aperture}`:"f/—"}</>)}{row("origins","Origens",asset.sourceNames.length)}<div><dt>SHA-256</dt><dd><code>{asset.hash.slice(0,16)}…</code></dd></div></dl><button className="primary comparison-winner" disabled={winner} onClick={choose}>{winner?<><Check/> Escolhida</>:"Escolher esta"}</button></article>
 }
 
 function ManagedVideo({ src, className }: { src: string; className?: string }) {
@@ -622,7 +705,7 @@ function Bulk({
   close,
   done,
 }: {
-  action: "tag" | "album" | "date";
+  action: "tag" | "album" | "date" | "location";
   assets: MediaAsset[];
   close: () => void;
   done: (x: string) => void;
@@ -641,7 +724,9 @@ function Bulk({
             ? await api.applyTag(value, ids)
             : action === "album"
               ? await api.addToAlbum(value, ids)
-              : await api.updateCaptureDate(ids, new Date(value).toISOString());
+              : action === "location"
+                ? await api.renameAssetsLocation(ids,value)
+                : await api.updateCaptureDate(ids, new Date(value).toISOString());
       done(`${r.affected} mídias atualizadas`);
     } catch (e) {
       setError(String(e));
@@ -658,7 +743,9 @@ function Bulk({
             ? "Aplicar tag"
             : action === "album"
               ? "Adicionar ao álbum"
-              : "Corrigir data de captura"}
+              : action === "location"
+                ? "Nomear lugar nas selecionadas"
+                : "Corrigir data de captura"}
         </h2>
         <p>
           Aplicar a {assets.length} mídias apenas no catálogo; os originais não
@@ -679,7 +766,7 @@ function Bulk({
           </select>
         ) : (
           <input
-            aria-label={action === "tag" ? "Nome da tag" : "Nova data"}
+            aria-label={action === "tag" ? "Nome da tag" : action === "location" ? "Nome do lugar" : "Nova data"}
             type={action === "date" ? "datetime-local" : "text"}
             value={value}
             onChange={(e) => setValue(e.target.value)}

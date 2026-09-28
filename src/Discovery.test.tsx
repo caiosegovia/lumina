@@ -172,21 +172,14 @@ describe("descoberta local", () => {
       locationStatus: { geotagged: 0, named: 0, approximate: 0 },
     });
     const update = vi
-      .spyOn(api, "updateUserState")
-      .mockResolvedValue({ affected: 1 });
+      .spyOn(api, "chooseComparisonWinner")
+      .mockResolvedValue({ affected: 3 });
     render(<Discovery navigate={() => {}} />);
     await user.click(
       await screen.findByRole("button", { name: "Manter melhor" }),
     );
-    await waitFor(() => expect(update).toHaveBeenCalledTimes(2));
-    expect(update).toHaveBeenNthCalledWith(1, {
-      assetIds: ["b"],
-      favorite: true,
-    });
-    expect(update).toHaveBeenNthCalledWith(2, {
-      assetIds: ["a", "c"],
-      reviewLater: true,
-    });
+    await waitFor(() => expect(update).toHaveBeenCalledTimes(1));
+    expect(update).toHaveBeenCalledWith("b", ["a", "b", "c"]);
     expect(await screen.findByText(/Nada foi excluído/)).toBeInTheDocument();
   });
   it("persiste perfis e permite revisar o burst inteiro", async () => {

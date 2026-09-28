@@ -41,7 +41,7 @@ it("expande os motivos e pagina sem confundir arquivos com falhas", async () => 
   expect(screen.getByText("decoder failed")).toBeVisible();
   expect(screen.getByText("timeout")).toBeVisible();
   await user.click(screen.getByRole("button", { name: "Próxima página" }));
-  await waitFor(() => expect(fetch).toHaveBeenLastCalledWith(50));
+  await waitFor(() => expect(fetch).toHaveBeenLastCalledWith(50, "", ""));
   expect(await screen.findByText("b.jpg")).toBeVisible();
   expect(screen.getByRole("button", { name: "Próxima página" })).toBeDisabled();
 });
@@ -59,3 +59,4 @@ it("mostra erro de consulta e permite tentar novamente", async () => {
     await screen.findByText("Nenhuma falha técnica nesta consulta."),
   ).toBeVisible();
 });
+it("filtra por etapa e só oferece nova tentativa quando recuperável",async()=>{const user=userEvent.setup();const fetch=vi.spyOn(api,"technicalFailures").mockResolvedValue({total:1,nextOffset:null,items:[{assetId:"a",filename:"a.jpg",path:"D:/a.jpg",previewError:"timeout temporário",retryablePreview:true}]});const retry=vi.spyOn(api,"retryTechnicalPreview").mockResolvedValue({affected:1});render(<TechnicalFailures close={()=>{}}/>);await user.selectOptions(await screen.findByLabelText("Etapa"),"preview");await waitFor(()=>expect(fetch).toHaveBeenLastCalledWith(0,"preview",""));await user.click(await screen.findByRole("button",{name:"Tentar preview novamente"}));await waitFor(()=>expect(retry).toHaveBeenCalledWith("a"));expect(await screen.findByRole("status")).toHaveTextContent("recolocado na fila")});

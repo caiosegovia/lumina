@@ -3,7 +3,7 @@ export type ProtectionState = "source_only" | "consolidated" | "replica_verified
 
 export interface LibraryConfig { id: string; name: string; masterPath: string; backupPath: string; createdAt: string }
 export interface LibraryStartupStatus { state:"unconfigured"|"ready"|"needs_repair"; issues:string[] }
-export interface TechnicalFailure {assetId:string;filename:string;path:string;previewError?:string;metadataError?:string;previewUpdatedAt?:string;metadataUpdatedAt?:string}
+export interface TechnicalFailure {assetId:string;filename:string;path:string;previewError?:string;metadataError?:string;previewUpdatedAt?:string;metadataUpdatedAt?:string;retryablePreview?:boolean}
 export interface FailurePage {items:TechnicalFailure[];total:number;nextOffset?:number|null}
 export interface DashboardBreakdown{key:string;items:number;bytes:number}
 export interface DashboardStorage{masterTotalBytes:number;masterUsedBytes:number;masterFreeBytes:number;libraryBytes:number;cacheBytes:number;temporaryBytes:number;backupTotalBytes:number;backupUsedBytes:number;backupFreeBytes:number;pendingBackupBytes:number;projectedBackupFreeBytes:number;reserveBytes:number;estimatedAdditionalItems:number;averageAssetBytes:number;p90AssetBytes:number;backupAvailable:boolean}
@@ -17,10 +17,12 @@ export interface Source { id: string; name: string; path: string; volumeLabel: s
 export interface ReviewSummary {reviewLater:number;suspiciousDates:number;missingPreviews:number;incompleteMetadata:number;pendingProtection:number;undecidedDuplicates:number;technicalFailures:number}
 export interface LibraryHealth{overall:"healthy"|"attention"|"error";checks:{key:string;label:string;state:"healthy"|"warning"|"error";detail:string}[];generatedAt:string}
 export interface MediaAsset { id: string; filename: string; mediaType: "photo" | "video" | "raw"; extension: string; capturedAt: string; dateSource: string; dateSuspicious?: boolean; bytes: number; width?: number; height?: number; duration?: number; camera?: string; latitude?: number; longitude?: number; thumbnail?: string; masterPath: string; hash: string; protectionState: ProtectionState; occurrenceCount: number; sourceNames: string[]; tags: string[];favorite:boolean;rating:number;reviewLater:boolean;description:string }
-export interface AssetDetails{camera?:string;detectedFormat?:string;mime?:string;container?:string;codec?:string;audioCodec?:string;frameRate?:number;bitrate?:number;pixelFormat?:string;lens?:string;iso?:number;aperture?:number;exposure?:string;focalLength?:number;orientation?:number;colorProfile?:string;supportLevel?:string;inventoryState?:string;inventoryError?:string;enrichedAt?:string;placeName?:string;sublocation?:string;locationCity?:string;locationRegion?:string;locationCountry?:string;locationSource?:"embedded"|"offline"|"approximate";locationConfidence?:"exact"|"probable"|"approximate";altitude?:number;locationAccuracyM?:number}
-export interface GalleryFilters { query:string; year?:number; dateFrom?:string; dateTo?:string; mediaType?:string; camera?:string; sourceId?:string; originalFolder?:string; extension?:string; hasLocation?:boolean; placeKey?:string; tagId?:string; albumId?:string; protectionState?:string; dateSuspicious?:boolean;favorite?:boolean;minimumRating?:number;reviewLater?:boolean }
+export interface AssetDetails{camera?:string;detectedFormat?:string;mime?:string;container?:string;codec?:string;audioCodec?:string;frameRate?:number;bitrate?:number;pixelFormat?:string;lens?:string;iso?:number;aperture?:number;exposure?:string;focalLength?:number;orientation?:number;colorProfile?:string;supportLevel?:string;inventoryState?:string;inventoryError?:string;enrichedAt?:string;placeName?:string;sublocation?:string;locationCity?:string;locationRegion?:string;locationCountry?:string;locationSource?:"embedded"|"offline"|"approximate"|"manual";locationConfidence?:"exact"|"probable"|"approximate";altitude?:number;locationAccuracyM?:number}
+export interface GalleryFilters { query:string; assetIds?:string[]; year?:number; dateFrom?:string; dateTo?:string; mediaType?:string; camera?:string; sourceId?:string; originalFolder?:string; extension?:string; hasLocation?:boolean; placeKey?:string; tagId?:string; albumId?:string; protectionState?:string; dateSuspicious?:boolean;favorite?:boolean;minimumRating?:number;reviewLater?:boolean }
 export type GallerySort = "captured_desc"|"captured_asc"|"name_asc"|"name_desc"|"size_desc"|"size_asc";
 export interface SavedView {id:string;name:string;filters:GalleryFilters;smartAlbum:boolean;createdAt:string;updatedAt:string}
+export interface CurationSession{id:string;name:string;filters:GalleryFilters;sort:GallerySort;state:"active"|"completed";totalItems:number;reviewedItems:number;skippedItems:number;createdAt:string;updatedAt:string}
+export interface CurationPage{session:CurationSession;assetIds:string[];remaining:number}
 export interface TagInfo{id:string;name:string;assetCount:number;parentId?:string}
 export interface PersonInfo{id:string;name:string;assetCount:number}
 export interface FilterOption { value:string; label:string; count:number }
@@ -53,6 +55,6 @@ export interface DiscoveryGroup {id:string;title:string;detail:string;score:numb
 export interface LocationStatus {geotagged:number;named:number;approximate:number}
 export interface LocationResolveResult {resolved:number;named:number;approximate:number}
 export interface AppPreferences {resourceProfile:"economy"|"balanced"|"performance";curationRule:"balanced"|"quality"|"review_all"}
-export interface DiscoveryOverview {indexed:number;indexable:number;similar:DiscoveryGroup[];sequences:DiscoveryGroup[];memories:DiscoveryGroup[];places:DiscoveryGroup[];trips:DiscoveryGroup[];locationStatus:LocationStatus}
+export interface DiscoveryOverview {indexed:number;indexable:number;similar:DiscoveryGroup[];sequences:DiscoveryGroup[];memories:DiscoveryGroup[];places:DiscoveryGroup[];trips:DiscoveryGroup[];locationStatus:LocationStatus;periods?:{key:string;label:string;count:number}[];coverage?:{catalogItems:number;indexableItems:number;indexedItems:number;percent:number;generatedAt:string}}
 export interface DiscoveryIndexResult {indexed:number;skipped:number;failed:number}
 export interface BatchResult { affected:number }

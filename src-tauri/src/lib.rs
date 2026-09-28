@@ -1,6 +1,7 @@
 mod app_paths;
 mod backup;
 mod catalog;
+mod curation;
 mod diagnostics;
 mod discovery;
 mod discovery_work;
@@ -906,12 +907,34 @@ fn get_review_summary(state: State<AppState>) -> Result<ReviewSummary, String> {
 #[tauri::command]
 async fn get_technical_failures(
     offset: i64,
+    stage: String,
+    query: String,
     state: State<'_, AppState>,
 ) -> Result<review::FailurePage, String> {
     let cfg = current(&state)?;
-    tauri::async_runtime::spawn_blocking(move || review::failures(&cfg, offset))
+    tauri::async_runtime::spawn_blocking(move || review::failures(&cfg, offset, &stage, &query))
         .await
         .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn retry_technical_preview(
+    asset_id: String,
+    state: State<AppState>,
+    manager: State<jobs::JobManager>,
+) -> Result<BatchResult, String> {
+    if !valid_thumbnail_asset_id(&asset_id) {
+        return Err("Identificador inválido".into());
+    }
+    let cfg = current(&state)?;
+    let conn = db(&cfg)?;
+    let now = Utc::now().to_rfc3339();
+    let affected=conn.execute("UPDATE thumbnails SET state='pending',last_error=NULL,updated_at=?2 WHERE asset_id=?1 AND state='failed'",params![asset_id,now]).map_err(|error|error.to_string())? as i64;
+    if affected > 0 {
+        conn.execute("UPDATE work_queue SET state='pending',attempts=0,last_error=NULL,priority=200,updated_at=?2 WHERE asset_id=?1 AND kind='thumbnail' AND state='failed'",params![asset_id,now]).map_err(|error|error.to_string())?;
+        manager.request_thumbnail(cfg, asset_id, 200)?;
+    }
+    Ok(BatchResult { affected })
 }
 #[tauri::command]
 fn get_library_health(state: State<AppState>) -> Result<LibraryHealth, String> {
@@ -997,6 +1020,52 @@ async fn search_gallery(
     tauri::async_runtime::spawn_blocking(move || gallery::search(&db(&cfg)?, &request))
         .await
         .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn create_curation_session(
+    name: String,
+    filters: GalleryFilters,
+    sort: String,
+    state: State<'_, AppState>,
+) -> Result<curation::CurationSession, String> {
+    let cfg = current(&state)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut conn = db(&cfg)?;
+        curation::create(&mut conn, &name, filters, &sort)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+fn list_curation_sessions(
+    state: State<AppState>,
+) -> Result<Vec<curation::CurationSession>, String> {
+    curation::list(&db(&current(&state)?)?)
+}
+
+#[tauri::command]
+fn get_curation_page(id: String, state: State<AppState>) -> Result<curation::CurationPage, String> {
+    curation::page(&db(&current(&state)?)?, &id)
+}
+
+#[tauri::command]
+fn update_curation_items(
+    id: String,
+    asset_ids: Vec<String>,
+    decision: String,
+    state: State<AppState>,
+) -> Result<curation::CurationSession, String> {
+    let mut conn = db(&current(&state)?)?;
+    curation::decide(&mut conn, &id, asset_ids, &decision)
+}
+
+#[tauri::command]
+fn delete_curation_session(id: String, state: State<AppState>) -> Result<BatchResult, String> {
+    Ok(BatchResult {
+        affected: curation::delete(&db(&current(&state)?)?, &id)?,
+    })
 }
 #[tauri::command]
 fn list_duplicates(state: State<AppState>) -> Result<Vec<DuplicateGroup>, String> {
@@ -1183,6 +1252,32 @@ async fn resolve_location_names(
 fn rename_location(place_key: String, name: String, state: State<AppState>) -> Result<(), String> {
     discovery::rename_location(&current(&state)?, &place_key, &name)
 }
+
+#[tauri::command]
+fn rename_assets_location(
+    asset_ids: Vec<String>,
+    name: String,
+    state: State<AppState>,
+) -> Result<BatchResult, String> {
+    let ids = checked_ids(asset_ids)?;
+    Ok(BatchResult {
+        affected: discovery::rename_assets_location(&current(&state)?, &ids, &name)?,
+    })
+}
+
+#[tauri::command]
+fn set_burst_exclusions(
+    group_id: String,
+    asset_ids: Vec<String>,
+    state: State<AppState>,
+) -> Result<BatchResult, String> {
+    if asset_ids.len() > 500 {
+        return Err("Selecione no máximo 500 mídias".into());
+    }
+    Ok(BatchResult {
+        affected: discovery::set_burst_exclusions(&current(&state)?, &group_id, &asset_ids)?,
+    })
+}
 #[tauri::command]
 fn get_app_preferences(state: State<AppState>) -> Result<AppPreferences, String> {
     let conn = db(&current(&state)?)?;
@@ -1304,8 +1399,17 @@ fn add_assets_to_album(
         return Err("Álbum não encontrado".into());
     }
     let mut affected = 0;
+    let mut inserted = Vec::new();
     for id in ids {
-        affected+=tx.execute("INSERT OR IGNORE INTO album_assets(album_id,asset_id)SELECT ?1,id FROM assets WHERE id=?2",params![album_id,id]).map_err(|e|e.to_string())? as i64
+        let changed=tx.execute("INSERT OR IGNORE INTO album_assets(album_id,asset_id)SELECT ?1,id FROM assets WHERE id=?2",params![album_id,id]).map_err(|e|e.to_string())? as i64;
+        if changed > 0 {
+            inserted.push(id);
+        }
+        affected += changed;
+    }
+    if affected > 0 {
+        let action = serde_json::json!({"albumId":album_id,"assetIds":inserted}).to_string();
+        tx.execute("INSERT INTO catalog_actions(id,kind,payload,undo_payload,state,created_at)VALUES(?1,'album_batch',?2,?2,'applied',?3)",params![Uuid::new_v4().to_string(),action,Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
     }
     tx.commit().map_err(|e| e.to_string())?;
     Ok(BatchResult { affected })
@@ -1355,8 +1459,17 @@ fn apply_tag(
         .query_row("SELECT id FROM tags WHERE name=?1", [&name], |r| r.get(0))
         .map_err(|e| e.to_string())?;
     let mut affected = 0;
+    let mut inserted = Vec::new();
     for asset in ids {
-        affected+=tx.execute("INSERT OR IGNORE INTO asset_tags(asset_id,tag_id)SELECT id,?2 FROM assets WHERE id=?1",params![asset,tag_id]).map_err(|e|e.to_string())? as i64
+        let changed=tx.execute("INSERT OR IGNORE INTO asset_tags(asset_id,tag_id)SELECT id,?2 FROM assets WHERE id=?1",params![asset,tag_id]).map_err(|e|e.to_string())? as i64;
+        if changed > 0 {
+            inserted.push(asset);
+        }
+        affected += changed;
+    }
+    if affected > 0 {
+        let action = serde_json::json!({"tagId":tag_id,"assetIds":inserted}).to_string();
+        tx.execute("INSERT INTO catalog_actions(id,kind,payload,undo_payload,state,created_at)VALUES(?1,'tag_batch',?2,?2,'applied',?3)",params![Uuid::new_v4().to_string(),action,Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
     }
     tx.commit().map_err(|e| e.to_string())?;
     Ok(BatchResult { affected })
@@ -1488,15 +1601,20 @@ fn update_capture_date(
     let mut conn = db(&cfg)?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let mut affected = 0;
+    let mut previous = Vec::new();
     for id in ids {
-        let old: Option<String> = tx
-            .query_row("SELECT captured_at FROM assets WHERE id=?1", [&id], |r| {
-                r.get(0)
-            })
+        let old: Option<(String, String)> = tx
+            .query_row(
+                "SELECT captured_at,date_source FROM assets WHERE id=?1",
+                [&id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
             .optional()
             .map_err(|e| e.to_string())?;
         if let Some(old) = old {
-            tx.execute("INSERT INTO asset_edits(asset_id,field,old_value,new_value,edited_at)VALUES(?1,'captured_at',?2,?3,?4)",params![id,old,parsed,Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
+            previous.push(
+                serde_json::json!({"assetId":id.clone(),"capturedAt":old.0,"dateSource":old.1}),
+            );
             affected += tx
                 .execute(
                     "UPDATE assets SET captured_at=?2,date_source='user_corrected' WHERE id=?1",
@@ -1504,6 +1622,9 @@ fn update_capture_date(
                 )
                 .map_err(|e| e.to_string())? as i64
         }
+    }
+    if affected > 0 {
+        tx.execute("INSERT INTO catalog_actions(id,kind,payload,undo_payload,state,created_at)VALUES(?1,'capture_date_batch',?2,?3,'applied',?4)",params![Uuid::new_v4().to_string(),serde_json::json!({"capturedAt":parsed}).to_string(),serde_json::json!({"items":previous}).to_string(),Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
     }
     tx.commit().map_err(|e| e.to_string())?;
     Ok(BatchResult { affected })
@@ -1531,6 +1652,7 @@ fn update_user_state(
     let tx = conn.transaction().map_err(|error| error.to_string())?;
     let now = Utc::now().to_rfc3339();
     let mut affected = 0;
+    let mut previous = Vec::new();
     for asset in ids {
         let exists: bool = tx
             .query_row(
@@ -1549,10 +1671,40 @@ fn update_user_state(
             request.review_later.unwrap_or(old.2),
             request.description.clone().unwrap_or(old.3.clone()),
         );
+        previous.push(serde_json::json!({"assetId":asset.clone(),"favorite":old.0,"rating":old.1,"reviewLater":old.2,"description":old.3}));
         tx.execute("INSERT INTO asset_user_state(asset_id,favorite,rating,review_later,description,updated_at)VALUES(?1,?2,?3,?4,?5,?6)ON CONFLICT(asset_id)DO UPDATE SET favorite=excluded.favorite,rating=excluded.rating,review_later=excluded.review_later,description=excluded.description,updated_at=excluded.updated_at",params![asset,next.0,next.1,next.2,next.3,now]).map_err(|error|error.to_string())?;
-        tx.execute("INSERT INTO asset_edits(asset_id,field,old_value,new_value,edited_at)VALUES(?1,'user_state',?2,?3,?4)",params![asset,serde_json::to_string(&old).unwrap_or_default(),serde_json::to_string(&next).unwrap_or_default(),now]).map_err(|error|error.to_string())?;
         affected += 1;
     }
+    if affected > 0 {
+        tx.execute("INSERT INTO catalog_actions(id,kind,payload,undo_payload,state,created_at)VALUES(?1,'user_state_batch',?2,?3,'applied',?4)",params![Uuid::new_v4().to_string(),serde_json::json!({"affected":affected}).to_string(),serde_json::json!({"items":previous}).to_string(),now]).map_err(|error|error.to_string())?;
+    }
+    tx.commit().map_err(|error| error.to_string())?;
+    Ok(BatchResult { affected })
+}
+
+#[tauri::command]
+fn choose_comparison_winner(
+    winner_id: String,
+    asset_ids: Vec<String>,
+    state: State<AppState>,
+) -> Result<BatchResult, String> {
+    let ids = checked_ids(asset_ids)?;
+    if !(2..=4).contains(&ids.len()) || !ids.contains(&winner_id) {
+        return Err("A comparação deve conter de 2 a 4 mídias e uma escolha válida".into());
+    }
+    let mut conn = db(&current(&state)?)?;
+    let tx = conn.transaction().map_err(|error| error.to_string())?;
+    let now = Utc::now().to_rfc3339();
+    let mut previous = Vec::new();
+    let mut affected = 0;
+    for asset in ids {
+        let old:(bool,i64,bool,String)=tx.query_row("SELECT favorite,rating,review_later,description FROM asset_user_state WHERE asset_id=?1",[&asset],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).optional().map_err(|error|error.to_string())?.unwrap_or((false,0,false,String::new()));
+        previous.push(serde_json::json!({"assetId":asset.clone(),"favorite":old.0,"rating":old.1,"reviewLater":old.2,"description":old.3}));
+        let winner = asset == winner_id;
+        tx.execute("INSERT INTO asset_user_state(asset_id,favorite,rating,review_later,description,updated_at)VALUES(?1,?2,?3,?4,?5,?6)ON CONFLICT(asset_id)DO UPDATE SET favorite=excluded.favorite,rating=excluded.rating,review_later=excluded.review_later,description=excluded.description,updated_at=excluded.updated_at",params![asset,if winner{true}else{old.0},if winner{5}else{old.1},!winner,old.3,now]).map_err(|error|error.to_string())?;
+        affected += 1;
+    }
+    tx.execute("INSERT INTO catalog_actions(id,kind,payload,undo_payload,state,created_at)VALUES(?1,'user_state_batch',?2,?3,'applied',?4)",params![Uuid::new_v4().to_string(),serde_json::json!({"winnerId":winner_id,"affected":affected}).to_string(),serde_json::json!({"items":previous}).to_string(),now]).map_err(|error|error.to_string())?;
     tx.commit().map_err(|error| error.to_string())?;
     Ok(BatchResult { affected })
 }
@@ -2374,11 +2526,17 @@ pub fn run() {
             start_source_sync,
             get_review_summary,
             get_technical_failures,
+            retry_technical_preview,
             get_library_health,
             record_client_error,
             undo_last_edit,
             list_assets,
             search_gallery,
+            create_curation_session,
+            list_curation_sessions,
+            get_curation_page,
+            update_curation_items,
+            delete_curation_session,
             list_duplicates,
             get_duplicate_occurrences,
             get_duplicate_status,
@@ -2396,6 +2554,8 @@ pub fn run() {
             get_discovery_overview,
             resolve_location_names,
             rename_location,
+            rename_assets_location,
+            set_burst_exclusions,
             get_app_preferences,
             update_app_preferences,
             create_album,
@@ -2412,6 +2572,7 @@ pub fn run() {
             delete_tag,
             update_capture_date,
             update_user_state,
+            choose_comparison_winner,
             list_saved_views,
             save_gallery_view,
             delete_saved_view,

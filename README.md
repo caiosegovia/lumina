@@ -1,8 +1,6 @@
 # Lumina
 
-Versão atual: **0.26.0-beta.1**. Consulte [entregas](RELEASE-0.26-BETA.md), [roteiro de testes](VALIDATION-0.26-BETA.md) e [revisão arquitetural](ARCHITECTURE-0.26.md). O histórico anterior permanece em [REMEDIATION-0.25.1.md](REMEDIATION-0.25.1.md) e [VALIDATION-0.25-BETA.md](VALIDATION-0.25-BETA.md).
-
-Versão candidata atual: **0.23.0-beta.2**. Ela preserva a baseline resiliente homologada na 0.22.2 e consolida produtividade, tipografia embarcada, atividade, duplicatas e insights para nova homologação.
+Versão atual: **0.27.0-beta.1**. Consulte [entregas](RELEASE-0.27-BETA.md), [roteiro de testes](VALIDATION-0.27-BETA.md) e [revisão arquitetural](ARCHITECTURE-0.27.md). O histórico da baseline anterior permanece em [RELEASE-0.26-BETA.md](RELEASE-0.26-BETA.md) e [VALIDATION-0.26-BETA.md](VALIDATION-0.26-BETA.md).
 
 Fontes vigentes: [escopo preservado](SCOPE-0.22.2.md), [contrato não funcional](NFR-0.22.2-RESILIENCE.md), [arquitetura-alvo](ARCHITECTURE-0.22.2.md), [auditoria arquitetural](ARCHITECTURE-AUDIT-0.22.2.md), [plano de remediação](REMEDIATION-0.22.2.md) e [matriz de rastreabilidade](TRACEABILITY-0.22.2.md).
 
@@ -27,6 +25,7 @@ Lumina é um aplicativo desktop local para inventariar, consolidar, deduplicar e
 - Inventário amplo de fotos, vídeos e RAW com ExifTool em lotes, FFmpeg e FFprobe empacotados.
 - Importação retomável, controles de trabalhos e relatórios técnicos.
 - Galeria em grade ou lista, paginação por cursor, filtros rápidos, pills, preview HD progressivo e metadados EXIF sob demanda.
+- Seleção em lote, comparação de até quatro mídias, undo transacional, álbuns inteligentes e sessões de curadoria retomáveis.
 - Dashboard progressivo com capacidade dos discos, composição, crescimento, saúde técnica, proteção e insights acionáveis.
 - Catálogo SQLite com snapshots, agregados e índices testados com 100 mil e 500 mil mídias.
 
@@ -59,6 +58,7 @@ npm.cmd run dev
 npm.cmd test
 npm.cmd run build
 cargo test --manifest-path src-tauri/Cargo.toml
+powershell -ExecutionPolicy Bypass -File scripts/verify-0.27.ps1
 ```
 
 Os testes existentes são úteis, mas não cobrem ainda todos os gates de memória, endurance e árvore de processos exigidos para a 0.22.2. Consulte [TESTING.md](TESTING.md) e não interprete uma compilação verde como aceite de produção.

@@ -2,6 +2,7 @@
 // Everything is generated under artifacts; no existing catalog is opened.
 import { chromium } from "@playwright/test";
 import { spawn, execFileSync } from "node:child_process";
+import { createServer } from "node:net";
 import {
   mkdirSync,
   copyFileSync,
@@ -13,7 +14,22 @@ import { resolve, join, dirname } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import assert from "node:assert/strict";
 const exe = resolve(process.argv[2] || "src-tauri/target/release/lumina.exe");
-const root = resolve(`artifacts/0.26/desktop-${Date.now()}`),
+const debugPort = await new Promise((resolvePort, reject) => {
+  const server = createServer();
+  server.once("error", reject);
+  server.listen(0, "127.0.0.1", () => {
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      server.close();
+      reject(new Error("Could not allocate a WebView2 debugging port"));
+      return;
+    }
+    server.close((error) =>
+      error ? reject(error) : resolvePort(address.port),
+    );
+  });
+});
+const root = resolve(`artifacts/0.27/desktop-${Date.now()}`),
   source = join(root, "source"),
   master = join(root, "master"),
   backup = join(root, "replica"),
@@ -67,7 +83,7 @@ const app = spawn(exe, [], {
     ...process.env,
     LUMINA_DATA_DIR: profile,
     WEBVIEW2_USER_DATA_FOLDER: join(root, "webview"),
-    WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: "--remote-debugging-port=9237",
+    WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${debugPort}`,
   },
 });
 let browser,
@@ -75,9 +91,12 @@ let browser,
 try {
   for (let attempt = 0; attempt < 120; attempt++) {
     try {
-      browser = await chromium.connectOverCDP("http://127.0.0.1:9237", {
-        timeout: 1000,
-      });
+      browser = await chromium.connectOverCDP(
+        `http://127.0.0.1:${debugPort}`,
+        {
+          timeout: 1000,
+        },
+      );
       break;
     } catch {
       if (app.exitCode !== null) throw Error(`App exited: ${app.exitCode}`);
@@ -109,7 +128,7 @@ try {
   assert.equal(config.masterPath.replace(/^\\\\\?\\/, ""), master);
   const jobId = await invoke("start_analysis", {
     sourcePath: source,
-    sourceName: "Synthetic smoke 0.26",
+    sourceName: "Synthetic smoke 0.27",
   });
   const until = async (check, label, timeout = 180000) => {
     const end = Date.now() + timeout;
@@ -154,11 +173,30 @@ try {
   console.log(
     "PASS real consolidation, exact deduplication and verified replica",
   );
+  const photos=assets.filter(asset=>asset.mediaType==="photo");
+  const curation=await invoke("create_curation_session",{name:"Smoke 0.27",filters:{query:"",mediaType:"photo"},sort:"captured_desc"});
+  assert.equal(curation.totalItems,3);
+  let curationPage=await invoke("get_curation_page",{id:curation.id});
+  assert.equal(curationPage.assetIds.length,3);
+  const reviewed=curationPage.assetIds[0];
+  await invoke("update_curation_items",{id:curation.id,assetIds:[reviewed],decision:"reviewed"});
+  curationPage=await invoke("get_curation_page",{id:curation.id});
+  assert.equal(curationPage.remaining,2);
+  assert(!curationPage.assetIds.includes(reviewed));
+  assert((await invoke("list_curation_sessions")).some(item=>item.id===curation.id&&item.reviewedItems===1));
+  await invoke("update_user_state",{request:{assetIds:photos.slice(0,2).map(asset=>asset.id),favorite:true,rating:4}});
+  assert.equal((await invoke("undo_last_edit")).affected,2);
+  const restored=await invoke("search_gallery",{request:{filters:{query:"",assetIds:photos.slice(0,2).map(asset=>asset.id)},limit:10}});
+  assert(restored.assets.every(asset=>!asset.favorite&&asset.rating===0));
+  await invoke("choose_comparison_winner",{winnerId:photos[0].id,assetIds:photos.slice(0,2).map(asset=>asset.id)});
+  assert.equal((await invoke("undo_last_edit")).affected,2);
+  await invoke("delete_curation_session",{id:curation.id});
+  console.log("PASS resumable curation, comparison decision and atomic batch undo");
   const indexed = await invoke("build_discovery_index");
   assert.equal(indexed.indexed, 3);
   assert.equal(indexed.failed, 0);
   assert.equal((await invoke("build_discovery_index")).indexed, 0);
-  const failures = await invoke("get_technical_failures", { offset: 0 });
+  const failures = await invoke("get_technical_failures", { offset: 0, stage: "", query: "" });
   assert.equal(failures.total, 0);
   const photo = assets.find((a) => a.mediaType === "photo");
   await page.getByRole("button", { name: "Biblioteca", exact: true }).click();
@@ -214,7 +252,7 @@ try {
     join(root, "result.json"),
     JSON.stringify(
       {
-        version: "0.26.0-beta.1",
+        version: "0.27.0-beta.1",
         executable: exe,
         isolatedProfile: true,
         sourceFiles: 5,
