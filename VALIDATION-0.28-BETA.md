@@ -40,6 +40,7 @@
 
 - `npm test`: 58 testes aprovados em 9 arquivos.
 - `npm run build`: TypeScript e Vite aprovados.
+- `npm audit --audit-level=moderate`: nenhuma vulnerabilidade encontrada.
 - Browser Edge: viewer responsivo aprovado em 1400×900, 1100×700 e 1000×700.
 - `cargo fmt --check` e `cargo clippy --all-targets -- -D warnings`: aprovados.
 - `cargo test --lib -- --test-threads=1`: 149 aprovados, 2 ignorados e nenhuma falha.
