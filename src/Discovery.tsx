@@ -1,11 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import {
   Images,
-  Layers3,
   LoaderCircle,
   MapPin,
   RefreshCw,
-  Route,
   Search,
   Sparkles,
   Video,
@@ -273,15 +271,6 @@ export default function Discovery({
       .then(setPreferences)
       .catch((error) => setMessage(String(error)));
   }, []);
-  const savePreferences = async (next: AppPreferences) => {
-    setPreferences(next);
-    try {
-      setPreferences(await api.updateAppPreferences(next));
-      setMessage("Preferências de processamento e curadoria salvas.");
-    } catch (error) {
-      setMessage(String(error));
-    }
-  };
   const index = async () => {
     setBusy(true);
     setMessage("Analisando imagens localmente…");
@@ -385,35 +374,11 @@ export default function Discovery({
     <div className="discovery">
       <div className="discovery-hero">
         <div>
-          <p className="eyebrow">DESCOBERTA LOCAL E EXPLICÁVEL</p>
-          <h2>Redescubra sua biblioteca</h2>
-          <p>
-            Memórias, lugares, viagens, sequências e imagens parecidas
-            identificadas somente neste computador.
-          </p>
+          <p className="eyebrow">SEU ACERVO, DE UM JEITO MAIS HUMANO</p>
+          <h2>Descobrir</h2>
+          <p>Memórias, lugares e sequências interessantes da sua biblioteca.</p>
         </div>
-        <div className="discovery-hero-actions">
-          <button disabled={busy || work.running} onClick={() => void load()}>
-            Atualizar descobertas
-          </button>
-          <button
-            disabled={
-              busy || work.running || data.locationStatus.geotagged === 0
-            }
-            onClick={resolvePlaces}
-          >
-            <MapPin />
-            Recalcular lugares
-          </button>
-          <button
-            className="primary"
-            disabled={busy || work.running || complete}
-            onClick={index}
-          >
-            {busy ? <LoaderCircle className="spin" /> : <RefreshCw />}
-            {complete ? "Análise atualizada" : "Analisar biblioteca"}
-          </button>
-        </div>
+        <span className={`discovery-freshness ${complete?"ready":"pending"}`}>{complete?"Atualizado":"Análise em andamento"}</span>
       </div>
       {message && (
         <div className="notice" role="status">
@@ -443,95 +408,16 @@ export default function Discovery({
           </small>
         </div>
       )}
-      <section
-        className="discovery-preferences"
-        aria-label="Automação configurável"
-      >
-        <div>
-          <strong>Processamento</strong>
-          <small>Limite global para tarefas de disco em segundo plano.</small>
-        </div>
-        <select
-          aria-label="Perfil de processamento"
-          value={preferences.resourceProfile}
-          onChange={(event) =>
-            void savePreferences({
-              ...preferences,
-              resourceProfile: event.target
-                .value as AppPreferences["resourceProfile"],
-            })
-          }
-        >
-          <option value="economy">Economia</option>
-          <option value="balanced">Equilibrado</option>
-          <option value="performance">Desempenho</option>
-        </select>
-        <div>
-          <strong>Curadoria de bursts</strong>
-          <small>Regra aplicada pela ação de curadoria.</small>
-        </div>
-        <select
-          aria-label="Regra de curadoria"
-          value={preferences.curationRule}
-          onChange={(event) =>
-            void savePreferences({
-              ...preferences,
-              curationRule: event.target
-                .value as AppPreferences["curationRule"],
-            })
-          }
-        >
-          <option value="balanced">Equilibrada</option>
-          <option value="quality">Priorizar qualidade</option>
-          <option value="review_all">Revisar todas</option>
-        </select>
-      </section>
-      <div className="location-summary">
-        <span>
-          <strong>{data.locationStatus.geotagged}</strong> com GPS
-        </span>
-        <span>
-          <strong>{data.locationStatus.named}</strong> com lugar
-        </span>
-        <span>
-          <strong>{data.locationStatus.approximate}</strong> para revisar
-        </span>
-        <small>
-          Resolução local e privada; os arquivos originais não são alterados.
-        </small>
-      </div>
-      <div className="discovery-index">
-        <Sparkles />
-        <div>
-          <strong>
-            {data.indexed.toLocaleString("pt-BR")} de{" "}
-            {data.indexable.toLocaleString("pt-BR")} imagens analisadas
-          </strong>
-          <span>
-            {complete
-              ? "Índice visual atualizado"
-              : "A análise pode continuar enquanto você usa o Lumina"}
-          </span>
-        </div>
-        <div className="discovery-index-bar">
-          <i
-            style={{
-              width: `${data.indexable ? (data.indexed * 100) / data.indexable : 100}%`,
-            }}
-          />
-        </div>
-      </div>
-      {data.coverage&&<section className="discovery-coverage" aria-label="Cobertura das descobertas"><div><strong>{Math.round(data.coverage.percent)}%</strong><span>de cobertura visual</span></div><p>{data.coverage.indexedItems.toLocaleString("pt-BR")} imagens analisadas de {data.coverage.indexableItems.toLocaleString("pt-BR")} elegíveis · {data.coverage.catalogItems.toLocaleString("pt-BR")} mídias no catálogo.</p></section>}
-      {!!data.periods?.length&&<div className="discovery-periods"><span><CalendarDays/> Explorar período</span>{data.periods.slice(0,18).map(period=><button key={period.key} onClick={()=>{const [year,month]=period.key.split("-").map(Number),last=new Date(year,month,0).getDate();openGalleryWithFilters({dateFrom:`${period.key}-01`,dateTo:`${period.key}-${String(last).padStart(2,"0")}`});navigate("library")}}><strong>{period.label}</strong><small>{period.count}</small></button>)}</div>}
       <label className="discovery-search">
         <Search />
         <input
           aria-label="Buscar nas descobertas"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Buscar por arquivo, câmera, lugar, clara, escura, quente, fria…"
+          placeholder="Buscar lugares, períodos ou equipamentos…"
         />
       </label>
+      {!!data.periods?.length&&<div className="discovery-periods"><span><CalendarDays/> Períodos</span>{data.periods.slice(0,12).map(period=><button key={period.key} onClick={()=>{const [year,month]=period.key.split("-").map(Number),last=new Date(year,month,0).getDate();openGalleryWithFilters({dateFrom:`${period.key}-01`,dateTo:`${period.key}-${String(last).padStart(2,"0")}`});navigate("library")}}><strong>{period.label}</strong><small>{period.count}</small></button>)}</div>}
       <Shelf
         title="Memórias"
         description="Registros deste período em outros anos."
@@ -558,47 +444,22 @@ export default function Discovery({
           />
         </>
       )}
-      {data.trips.length > 0 && (
-        <>
-          <div className="discovery-divider">
-            <Route />
-            Viagens sugeridas
-          </div>
-          <Shelf
-            title="Viagens"
-            description="Sequências de três ou mais registros localizados em datas próximas."
-            groups={filter(data.trips)}
-            empty="Ainda não há uma sequência suficiente para sugerir viagens."
-            navigate={navigate}
-          />
-        </>
-      )}
       <Shelf
-        title="Bursts"
-        description="Rajadas coerentes por horário, equipamento e semelhança visual."
+        title="Bursts para revisar"
+        description="Sequências registradas em poucos segundos, agrupadas para uma revisão rápida."
         groups={filter(data.sequences)}
         empty="Nenhum burst com três ou mais registros foi encontrado."
         navigate={navigate}
         onCurate={curateBurst}
         onAdjust={group=>{setAdjusting(group);setIncluded(new Set(group.items.map(item=>item.id)))}}
       />
-      <Shelf
-        title="Visualmente parecidas"
-        description="Sugestões por aparência; não são tratadas como duplicatas."
-        groups={filter(data.similar)}
-        empty="Execute a análise local para encontrar variações visuais."
-        navigate={navigate}
-      />
-      <div className="discovery-safety">
-        <Layers3 />
-        <div>
-          <strong>Você sempre decide</strong>
-          <p>
-            Similaridade é apenas uma sugestão de curadoria. O Lumina não
-            exclui, move nem altera seus originais.
-          </p>
-        </div>
-      </div>
+      <details className="discovery-maintenance">
+        <summary><SlidersHorizontal/> Estado e manutenção da descoberta</summary>
+        <div className="location-summary"><span><strong>{data.locationStatus.geotagged}</strong> com GPS</span><span><strong>{data.locationStatus.named}</strong> com lugar</span><span><strong>{data.locationStatus.approximate}</strong> para revisar</span></div>
+        <div className="discovery-index"><Sparkles/><div><strong>{data.indexed.toLocaleString("pt-BR")} de {data.indexable.toLocaleString("pt-BR")} imagens analisadas</strong><span>O processamento acontece localmente e preserva os originais.</span></div><div className="discovery-index-bar"><i style={{width:`${data.indexable?(data.indexed*100)/data.indexable:100}%`}}/></div></div>
+        {data.coverage&&<p>{Math.round(data.coverage.percent)}% de cobertura · {data.coverage.indexedItems.toLocaleString("pt-BR")} imagens analisadas.</p>}
+        <div className="discovery-maintenance-actions"><button disabled={busy||work.running} onClick={()=>void load()}><RefreshCw/> Atualizar</button><button disabled={busy||work.running||data.locationStatus.geotagged===0} onClick={resolvePlaces}><MapPin/> Recalcular lugares</button><button disabled={busy||work.running||complete} onClick={index}>{busy?<LoaderCircle className="spin"/>:<Sparkles/>}{complete?"Análise atualizada":"Analisar biblioteca"}</button></div>
+      </details>
       {editing && (
         <div
           className="place-editor"

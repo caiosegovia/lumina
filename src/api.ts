@@ -17,7 +17,7 @@ const demoAssets: MediaAsset[] = Array.from({ length: 18 }, (_, i) => ({
 }));
 
 let config: LibraryConfig | null = null;
-let demoAlbums: Album[] = [{ id: "a1", name: "Viagens", assetCount: 5 }, { id: "a2", name: "Família", assetCount: 12 }];
+let demoAlbums: Album[] = [{ id: "a1", name: "Portfólio", assetCount: 5 }, { id: "a2", name: "Família", assetCount: 12 }];
 const demoJobs = new Map<string, { started: number; state: string }>();
 let demoCuration: CurationSession[] = [];
 const demoSources: Source[] = [

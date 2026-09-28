@@ -152,6 +152,46 @@ Escopo fechado: [RELEASE-0.26-BETA.md](RELEASE-0.26-BETA.md). Arquitetura: [ARCH
 
 Escopo: [RELEASE-0.27-BETA.md](RELEASE-0.27-BETA.md). Arquitetura: [ARCHITECTURE-0.27.md](ARCHITECTURE-0.27.md). Homologação: [VALIDATION-0.27-BETA.md](VALIDATION-0.27-BETA.md).
 
+## Feedback de homologação — revisão visual da 0.27.0-beta.2 (28/09/2026)
+
+Status: a estabilidade observada continua válida, mas a experiência visual abaixo está reprovada e bloqueia a aprovação definitiva da 0.27.
+
+### Problemas confirmados
+
+- **Contraste dos botões:** há texto claro sobre superfícies claras, tornando ações difíceis de ler. O problema deve ser corrigido em todos os estados (normal, hover, foco, pressionado e desabilitado), nos temas claro e escuro.
+- **Criação e aplicação de tags:** a jornada não deixa claro quando o usuário está escolhendo uma tag existente, criando uma nova ou aplicando-a aos arquivos selecionados.
+- **Sessões de curadoria:** o conceito e a apresentação atuais não comunicam valor. A solução atual foi rejeitada; não basta trocar o nome.
+- **Descobrir:** a seção está densa, amontoada e sem hierarquia clara, dificultando entender o que pode ser explorado e qual ação tomar.
+- **Itens sem valor percebido:** “Viagens” e “Visualmente parecidas” deixam de fazer parte da experiência principal e devem ser removidos da interface e do escopo ativo.
+
+### Direção obrigatória para a correção
+
+- Consolidar tokens semânticos de cor e contraste para botões, pills, links e estados de interação, com validação WCAG AA e smoke visual nos temas claro/escuro.
+- Transformar tags em um fluxo explícito: seleção dos arquivos, escolha de tags existentes, ação inequívoca “Criar nova tag”, confirmação da aplicação e possibilidade de desfazer.
+- Retirar “sessão de curadoria” da navegação principal. A revisão deve acontecer diretamente na galeria, com fila/progresso apenas se isso for necessário e compreensível, sem exigir que o usuário aprenda uma entidade nova.
+- Redesenhar Descobrir com resumo primeiro e detalhes sob demanda, priorizando apenas linhas do tempo, lugares e bursts que tenham cobertura útil.
+- Remover cartões, navegação e chamadas de “Viagens” e “Visualmente parecidas”; dados legados podem ser preservados para compatibilidade, mas não devem aparecer nem gerar trabalho automático na jornada principal.
+
+### Critérios de aceite visual
+
+- Todo texto de ação é legível nos dois temas e em todos os estados, sem combinação claro sobre claro.
+- Um usuário consegue criar e aplicar uma tag sem conhecimento prévio e recebe confirmação clara do resultado.
+- A galeria não expõe “sessões de curadoria” como conceito obrigatório.
+- Descobrir apresenta uma hierarquia curta, responsiva e sem “Viagens” ou “Visualmente parecidas”.
+- A revisão é validada em 1000×700, 1100×700 e 1400×900, incluindo DPR 1,25/1,5 e navegação por teclado.
+
+## Entregue para homologação — 0.28: revisão integral de UX
+
+- Fundação visual unificada em Inter Variable, cores semânticas e foreground específico por tema.
+- Contraste corrigido para ações primárias no tema escuro e foco visível consistente.
+- Barra da galeria simplificada, ações secundárias em overflow e seleção contextual responsiva.
+- Tag picker com busca, seleção de existentes, criação explícita, confirmação e undo pelo histórico de catálogo.
+- “Sessões de curadoria” removidas da experiência; revisão acontece diretamente na galeria.
+- Descobrir reduzido a Memórias, Lugares e Bursts; “Viagens” e “Visualmente parecidas” removidas da interface principal.
+- Controles técnicos e cobertura de Descobrir movidos para uma área de manutenção sob demanda.
+
+Escopo: [RELEASE-0.28-BETA.md](RELEASE-0.28-BETA.md). Arquitetura: [ARCHITECTURE-0.28.md](ARCHITECTURE-0.28.md). Homologação: [VALIDATION-0.28-BETA.md](VALIDATION-0.28-BETA.md).
+
 ## Depois — 1.0: prontidão de produção
 
 - Telemetria local longitudinal de SLOs, migração e recuperação validadas em múltiplos dispositivos.

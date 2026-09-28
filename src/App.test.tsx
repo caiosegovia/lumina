@@ -72,8 +72,8 @@ describe("fluxo principal do aplicativo", () => {
     await waitFor(() => expect(screen.queryByText("IMG_2401.JPG")).not.toBeInTheDocument());
 
     await user.click(screen.getByRole("button", { name: "Descobrir" }));
-    expect(await screen.findByText("Redescubra sua biblioteca")).toBeInTheDocument();
-    expect(screen.getByText("Visualmente parecidas")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Descobrir" })).toBeInTheDocument();
+    expect(screen.queryByText("Visualmente parecidas")).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Fontes" }));
     expect(await screen.findByText("De onde vêm suas mídias")).toBeInTheDocument();
@@ -90,7 +90,7 @@ describe("fluxo principal do aplicativo", () => {
     expect(screen.getByLabelText(/Comparação de/)).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Álbuns" }));
-    expect(await screen.findByText("Viagens")).toBeInTheDocument();
+    expect(await screen.findByText("Portfólio")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Atividade" }));
     expect(await screen.findByText(/Análise concluída/)).toBeInTheDocument();

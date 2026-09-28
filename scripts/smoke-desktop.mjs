@@ -29,7 +29,7 @@ const debugPort = await new Promise((resolvePort, reject) => {
     );
   });
 });
-const root = resolve(`artifacts/0.27/desktop-${Date.now()}`),
+const root = resolve(`artifacts/0.28/desktop-${Date.now()}`),
   source = join(root, "source"),
   master = join(root, "master"),
   backup = join(root, "replica"),
@@ -128,7 +128,7 @@ try {
   assert.equal(config.masterPath.replace(/^\\\\\?\\/, ""), master);
   const jobId = await invoke("start_analysis", {
     sourcePath: source,
-    sourceName: "Synthetic smoke 0.27",
+    sourceName: "Synthetic smoke 0.28",
   });
   const until = async (check, label, timeout = 180000) => {
     const end = Date.now() + timeout;
@@ -174,7 +174,7 @@ try {
     "PASS real consolidation, exact deduplication and verified replica",
   );
   const photos=assets.filter(asset=>asset.mediaType==="photo");
-  const curation=await invoke("create_curation_session",{name:"Smoke 0.27",filters:{query:"",mediaType:"photo"},sort:"captured_desc"});
+  const curation=await invoke("create_curation_session",{name:"Compatibilidade 0.28",filters:{query:"",mediaType:"photo"},sort:"captured_desc"});
   assert.equal(curation.totalItems,3);
   let curationPage=await invoke("get_curation_page",{id:curation.id});
   assert.equal(curationPage.assetIds.length,3);
@@ -191,11 +191,13 @@ try {
   await invoke("choose_comparison_winner",{winnerId:photos[0].id,assetIds:photos.slice(0,2).map(asset=>asset.id)});
   assert.equal((await invoke("undo_last_edit")).affected,2);
   await invoke("delete_curation_session",{id:curation.id});
-  console.log("PASS resumable curation, comparison decision and atomic batch undo");
+  console.log("PASS legacy curation compatibility, comparison decision and atomic batch undo");
   const indexed = await invoke("build_discovery_index");
-  assert.equal(indexed.indexed, 3);
+  assert.equal(indexed.indexed + indexed.skipped, 3);
   assert.equal(indexed.failed, 0);
-  assert.equal((await invoke("build_discovery_index")).indexed, 0);
+  const repeatedIndex = await invoke("build_discovery_index");
+  assert.equal(repeatedIndex.indexed, 0);
+  assert.equal(repeatedIndex.failed, 0);
   const failures = await invoke("get_technical_failures", { offset: 0, stage: "", query: "" });
   assert.equal(failures.total, 0);
   const photo = assets.find((a) => a.mediaType === "photo");
@@ -252,7 +254,7 @@ try {
     join(root, "result.json"),
     JSON.stringify(
       {
-        version: "0.27.0-beta.2",
+        version: "0.28.0-beta.1",
         executable: exe,
         isolatedProfile: true,
         sourceFiles: 5,

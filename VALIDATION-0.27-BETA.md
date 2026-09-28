@@ -68,3 +68,15 @@ Use por 45–60 minutos no acervo de homologação: navegação rápida, curador
 - A regressão de encerramento do lease do job passou 10 vezes consecutivas e também dentro da suíte completa.
 - O teste de bloqueio transitório do Windows manteve deliberadamente um preview aberto e comprovou a promoção posterior sem corromper ou perder o temporário.
 - Instaladores produzidos: `Lumina_0.27.0-2_x64-setup.exe` e `Lumina_0.27.0-2_x64_en-US.msi`.
+
+## Resultado da homologação visual em 28/09/2026
+
+A versão permaneceu estável durante a avaliação, porém a aprovação visual foi retida pelos seguintes achados:
+
+- contraste insuficiente em botões com texto claro sobre fundo claro;
+- fluxo de criação e aplicação de tags confuso;
+- “sessões de curadoria” sem sentido claro para o usuário;
+- seção Descobrir densa e sem hierarquia compreensível;
+- “Viagens” e “Visualmente parecidas” sem valor percebido e removidas do escopo ativo.
+
+Esses pontos são bloqueadores de UX para a aprovação definitiva da 0.27. A direção e os critérios de aceite da correção estão registrados no [ROADMAP.md](ROADMAP.md#feedback-de-homologação--revisão-visual-da-0270-beta2-28092026).

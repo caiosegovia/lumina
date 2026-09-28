@@ -8,26 +8,26 @@ describe("descoberta local", () => {
   it("carrega grupos progressivamente e reutiliza snapshot da mesma biblioteca", async () => {
     const user = userEvent.setup();
     const base = await api.discovery();
-    base.similar = Array.from({ length: 9 }, (_, i) => ({
-      ...base.similar[0],
-      id: `similar-${i}`,
+    base.memories = Array.from({ length: 9 }, (_, i) => ({
+      ...base.memories[0],
+      id: `memory-${i}`,
     }));
     const fetch = vi.spyOn(api, "discovery").mockResolvedValue(base);
     const first = render(<Discovery navigate={() => {}} />);
-    await screen.findByText("Redescubra sua biblioteca");
-    expect(screen.getAllByText("Possível variação")).toHaveLength(4);
+    await screen.findByRole("heading", { name: "Descobrir" });
+    expect(screen.getAllByText(base.memories[0].title)).toHaveLength(4);
     await user.click(
       screen.getByRole("button", {
-        name: /Mostrar mais em Visualmente parecidas/,
+        name: /Mostrar mais em Memórias/,
       }),
     );
-    expect(screen.getAllByText("Possível variação")).toHaveLength(8);
+    expect(screen.getAllByText(base.memories[0].title)).toHaveLength(8);
     first.unmount();
     render(<Discovery navigate={() => {}} />);
-    await screen.findByText("Redescubra sua biblioteca");
+    await screen.findByRole("heading", { name: "Descobrir" });
     expect(fetch).toHaveBeenCalledTimes(1);
     await user.click(
-      screen.getByRole("button", { name: "Atualizar descobertas" }),
+      screen.getByRole("button", { name: "Atualizar" }),
     );
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
   });
@@ -53,14 +53,15 @@ describe("descoberta local", () => {
     resetDiscoveryCache();
     vi.restoreAllMocks();
   });
-  it("explica sugestões sem confundi-las com duplicatas", async () => {
+  it("prioriza memórias, lugares e bursts sem seções de baixo valor", async () => {
     render(<Discovery navigate={() => {}} />);
     expect(
-      await screen.findByText("Redescubra sua biblioteca"),
+      await screen.findByRole("heading", { name: "Descobrir" }),
     ).toBeInTheDocument();
-    expect(screen.getByText("Visualmente parecidas")).toBeInTheDocument();
-    expect(screen.getByText(/não exclui, move nem altera/)).toBeInTheDocument();
-    expect(screen.getByText("94%")).toBeInTheDocument();
+    expect(screen.getByText("Memórias")).toBeInTheDocument();
+    expect(screen.getByText("Bursts para revisar")).toBeInTheDocument();
+    expect(screen.queryByText("Visualmente parecidas")).not.toBeInTheDocument();
+    expect(screen.queryByText("Viagens")).not.toBeInTheDocument();
   });
   it("constrói o índice local e atualiza o progresso", async () => {
     const user = userEvent.setup();
@@ -182,7 +183,7 @@ describe("descoberta local", () => {
     expect(update).toHaveBeenCalledWith("b", ["a", "b", "c"]);
     expect(await screen.findByText(/Nada foi excluído/)).toBeInTheDocument();
   });
-  it("persiste perfis e permite revisar o burst inteiro", async () => {
+  it("mantém a regra interna e permite revisar o burst inteiro sem expor configuração técnica", async () => {
     const user = userEvent.setup();
     const items = ["a", "b", "c"].map((id) => ({
       id,
@@ -214,28 +215,12 @@ describe("descoberta local", () => {
       trips: [],
       locationStatus: { geotagged: 0, named: 0, approximate: 0 },
     });
-    const save = vi
-      .spyOn(api, "updateAppPreferences")
-      .mockImplementation(async (value) => value);
     const update = vi
       .spyOn(api, "updateUserState")
       .mockResolvedValue({ affected: 3 });
     render(<Discovery navigate={() => {}} />);
-    const profile = await screen.findByRole("combobox", {
-      name: "Perfil de processamento",
-    });
-    await waitFor(() =>
-      expect(
-        screen.getByRole("combobox", { name: "Regra de curadoria" }),
-      ).toHaveValue("review_all"),
-    );
-    await user.selectOptions(profile, "economy");
-    await waitFor(() =>
-      expect(save).toHaveBeenCalledWith({
-        resourceProfile: "economy",
-        curationRule: "review_all",
-      }),
-    );
+    await screen.findByRole("heading", { name: "Descobrir" });
+    expect(screen.queryByRole("combobox", { name: "Perfil de processamento" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Manter melhor" }));
     await waitFor(() =>
       expect(update).toHaveBeenCalledWith({

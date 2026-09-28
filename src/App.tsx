@@ -25,6 +25,7 @@ import {
   Search,
   Sparkles,
   Sun,
+  Tags,
   ShieldCheck,
   UserRound,
   X,
@@ -960,7 +961,7 @@ function Albums({navigate}:{navigate:(view:View)=>void}) {
           </article>
         ))}
       </div>
-      <section className="tag-manager"><h3>Tags</h3><p>Renomeie ou remova classificações do catálogo sem alterar as mídias.</p><div>{tags.map(tag=><span key={tag.id}><button onClick={async()=>{const name=prompt("Novo nome da tag",tag.name);if(name){await api.renameTag(tag.id,name);setTags(await api.tags())}}}>{tag.name} · {tag.assetCount}</button><button aria-label={`Excluir tag ${tag.name}`} onClick={async()=>{if(confirm(`Remover a tag ${tag.name} do catálogo?`)){await api.deleteTag(tag.id);setTags(current=>current.filter(item=>item.id!==tag.id))}}}><X/></button></span>)}</div></section>
+      <section className="tag-manager"><header><div><h3>Tags</h3><p>Crie e aplique tags selecionando arquivos na galeria. Aqui você pode administrar as classificações existentes.</p></div><button onClick={()=>navigate("library")}><Tags/> Ir para a galeria</button></header><div>{tags.map(tag=><span key={tag.id}><button onClick={async()=>{const name=prompt("Novo nome da tag",tag.name);if(name){await api.renameTag(tag.id,name);setTags(await api.tags())}}}>{tag.name} · {tag.assetCount}</button><button aria-label={`Excluir tag ${tag.name}`} onClick={async()=>{if(confirm(`Remover a tag ${tag.name} do catálogo?`)){await api.deleteTag(tag.id);setTags(current=>current.filter(item=>item.id!==tag.id))}}}><X/></button></span>)}</div></section>
       <section className="tag-manager people-manager"><h3><UserRound/> Pessoas</h3><p>Identidades organizadas somente no catálogo local. Selecione mídias na galeria para associá-las; nenhum dado é enviado para a nuvem.</p><button onClick={async()=>{const name=prompt("Nome da pessoa");if(name){await api.createPerson(name);setPeople(await api.people())}}}><Plus/>Adicionar pessoa</button><div>{people.map(person=><span key={person.id}><button>{person.name} · {person.assetCount}</button><button aria-label={`Excluir pessoa ${person.name}`} onClick={async()=>{if(confirm(`Remover ${person.name} do índice local? As mídias não serão alteradas.`)){await api.deletePerson(person.id);setPeople(await api.people())}}}><X/></button></span>)}</div></section>
     </>
   );
