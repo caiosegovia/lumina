@@ -8,6 +8,23 @@ const emptyDashboard=():DashboardStats=>({totalAssets:0,photos:0,videos:0,bytes:
 
 describe("fluxo principal do aplicativo", () => {
   afterEach(() => { cleanup(); vi.restoreAllMocks(); localStorage.clear(); });
+  it("interrompe a inicialização e permite reparar caminhos persistidos inválidos", async () => {
+    const user = userEvent.setup();
+    const configured={id:"lib",name:"Acervo",masterPath:"Z:\\Acervo",backupPath:"Y:\\Replica",createdAt:new Date().toISOString()};
+    vi.spyOn(api,"getLibrary").mockResolvedValue(configured);
+    vi.spyOn(api,"libraryStartupStatus").mockResolvedValue({state:"needs_repair",issues:["O acervo mestre não está acessível.","A pasta de réplica não está acessível."]});
+    const repair=vi.spyOn(api,"createLibrary").mockResolvedValue({...configured,masterPath:"D:\\Acervo",backupPath:"E:\\Replica"});
+    vi.spyOn(api,"chooseFolder").mockResolvedValueOnce("D:\\Acervo").mockResolvedValueOnce("E:\\Replica");
+    render(<App/>);
+    expect(await screen.findByText("Reconecte sua biblioteca")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("acervo mestre");
+    expect(screen.queryByText(/memórias ·/)).not.toBeInTheDocument();
+    const selectors=screen.getAllByRole("button",{name:/Selecionar/});
+    await user.click(selectors[0]);
+    await user.click(selectors[1]);
+    await user.click(screen.getByRole("button",{name:/Validar e continuar/}));
+    await waitFor(()=>expect(repair).toHaveBeenCalledWith("Acervo","D:\\Acervo","E:\\Replica"));
+  });
   it("cria a biblioteca, abre o painel e conclui o assistente de importação", async () => {
     const user = userEvent.setup();
     render(<App />);

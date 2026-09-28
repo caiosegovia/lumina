@@ -33,6 +33,7 @@ import { api } from "./api";
 import Gallery, { MediaThumb, openGalleryWithFilters } from "./Gallery";
 import ActivityCenter from "./ActivityCenter";
 import Discovery from "./Discovery";
+import TechnicalFailures from "./TechnicalFailures";
 import { isJobPollingFast, jobBucket } from "./jobState";
 import "./gallery.css";
 import { formatBytes, formatDate } from "./format";
@@ -48,6 +49,7 @@ import type {
   JobOverview,
   JobProgress,
   LibraryConfig,
+  LibraryStartupStatus,
   LibraryHealth,
   PersonInfo,
   ProtectionQueueStats,
@@ -76,6 +78,7 @@ document.title = "Lumina Ready";
 void api.signalReady();
 export default function App() {
   const [library, setLibrary] = useState<LibraryConfig | null | undefined>(),
+    [startup, setStartup] = useState<LibraryStartupStatus>(),
     [view, setView] = useState<View>("dashboard"),
     [importOpen, setImportOpen] = useState(false),
     [jobId, setJobId] = useState<string>(),
@@ -100,7 +103,10 @@ export default function App() {
     return () => media?.removeEventListener?.("change", apply);
   }, [theme]);
   useEffect(() => {
-    api.getLibrary().then(setLibrary);
+    Promise.all([api.getLibrary(), api.libraryStartupStatus()]).then(([configured, status]) => {
+      setLibrary(configured);
+      setStartup(status);
+    });
   }, []);
   useEffect(()=>{
     const error=(event:ErrorEvent)=>{if(event.message?.startsWith("ResizeObserver loop"))return;void api.recordClientError("frontend_error",event.message||"Erro não identificado")};
@@ -147,14 +153,15 @@ export default function App() {
     schedule();
     return () => clearTimeout(timer);
   }, [library]);
-  if (library === undefined)
+  if (library === undefined || startup === undefined)
     return (
       <div className="splash">
         <LoaderCircle className="spin" />
         Preparando sua biblioteca…
       </div>
     );
-  if (!library) return <Onboarding done={setLibrary} />;
+  if (!library || startup.state === "needs_repair")
+    return <Onboarding initial={library || undefined} issues={startup.issues} done={(next) => { setLibrary(next); setStartup({state:"ready",issues:[]}); }} />;
   const openJob = (id: string) => {
       setJobId(id);
       setImportOpen(true);
@@ -249,11 +256,11 @@ export default function App() {
     </div>
   );
 }
-function Onboarding({ done }: { done: (x: LibraryConfig) => void }) {
+function Onboarding({ done, initial, issues=[] }: { done: (x: LibraryConfig) => void; initial?:LibraryConfig; issues?:string[] }) {
   const [form, setForm] = useState({
-      name: "Minha biblioteca",
-      master: "D:\\Lumina\\Originais",
-      backup: "G:\\Meu Drive\\Lumina Backup",
+      name: initial?.name || "Minha biblioteca",
+      master: initial?.masterPath || "",
+      backup: initial?.backupPath || "",
     }),
     [busy, setBusy] = useState(false),
     [error, setError] = useState("");
@@ -266,6 +273,10 @@ function Onboarding({ done }: { done: (x: LibraryConfig) => void }) {
       setError(String(e));
       setBusy(false);
     }
+  };
+  const choose = async (field:"master"|"backup") => {
+    const selected = await api.chooseFolder();
+    if (selected) setForm(current => ({...current,[field]:selected}));
   };
   return (
     <div className="onboarding">
@@ -289,8 +300,9 @@ function Onboarding({ done }: { done: (x: LibraryConfig) => void }) {
         </div>
       </div>
       <form className="setup-card" onSubmit={submit}>
-        <p className="step">CONFIGURAÇÃO INICIAL</p>
-        <h2>Crie sua biblioteca</h2>
+        <p className="step">{initial ? "REPARO DA CONFIGURAÇÃO" : "CONFIGURAÇÃO INICIAL"}</p>
+        <h2>{initial ? "Reconecte sua biblioteca" : "Crie sua biblioteca"}</h2>
+        {issues.length > 0 && <div className="setup-issues" role="alert"><strong>Os caminhos salvos precisam de atenção</strong>{issues.map(issue=><p key={issue}>{issue}</p>)}</div>}
         <label>
           Nome
           <input
@@ -300,23 +312,15 @@ function Onboarding({ done }: { done: (x: LibraryConfig) => void }) {
         </label>
         <label>
           Pasta-mestre
-          <input
-            aria-label="Pasta-mestre"
-            value={form.master}
-            onChange={(e) => setForm({ ...form, master: e.target.value })}
-          />
+          <span className="setup-folder"><input aria-label="Pasta-mestre" placeholder="Selecione a pasta do acervo" value={form.master} onChange={(e) => setForm({ ...form, master: e.target.value })}/><button type="button" onClick={()=>void choose("master")}><FolderOpen/>Selecionar</button></span>
         </label>
         <label>
           Pasta de backup
-          <input
-            aria-label="Pasta de backup"
-            value={form.backup}
-            onChange={(e) => setForm({ ...form, backup: e.target.value })}
-          />
+          <span className="setup-folder"><input aria-label="Pasta de backup" placeholder="Selecione a pasta da réplica" value={form.backup} onChange={(e) => setForm({ ...form, backup: e.target.value })}/><button type="button" onClick={()=>void choose("backup")}><FolderOpen/>Selecionar</button></span>
         </label>
         {error && <p className="error">{error}</p>}
-        <button className="primary" disabled={busy}>
-          <Archive /> Criar biblioteca
+        <button className="primary" disabled={busy || !form.master.trim() || !form.backup.trim()}>
+          <Archive /> {initial ? "Validar e continuar" : "Criar biblioteca"}
         </button>
       </form>
     </div>
@@ -429,6 +433,7 @@ function Content({
   return <Dashboard onImport={onImport} navigate={navigate} />;
 }
 function ReviewCenter({ navigate }: { navigate: (view: View) => void }) {
+  const [showFailures,setShowFailures]=useState(false);
   const [summary, setSummary] = useState<ReviewSummary>();
   const [notice,setNotice]=useState("");
   useEffect(() => { api.reviewSummary().then(setSummary); }, []);
@@ -441,7 +446,7 @@ function ReviewCenter({ navigate }: { navigate: (view: View) => void }) {
     {label:"Datas suspeitas",value:summary?.suspiciousDates??0,detail:"Datas obtidas do arquivo ou fora do intervalo esperado",action:()=>open({dateSuspicious:true})},
     {label:"Previews pendentes",value:summary?.missingPreviews??0,detail:"Miniaturas ausentes ou com falha",action:()=>navigate("protection")},
     {label:"Metadados incompletos",value:summary?.incompleteMetadata??0,detail:"Informações técnicas ainda não enriquecidas",action:()=>navigate("activity")},
-    {label:"Falhas técnicas",value:summary?.technicalFailures??0,detail:"Previews ou metadados que precisam de uma nova tentativa",action:()=>navigate("activity")},
+    {label:"Falhas técnicas",value:summary?.technicalFailures??0,detail:"Veja os arquivos, motivos e orientações",action:()=>setShowFailures(true)},
     {label:"Proteção pendente",value:summary?.pendingProtection??0,detail:"Mídias sem réplica verificada",action:()=>navigate("protection")},
     {label:"Duplicatas sem decisão",value:summary?.undecidedDuplicates??0,detail:"Grupos exatos aguardando revisão",action:()=>navigate("duplicates")},
   ];
@@ -449,6 +454,7 @@ function ReviewCenter({ navigate }: { navigate: (view: View) => void }) {
     <div className="section-heading"><div><h2>Central de revisão</h2><p>Tudo que merece uma decisão humana, reunido por prioridade.</p></div><div className="activity-actions"><button onClick={async()=>{const result=await api.rebuildCache();setNotice(`${result.generated} previews reparados · ${result.failed} falhas`);setSummary(await api.reviewSummary())}}>Reparar previews</button><button onClick={async()=>{await api.startFormatEnrichment();setNotice("Complementação de metadados iniciada em segundo plano. Acompanhe em Atividade.")}}>Completar metadados</button><button onClick={async()=>{const result=await api.undoLastEdit();setNotice(result.affected?"Última alteração desfeita.":"Nenhuma alteração para desfazer.");setSummary(await api.reviewSummary())}}>Desfazer última alteração</button><button onClick={()=>api.reviewSummary().then(setSummary)}><RefreshCw/>Atualizar</button></div></div>
     {notice&&<div className="notice" role="status">{notice}</div>}
     <div className="review-grid">{cards.map(card=><button key={card.label} onClick={card.action}><span>{card.label}</span><strong>{card.value.toLocaleString("pt-BR")}</strong><small>{card.detail}</small><ChevronRight/></button>)}</div>
+    {showFailures&&<TechnicalFailures close={()=>setShowFailures(false)}/>}
   </>;
 }
 const typeLabel = (x: string) =>
@@ -798,7 +804,7 @@ function Duplicates() {
         <label>Ordenar por <select value={sort} onChange={event=>setSort(event.target.value)}><option value="space">Maior espaço</option><option value="copies">Mais cópias</option><option value="name">Nome</option></select></label>
       </div>
       <section className="cleanup-planner">
-        <div><h3>Plano de limpeza seguro</h3><p>Simule candidatas e espaço potencial. Esta beta não remove arquivos.</p></div>
+        <div><h3>Plano de limpeza seguro</h3><p>Somente ocorrências com decisão explícita de remoção e réplica verificada podem ser candidatas. Manter ou revisar bloqueia a candidatura. Esta beta apenas simula e não remove arquivos.</p></div>
         <button className="primary" onClick={async()=>setPlan(await api.createCleanupPlan())}>Gerar plano</button>
         {plan&&<><div className="cleanup-summary"><span><strong>{plan.groups}</strong> grupos</span><span><strong>{plan.candidates}</strong> candidatas elegíveis</span><span><strong>{formatBytes(plan.bytes)}</strong> potencial</span><span><strong>{plan.blocked}</strong> bloqueadas</span></div><button onClick={async()=>{const report=await api.exportCleanupPlan(plan.id);setNotice(`Relatório exportado em ${report.path}`)}}>Exportar relatório do plano</button></>}
       </section>

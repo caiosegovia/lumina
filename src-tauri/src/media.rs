@@ -402,7 +402,7 @@ fn extract_raw_preview(
             ProcessSpec::new("ExifTool", "exiftool")
                 .args(["-b", tag, source.to_string_lossy().as_ref()])
                 .timeout(Duration::from_secs(30))
-                .logical(&format!("{logical} {tag}")),
+                .logical(format!("{logical} {tag}")),
             cancel,
         );
         match result {
@@ -520,7 +520,7 @@ pub fn generate_thumbnail(
     if !temporary.exists() {
         return Err("O gerador não produziu a miniatura".into());
     }
-    fs::rename(&temporary, &destination).map_err(|e| e.to_string())?;
+    crate::storage::promote_file(&temporary, &destination)?;
     Ok(destination)
 }
 
@@ -680,7 +680,7 @@ pub fn viewer_preview_file(cfg: &LibraryConfig, asset: &str) -> Result<PathBuf, 
     if destination.exists() {
         fs::remove_file(&destination).map_err(|error| error.to_string())?;
     }
-    fs::rename(&temporary, &destination).map_err(|error| error.to_string())?;
+    crate::storage::promote_file(&temporary, &destination)?;
     trim_viewer_cache(&cache_root, &destination);
     Ok(destination)
 }

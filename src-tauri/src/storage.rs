@@ -16,8 +16,9 @@ fn replacement_path(destination: &Path) -> PathBuf {
 }
 
 #[cfg(windows)]
-pub fn replace_file(source: &Path, destination: &Path) -> Result<(), String> {
+fn move_file_with_retry(source: &Path, destination: &Path, replace: bool) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
+    use std::{thread, time::Duration};
     use windows_sys::Win32::Storage::FileSystem::{
         MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
     };
@@ -31,22 +32,44 @@ pub fn replace_file(source: &Path, destination: &Path) -> Result<(), String> {
         .encode_wide()
         .chain(Some(0))
         .collect::<Vec<_>>();
-    let result = unsafe {
-        MoveFileExW(
-            source.as_ptr(),
-            destination.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if result == 0 {
-        Err(std::io::Error::last_os_error().to_string())
-    } else {
-        Ok(())
+    let flags = MOVEFILE_WRITE_THROUGH
+        | if replace {
+            MOVEFILE_REPLACE_EXISTING
+        } else {
+            0
+        };
+    for attempt in 0..12 {
+        let result = unsafe { MoveFileExW(source.as_ptr(), destination.as_ptr(), flags) };
+        if result != 0 {
+            return Ok(());
+        }
+        let error = std::io::Error::last_os_error();
+        let transient = matches!(error.raw_os_error(), Some(5 | 32 | 33));
+        if !transient || attempt == 11 {
+            return Err(error.to_string());
+        }
+        thread::sleep(Duration::from_millis(25u64 << attempt.min(4)));
     }
+    unreachable!()
+}
+
+#[cfg(windows)]
+pub fn replace_file(source: &Path, destination: &Path) -> Result<(), String> {
+    move_file_with_retry(source, destination, true)
+}
+
+#[cfg(windows)]
+pub fn promote_file(source: &Path, destination: &Path) -> Result<(), String> {
+    move_file_with_retry(source, destination, false)
 }
 
 #[cfg(not(windows))]
 pub fn replace_file(source: &Path, destination: &Path) -> Result<(), String> {
+    fs::rename(source, destination).map_err(|error| error.to_string())
+}
+
+#[cfg(not(windows))]
+pub fn promote_file(source: &Path, destination: &Path) -> Result<(), String> {
     fs::rename(source, destination).map_err(|error| error.to_string())
 }
 
@@ -137,7 +160,7 @@ pub fn copy_verified_via_staged<F: FnMut(&str)>(
         return Err("O destino já contém outro arquivo".into());
     }
     on_stage("promotion");
-    fs::rename(temp, destination).map_err(|e| e.to_string())?;
+    promote_file(temp, destination)?;
     preserve_modified_time(source, destination)?;
     Ok(())
 }
@@ -204,7 +227,7 @@ pub fn promote_verified_temp(
         }
         return Err("O destino já contém outro arquivo".into());
     }
-    fs::rename(temp, destination).map_err(|e| e.to_string())
+    promote_file(temp, destination)
 }
 
 pub fn promote_preverified_temp(
@@ -222,7 +245,7 @@ pub fn promote_preverified_temp(
         }
         return Err("O destino já contém outro arquivo".into());
     }
-    fs::rename(temp, destination).map_err(|e| e.to_string())
+    promote_file(temp, destination)
 }
 pub fn safe_destination(
     dir: &Path,
@@ -350,6 +373,34 @@ mod tests {
         let bytes = fs::read(&destination).unwrap();
         assert_eq!(bytes, br#"{"version":1,"entries":["new","complete"]}"#);
         assert!(!replacement_path(&destination).exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn promotion_waits_for_a_transient_windows_file_lock() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::time::{Duration, Instant};
+
+        let root = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        fs::create_dir_all(&root).unwrap();
+        let temporary = root.join("preview.part");
+        let destination = root.join("preview.jpg");
+        fs::write(&temporary, b"preview").unwrap();
+        let locked = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&temporary)
+            .unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            drop(locked);
+        });
+        let started = Instant::now();
+        promote_file(&temporary, &destination).unwrap();
+        release.join().unwrap();
+        assert!(started.elapsed() >= Duration::from_millis(100));
+        assert_eq!(fs::read(destination).unwrap(), b"preview");
         fs::remove_dir_all(root).unwrap();
     }
 }

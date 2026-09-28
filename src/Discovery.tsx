@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Images,
   Layers3,
@@ -9,6 +9,8 @@ import {
   Search,
   Sparkles,
   Video,
+  CalendarDays,
+  SlidersHorizontal,
 } from "lucide-react";
 import { api } from "./api";
 import { openGalleryComparison, openGalleryWithFilters } from "./Gallery";
@@ -22,6 +24,14 @@ import type {
 import "./discovery.css";
 import "./discovery-actions.css";
 
+const overviewCache = new Map<
+  string,
+  { at: number; data: DiscoveryOverview }
+>();
+export function resetDiscoveryCache() {
+  overviewCache.clear();
+}
+
 function Thumb({
   item,
   onOpen,
@@ -32,25 +42,49 @@ function Thumb({
   recommended?: boolean;
 }) {
   const [src, setSrc] = useState<string | null>();
+  const element = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     let live = true;
-    api
-      .thumbnail(item.id)
-      .then((value) => live && setSrc(value))
-      .catch(() => live && setSrc(null));
+    const fetch = () => {
+      api
+        .thumbnail(item.id)
+        .then((value) => live && setSrc(value))
+        .catch(() => live && setSrc(null));
+    };
+    const observer =
+      typeof IntersectionObserver !== "undefined"
+        ? new IntersectionObserver(
+            (entries) => {
+              if (entries.some((entry) => entry.isIntersecting)) {
+                observer?.disconnect();
+                fetch();
+              }
+            },
+            { rootMargin: "150px" },
+          )
+        : undefined;
+    if (observer && element.current) observer.observe(element.current);
+    else fetch();
     return () => {
       live = false;
+      observer?.disconnect();
     };
   }, [item.id]);
   return (
     <button
+      ref={element}
       className={`discovery-thumb ${recommended ? "recommended" : ""}`}
       onClick={onOpen}
       title={item.filename}
     >
       {recommended && <b>Melhor candidata</b>}
       {src ? (
-        <img src={src} alt={`Prévia de ${item.filename}`} />
+        <img
+          loading="lazy"
+          decoding="async"
+          src={src}
+          alt={`Prévia de ${item.filename}`}
+        />
       ) : (
         <span>{item.mediaType === "video" ? <Video /> : <Images />}</span>
       )}
@@ -67,6 +101,7 @@ function Shelf({
   navigate,
   onRename,
   onCurate,
+  onAdjust,
 }: {
   title: string;
   description: string;
@@ -75,13 +110,17 @@ function Shelf({
   navigate: (view: View) => void;
   onRename?: (group: DiscoveryGroup) => void;
   onCurate?: (group: DiscoveryGroup) => void;
+  onAdjust?: (group: DiscoveryGroup) => void;
 }) {
+  const [visible, setVisible] = useState(4);
   const open = (item: DiscoveryItem) => {
-    openGalleryWithFilters({ query: item.filename });
+    openGalleryWithFilters({ assetIds:[item.id] });
     navigate("library");
   };
   const openGroup = (group: DiscoveryGroup) => {
-    openGalleryWithFilters(group.placeKey ? { placeKey: group.placeKey } : { query: group.title });
+    openGalleryWithFilters(
+      group.placeKey ? { placeKey: group.placeKey } : { assetIds:group.items.map(item=>item.id) },
+    );
     navigate("library");
   };
   const compare = (group: DiscoveryGroup) => {
@@ -101,7 +140,7 @@ function Shelf({
         <div className="discovery-empty">{empty}</div>
       ) : (
         <div className="discovery-groups">
-          {groups.map((group) => (
+          {groups.slice(0, visible).map((group) => (
             <article className="discovery-group" key={group.id}>
               <header>
                 <div>
@@ -129,10 +168,11 @@ function Shelf({
                       Manter melhor
                     </button>
                   )}
+                  {onAdjust&&<button onClick={()=>onAdjust(group)}><SlidersHorizontal/> Ajustar grupo</button>}
                 </div>
               </header>
               <div className="discovery-strip">
-                {group.items.map((item) => (
+                {group.items.slice(0, 12).map((item) => (
                   <Thumb
                     key={item.id}
                     item={item}
@@ -143,6 +183,11 @@ function Shelf({
               </div>
             </article>
           ))}
+          {groups.length > visible && (
+            <button onClick={() => setVisible((value) => value + 4)}>
+              Mostrar mais em {title} ({groups.length - visible})
+            </button>
+          )}
         </div>
       )}
     </section>
@@ -156,21 +201,87 @@ export default function Discovery({
 }) {
   const [data, setData] = useState<DiscoveryOverview>();
   const [busy, setBusy] = useState(false);
+  const [work, setWork] = useState({
+    running: false,
+    stage: "",
+    completed: 0,
+    total: 0,
+    cancelled: false,
+  });
+  useEffect(() => {
+    let live = true,
+      wasRunning = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      try {
+        const next = await api.discoveryWork();
+        if (live) {
+          setWork(next);
+          if (wasRunning && !next.running) {
+            void load();
+            if (next.cancelled)
+              setMessage(
+                "Análise cancelada. O progresso confirmado foi preservado.",
+              );
+          }
+          wasRunning = next.running;
+        }
+      } catch {
+        /* A transient poll failure must not hide the page. */
+      } finally {
+        if (live) timer = setTimeout(poll, 1000);
+      }
+    };
+    void poll();
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, []);
   const [message, setMessage] = useState("");
+  const [undoAvailable,setUndoAvailable]=useState(false);
   const [query, setQuery] = useState("");
   const [editing, setEditing] = useState<DiscoveryGroup>();
   const [placeName, setPlaceName] = useState("");
-  const [preferences,setPreferences]=useState<AppPreferences>({resourceProfile:"balanced",curationRule:"balanced"});
-  const load = () =>
-    api
-      .discovery()
-      .then(setData)
-      .catch((error) => setMessage(String(error)));
+  const [adjusting,setAdjusting]=useState<DiscoveryGroup>();
+  const [included,setIncluded]=useState<Set<string>>(new Set());
+  const [preferences, setPreferences] = useState<AppPreferences>({
+    resourceProfile: "balanced",
+    curationRule: "balanced",
+  });
+  const load = async (force = true) => {
+    try {
+      const cfg = await api.getLibrary();
+      const key = cfg ? `${cfg.id}:${cfg.masterPath}` : "demo";
+      const cached = overviewCache.get(key);
+      if (!force && cached && Date.now() - cached.at < 30_000) {
+        setData(cached.data);
+        return;
+      }
+      const next = await api.discovery();
+      if (overviewCache.size >= 2) overviewCache.clear();
+      overviewCache.set(key, { at: Date.now(), data: next });
+      setData(next);
+    } catch (error) {
+      setMessage(String(error));
+    }
+  };
   useEffect(() => {
-    void load();
-    void api.appPreferences().then(setPreferences);
+    void load(false);
+    void api
+      .appPreferences()
+      .then(setPreferences)
+      .catch((error) => setMessage(String(error)));
   }, []);
-  const savePreferences=async(next:AppPreferences)=>{setPreferences(next);try{setPreferences(await api.updateAppPreferences(next));setMessage("Preferências de processamento e curadoria salvas.")}catch(error){setMessage(String(error))}};
+  const savePreferences = async (next: AppPreferences) => {
+    setPreferences(next);
+    try {
+      setPreferences(await api.updateAppPreferences(next));
+      setMessage("Preferências de processamento e curadoria salvas.");
+    } catch (error) {
+      setMessage(String(error));
+    }
+  };
   const index = async () => {
     setBusy(true);
     setMessage("Analisando imagens localmente…");
@@ -216,14 +327,19 @@ export default function Discovery({
     if (!group.recommendedId) return;
     setBusy(true);
     try {
-      const alternatives = group.items.filter((item) => item.id !== group.recommendedId).map((item) => item.id);
-      if(preferences.curationRule==="review_all"){
-        await api.updateUserState({assetIds:group.items.map(item=>item.id),reviewLater:true});
+      if (preferences.curationRule === "review_all") {
+        await api.updateUserState({
+          assetIds: group.items.map((item) => item.id),
+          reviewLater: true,
+        });
         setMessage("Burst inteiro enviado para revisão. Nada foi excluído.");
-      }else{
-        await api.updateUserState({ assetIds: [group.recommendedId], favorite: true, ...(preferences.curationRule==="quality"?{rating:5}:{}) });
-        if (alternatives.length) await api.updateUserState({ assetIds: alternatives, reviewLater: true });
-        setMessage(`${preferences.curationRule==="quality"?"Melhor qualidade":"Melhor candidata"} favoritada · alternativas enviadas para revisão. Nada foi excluído.`);
+        setUndoAvailable(true);
+      } else {
+        await api.chooseComparisonWinner(group.recommendedId,group.items.map(item=>item.id));
+        setMessage(
+          `${preferences.curationRule === "quality" ? "Melhor qualidade" : "Melhor candidata"} favoritada · alternativas enviadas para revisão. Nada foi excluído.`,
+        );
+        setUndoAvailable(true);
       }
     } catch (error) {
       setMessage(String(error));
@@ -234,8 +350,24 @@ export default function Discovery({
   if (!data)
     return (
       <div className="discovery-loading">
-        <LoaderCircle className="spin" />
-        Preparando descobertas…
+        {message ? (
+          <>
+            <p role="alert">{message}</p>
+            <button
+              onClick={() => {
+                setMessage("");
+                void load();
+              }}
+            >
+              Tentar novamente
+            </button>
+          </>
+        ) : (
+          <>
+            <LoaderCircle className="spin" />
+            Preparando descobertas…
+          </>
+        )}
       </div>
     );
   const complete = data.indexable === 0 || data.indexed >= data.indexable;
@@ -261,8 +393,13 @@ export default function Discovery({
           </p>
         </div>
         <div className="discovery-hero-actions">
+          <button disabled={busy || work.running} onClick={() => void load()}>
+            Atualizar descobertas
+          </button>
           <button
-            disabled={busy || data.locationStatus.geotagged === 0}
+            disabled={
+              busy || work.running || data.locationStatus.geotagged === 0
+            }
             onClick={resolvePlaces}
           >
             <MapPin />
@@ -270,7 +407,7 @@ export default function Discovery({
           </button>
           <button
             className="primary"
-            disabled={busy || complete}
+            disabled={busy || work.running || complete}
             onClick={index}
           >
             {busy ? <LoaderCircle className="spin" /> : <RefreshCw />}
@@ -281,13 +418,73 @@ export default function Discovery({
       {message && (
         <div className="notice" role="status">
           {message}
+          {undoAvailable&&<button onClick={async()=>{try{const result=await api.undoLastEdit();setMessage(result.affected?"Curadoria desfeita.":"Não havia ação para desfazer.");setUndoAvailable(false)}catch(error){setMessage(String(error))}}}>Desfazer</button>}
         </div>
       )}
-      <section className="discovery-preferences" aria-label="Automação configurável">
-        <div><strong>Processamento</strong><small>Limite global para tarefas de disco em segundo plano.</small></div>
-        <select aria-label="Perfil de processamento" value={preferences.resourceProfile} onChange={event=>void savePreferences({...preferences,resourceProfile:event.target.value as AppPreferences["resourceProfile"]})}><option value="economy">Economia</option><option value="balanced">Equilibrado</option><option value="performance">Desempenho</option></select>
-        <div><strong>Curadoria de bursts</strong><small>Regra aplicada pela ação de curadoria.</small></div>
-        <select aria-label="Regra de curadoria" value={preferences.curationRule} onChange={event=>void savePreferences({...preferences,curationRule:event.target.value as AppPreferences["curationRule"]})}><option value="balanced">Equilibrada</option><option value="quality">Priorizar qualidade</option><option value="review_all">Revisar todas</option></select>
+      {work.running && (
+        <div className="notice" role="status">
+          <strong>
+            {work.stage}: {work.completed} de {work.total}
+          </strong>
+          <progress value={work.completed} max={work.total || 1} />
+          <button
+            disabled={work.cancelled}
+            onClick={() =>
+              void api
+                .cancelDiscoveryWork()
+                .catch((error) => setMessage(String(error)))
+            }
+          >
+            {work.cancelled ? "Cancelando…" : "Cancelar análise"}
+          </button>
+          <small>
+            O progresso confirmado é preservado. O cancelamento aguarda a etapa
+            em curso terminar.
+          </small>
+        </div>
+      )}
+      <section
+        className="discovery-preferences"
+        aria-label="Automação configurável"
+      >
+        <div>
+          <strong>Processamento</strong>
+          <small>Limite global para tarefas de disco em segundo plano.</small>
+        </div>
+        <select
+          aria-label="Perfil de processamento"
+          value={preferences.resourceProfile}
+          onChange={(event) =>
+            void savePreferences({
+              ...preferences,
+              resourceProfile: event.target
+                .value as AppPreferences["resourceProfile"],
+            })
+          }
+        >
+          <option value="economy">Economia</option>
+          <option value="balanced">Equilibrado</option>
+          <option value="performance">Desempenho</option>
+        </select>
+        <div>
+          <strong>Curadoria de bursts</strong>
+          <small>Regra aplicada pela ação de curadoria.</small>
+        </div>
+        <select
+          aria-label="Regra de curadoria"
+          value={preferences.curationRule}
+          onChange={(event) =>
+            void savePreferences({
+              ...preferences,
+              curationRule: event.target
+                .value as AppPreferences["curationRule"],
+            })
+          }
+        >
+          <option value="balanced">Equilibrada</option>
+          <option value="quality">Priorizar qualidade</option>
+          <option value="review_all">Revisar todas</option>
+        </select>
       </section>
       <div className="location-summary">
         <span>
@@ -324,6 +521,8 @@ export default function Discovery({
           />
         </div>
       </div>
+      {data.coverage&&<section className="discovery-coverage" aria-label="Cobertura das descobertas"><div><strong>{Math.round(data.coverage.percent)}%</strong><span>de cobertura visual</span></div><p>{data.coverage.indexedItems.toLocaleString("pt-BR")} imagens analisadas de {data.coverage.indexableItems.toLocaleString("pt-BR")} elegíveis · {data.coverage.catalogItems.toLocaleString("pt-BR")} mídias no catálogo.</p></section>}
+      {!!data.periods?.length&&<div className="discovery-periods"><span><CalendarDays/> Explorar período</span>{data.periods.slice(0,18).map(period=><button key={period.key} onClick={()=>{const [year,month]=period.key.split("-").map(Number),last=new Date(year,month,0).getDate();openGalleryWithFilters({dateFrom:`${period.key}-01`,dateTo:`${period.key}-${String(last).padStart(2,"0")}`});navigate("library")}}><strong>{period.label}</strong><small>{period.count}</small></button>)}</div>}
       <label className="discovery-search">
         <Search />
         <input
@@ -381,6 +580,7 @@ export default function Discovery({
         empty="Nenhum burst com três ou mais registros foi encontrado."
         navigate={navigate}
         onCurate={curateBurst}
+        onAdjust={group=>{setAdjusting(group);setIncluded(new Set(group.items.map(item=>item.id)))}}
       />
       <Shelf
         title="Visualmente parecidas"
@@ -427,6 +627,7 @@ export default function Discovery({
           </div>
         </div>
       )}
+      {adjusting&&<div className="place-editor" role="dialog" aria-modal="true" aria-label="Ajustar burst"><div className="burst-editor"><h3>Ajustar associação do burst</h3><p>Desmarque apenas os arquivos que não pertencem à sequência. A correção fica no catálogo e não move nem exclui originais.</p><div>{adjusting.items.map(item=><label key={item.id}><input type="checkbox" checked={included.has(item.id)} onChange={event=>setIncluded(current=>{const next=new Set(current);event.target.checked?next.add(item.id):next.delete(item.id);return next})}/><span>{item.filename}</span><small>{new Date(item.capturedAt).toLocaleString("pt-BR")}</small></label>)}</div><footer><button onClick={()=>setAdjusting(undefined)}>Cancelar</button><button className="primary" disabled={included.size<2} onClick={async()=>{try{const excluded=adjusting.items.filter(item=>!included.has(item.id)).map(item=>item.id);await api.setBurstExclusions(adjusting.id,excluded);setAdjusting(undefined);setMessage("Associação corrigida somente no catálogo.");await load()}catch(error){setMessage(String(error))}}}>Salvar associação</button></footer></div></div>}
     </div>
   );
 }
