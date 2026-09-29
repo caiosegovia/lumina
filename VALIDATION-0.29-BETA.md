@@ -1,5 +1,11 @@
 # Roteiro de homologação — 0.29.0-beta.1
 
+## Resultado da homologação
+
+**REPROVADA em 29/09/2026.** No dispositivo de homologação, a busca não funciona e sua abertura/uso quebra o layout da galeria. O defeito é bloqueante: esta versão não pode ser promovida para `main` nem considerada baseline de produção. A 0.28 permanece como última baseline funcional até diagnóstico e correção comprovados.
+
+Próxima ação obrigatória: reproduzir nas dimensões e escala do dispositivo de homologação, identificar separadamente a falha funcional da consulta e o estouro do layout, adicionar regressões automatizadas e publicar uma nova candidata. Não reutilizar a tag `v0.29.0-beta.1`.
+
 ## 1. Instalação e regressão
 
 1. Instale por cima da 0.28 e confirme biblioteca, fontes, caminhos, favoritos e tags.

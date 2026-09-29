@@ -192,7 +192,9 @@ Status: a estabilidade observada continua válida, mas a experiência visual aba
 
 Escopo: [RELEASE-0.28-BETA.md](RELEASE-0.28-BETA.md). Arquitetura: [ARCHITECTURE-0.28.md](ARCHITECTURE-0.28.md). Homologação: [VALIDATION-0.28-BETA.md](VALIDATION-0.28-BETA.md).
 
-## Entregue para homologação — 0.29: busca e produtividade
+## Reprovada em homologação — 0.29.0-beta.1: busca e produtividade
+
+Feedback de 29/09/2026: a busca não funciona no dispositivo de homologação e a interface da galeria fica quebrada durante a jornada. A versão está bloqueada e não deve ser integrada à `main`. A correção exige reprodução real, diagnóstico funcional e responsivo, testes de regressão e uma nova tag; a 0.28 permanece como baseline.
 
 - Busca explícita por botão ou `Enter`, com `Ctrl+F`, limpeza, progresso e estado vazio contextual.
 - Pills removíveis para todos os filtros ativos e limpeza integral inequívoca.
