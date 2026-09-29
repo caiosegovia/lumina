@@ -29,7 +29,7 @@ const debugPort = await new Promise((resolvePort, reject) => {
     );
   });
 });
-const root = resolve(`artifacts/0.28/desktop-${Date.now()}`),
+const root = resolve(`artifacts/0.29/desktop-${Date.now()}`),
   source = join(root, "source"),
   master = join(root, "master"),
   backup = join(root, "replica"),
@@ -128,7 +128,7 @@ try {
   assert.equal(config.masterPath.replace(/^\\\\\?\\/, ""), master);
   const jobId = await invoke("start_analysis", {
     sourcePath: source,
-    sourceName: "Synthetic smoke 0.28",
+    sourceName: "Synthetic smoke 0.29",
   });
   const until = async (check, label, timeout = 180000) => {
     const end = Date.now() + timeout;
@@ -174,7 +174,7 @@ try {
     "PASS real consolidation, exact deduplication and verified replica",
   );
   const photos=assets.filter(asset=>asset.mediaType==="photo");
-  const curation=await invoke("create_curation_session",{name:"Compatibilidade 0.28",filters:{query:"",mediaType:"photo"},sort:"captured_desc"});
+  const curation=await invoke("create_curation_session",{name:"Compatibilidade 0.29",filters:{query:"",mediaType:"photo"},sort:"captured_desc"});
   assert.equal(curation.totalItems,3);
   let curationPage=await invoke("get_curation_page",{id:curation.id});
   assert.equal(curationPage.assetIds.length,3);
@@ -193,8 +193,10 @@ try {
   await invoke("delete_curation_session",{id:curation.id});
   console.log("PASS legacy curation compatibility, comparison decision and atomic batch undo");
   const indexed = await invoke("build_discovery_index");
-  assert.equal(indexed.indexed + indexed.skipped, 3);
   assert.equal(indexed.failed, 0);
+  const discoveryOverview = await invoke("get_discovery_overview");
+  assert.equal(discoveryOverview.indexed, 3);
+  assert.equal(discoveryOverview.indexable, 3);
   const repeatedIndex = await invoke("build_discovery_index");
   assert.equal(repeatedIndex.indexed, 0);
   assert.equal(repeatedIndex.failed, 0);

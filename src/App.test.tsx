@@ -67,8 +67,9 @@ describe("fluxo principal do aplicativo", () => {
     await user.click(mediaName);
     expect(await screen.findByText("SHA-256")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Fechar detalhes" }));
-    const search = screen.getByPlaceholderText("Buscar por nome, câmera ou tag…");
+    const search = screen.getByPlaceholderText("Nome, equipamento, tag, álbum ou lugar");
     await user.type(search, "DJI");
+    await user.keyboard("{Enter}");
     await waitFor(() => expect(screen.queryByText("IMG_2401.JPG")).not.toBeInTheDocument());
 
     await user.click(screen.getByRole("button", { name: "Descobrir" }));

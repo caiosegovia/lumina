@@ -86,6 +86,7 @@ export function openGalleryComparison(assetIds:string[]) {
 }
 export default function Gallery() {
   const [filters, setFilters] = useState(session.filters),
+    [queryDraft, setQueryDraft] = useState(session.filters.query),
     [draft, setDraft] = useState(session.filters),
     [result, setResult] = useState<GalleryResult | undefined>(session.result),
     [assets, setAssets] = useState(session.assets),
@@ -109,6 +110,7 @@ export default function Gallery() {
     [inspectorWidth,setInspectorWidth]=useState(()=>Number(localStorage.getItem("lumina-inspector-width"))||410),
     [refresh, setRefresh] = useState(0);
   const seq = useRef(0),
+    searchInput = useRef<HTMLInputElement>(null),
     lastSelected = useRef<string>(),
     width = { compact: 145, normal: 190, large: 260 }[zoom],
     [columns, setColumns] = useState(4),
@@ -279,7 +281,12 @@ export default function Gallery() {
     clear = () => {
       setDraft(empty);
       setFilters(empty);
+      setQueryDraft("");
     };
+  const submitSearch = (event?: React.FormEvent) => {
+    event?.preventDefault();
+    setFilters(value => ({ ...value, query: queryDraft.trim() }));
+  };
   const applyUserState=useCallback(async(patch:{favorite?:boolean;rating?:number;reviewLater?:boolean},label:string)=>{
     const ids=[...selection];
     if(!ids.length)return;
@@ -294,6 +301,12 @@ export default function Gallery() {
   useEffect(()=>{
     const onKey=(event:KeyboardEvent)=>{
       const target=event.target;
+      if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==="f"){
+        event.preventDefault();
+        searchInput.current?.focus();
+        searchInput.current?.select();
+        return;
+      }
       if((target instanceof Element&&target.closest("input,textarea,select,[contenteditable=true]"))||!selection.size)return;
       if(event.key==="Escape"){setSelection(new Set());return}
       if(event.key>="0"&&event.key<="5"){event.preventDefault();void applyUserState({rating:Number(event.key)},`avaliação ${event.key}`);return}
@@ -339,24 +352,23 @@ export default function Gallery() {
           </button>
         ))}
       </div>
-      {active > 0 && (
-        <div className="filter-chips">
-          <span>{result?.matched || 0} resultados</span>
-          <button onClick={clear}>Limpar filtros</button>
-        </div>
+      {(active > 0 || filters.query) && (
+        <ActiveFilters filters={filters} options={result?.options} matched={result?.matched || 0} remove={key=>{const next={...filters,[key]:key==="query"?"":undefined};setFilters(next);setDraft(next);if(key==="query")setQueryDraft("")}} clear={clear}/>
       )}
       <div className="toolbar gallery-toolbar">
-        <div className="search">
+        <form className={`search gallery-search ${loading ? "loading" : ""}`} role="search" onSubmit={submitSearch}>
           <Search />
           <input
+            ref={searchInput}
             aria-label="Buscar na galeria"
-            placeholder="Buscar por nome, câmera ou tag…"
-            value={filters.query}
-            onChange={(e) =>
-              setFilters((v) => ({ ...v, query: e.target.value }))
-            }
+            placeholder="Nome, equipamento, tag, álbum ou lugar"
+            value={queryDraft}
+            onChange={(e) => setQueryDraft(e.target.value)}
+            onKeyDown={event=>{if(event.key==="Escape"&&(queryDraft||filters.query)){event.preventDefault();setQueryDraft("");setFilters(value=>({...value,query:""}))}}}
           />
-        </div>
+          {(queryDraft||filters.query)&&<button type="button" className="search-clear" aria-label="Limpar busca" onClick={()=>{setQueryDraft("");setFilters(value=>({...value,query:""}));searchInput.current?.focus()}}><X/></button>}
+          <button className="primary search-submit" type="submit" disabled={loading||queryDraft.trim()===filters.query.trim()}>{loading?<LoaderCircle className="spin"/>:<Search/>}<span>{loading?"Buscando…":"Buscar"}</span></button>
+        </form>
         <ChoiceMenu icon={<Rows3/>} label="Ordenar" value={sort} options={[{value:"captured_desc",label:"Mais recentes"},{value:"captured_asc",label:"Mais antigas"},{value:"name_asc",label:"Nome A–Z"},{value:"name_desc",label:"Nome Z–A"},{value:"size_desc",label:"Maiores arquivos"},{value:"size_asc",label:"Menores arquivos"}]} onChange={v=>saveSort(v as GallerySort)}/>
         <div className="view-switch">
           <button
@@ -442,8 +454,9 @@ export default function Gallery() {
       {!loading && !assets.length ? (
         <div className="empty-gallery">
           <Images />
-          <h2>Nenhuma mídia encontrada</h2>
-          <p>Remova filtros ou importe uma fonte.</p>
+          <h2>{filters.query||active?"Nenhum resultado encontrado":"Nenhuma mídia encontrada"}</h2>
+          <p>{filters.query||active?"Revise a busca ou remova um dos filtros aplicados.":"Importe uma fonte para começar a organizar seu acervo."}</p>
+          {(filters.query||active>0)&&<button onClick={clear}>Limpar busca e filtros</button>}
         </div>
       ) : (
         <>
@@ -553,6 +566,30 @@ export default function Gallery() {
       )}
     </div>
   );
+}
+function ActiveFilters({filters,options,matched,remove,clear}:{filters:GalleryFilters;options?:GalleryResult["options"];matched:number;remove:(key:keyof GalleryFilters)=>void;clear:()=>void}){
+  const option=(kind:"cameras"|"sources"|"extensions"|"tags"|"albums",value?:string)=>options?.[kind].find(item=>item.value===value)?.label||value||"";
+  const chips:{key:keyof GalleryFilters;label:string}[]=[];
+  if(filters.query)chips.push({key:"query",label:`Busca: “${filters.query}”`});
+  if(filters.mediaType)chips.push({key:"mediaType",label:{photo:"Fotos",video:"Vídeos",raw:"RAW"}[filters.mediaType]||filters.mediaType});
+  if(filters.year)chips.push({key:"year",label:String(filters.year)});
+  if(filters.dateFrom)chips.push({key:"dateFrom",label:`Desde ${filters.dateFrom}`});
+  if(filters.dateTo)chips.push({key:"dateTo",label:`Até ${filters.dateTo}`});
+  if(filters.camera)chips.push({key:"camera",label:`Equipamento: ${option("cameras",filters.camera)}`});
+  if(filters.sourceId)chips.push({key:"sourceId",label:`Fonte: ${option("sources",filters.sourceId)}`});
+  if(filters.originalFolder)chips.push({key:"originalFolder",label:`Pasta: ${filters.originalFolder}`});
+  if(filters.extension)chips.push({key:"extension",label:option("extensions",filters.extension)});
+  if(filters.hasLocation)chips.push({key:"hasLocation",label:"Com localização"});
+  if(filters.placeKey)chips.push({key:"placeKey",label:"Lugar selecionado"});
+  if(filters.tagId)chips.push({key:"tagId",label:`Tag: ${option("tags",filters.tagId)}`});
+  if(filters.albumId)chips.push({key:"albumId",label:`Álbum: ${option("albums",filters.albumId)}`});
+  if(filters.protectionState)chips.push({key:"protectionState",label:filters.protectionState==="source_only"?"Sem proteção":"Protegidas"});
+  if(filters.dateSuspicious)chips.push({key:"dateSuspicious",label:"Data para revisar"});
+  if(filters.favorite)chips.push({key:"favorite",label:"Favoritas"});
+  if(filters.minimumRating)chips.push({key:"minimumRating",label:`${filters.minimumRating}+ estrelas`});
+  if(filters.reviewLater)chips.push({key:"reviewLater",label:"Revisar depois"});
+  if(filters.assetIds?.length)chips.push({key:"assetIds",label:`Conjunto de ${filters.assetIds.length} mídias`});
+  return <div className="filter-chips active-filter-bar" aria-label="Busca e filtros aplicados"><strong>{matched.toLocaleString("pt-BR")} resultado{matched===1?"":"s"}</strong><div>{chips.map(chip=><button key={chip.key} onClick={()=>remove(chip.key)} aria-label={`Remover filtro ${chip.label}`}>{chip.label}<X/></button>)}</div><button className="clear-all" onClick={clear}>Limpar tudo</button></div>
 }
 function ChoiceMenu({icon,label,value,options,onChange}:{icon:React.ReactNode;label:string;value:string;options:{value:string;label:string}[];onChange:(value:string)=>void}){const[open,setOpen]=useState(false),selected=options.find(x=>x.value===value)?.label;return <div className="choice-menu"><button aria-label={label} aria-haspopup="listbox" aria-expanded={open} onClick={()=>setOpen(v=>!v)}>{icon}<span>{selected}</span><ChevronDown/></button>{open&&<div className="choice-popover" role="listbox" aria-label={label}>{options.map(option=><button role="option" aria-selected={option.value===value} className={option.value===value?"active":""} key={option.value} onClick={()=>{onChange(option.value);setOpen(false)}}>{option.label}{option.value===value&&<Check/>}</button>)}</div>}</div>}
 function Item({

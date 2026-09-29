@@ -192,6 +192,15 @@ Status: a estabilidade observada continua válida, mas a experiência visual aba
 
 Escopo: [RELEASE-0.28-BETA.md](RELEASE-0.28-BETA.md). Arquitetura: [ARCHITECTURE-0.28.md](ARCHITECTURE-0.28.md). Homologação: [VALIDATION-0.28-BETA.md](VALIDATION-0.28-BETA.md).
 
+## Entregue para homologação — 0.29: busca e produtividade
+
+- Busca explícita por botão ou `Enter`, com `Ctrl+F`, limpeza, progresso e estado vazio contextual.
+- Pills removíveis para todos os filtros ativos e limpeza integral inequívoca.
+- Pesquisa catalogada por arquivo, equipamento, tag, álbum e lugar, preservando paginação e limites.
+- Layout responsivo nos temas claro/escuro sem alterar importação, proteção, jobs ou arquivos físicos.
+
+Escopo: [RELEASE-0.29-BETA.md](RELEASE-0.29-BETA.md). Arquitetura: [ARCHITECTURE-0.29.md](ARCHITECTURE-0.29.md). Homologação: [VALIDATION-0.29-BETA.md](VALIDATION-0.29-BETA.md).
+
 ## Depois — 1.0: prontidão de produção
 
 - Telemetria local longitudinal de SLOs, migração e recuperação validadas em múltiplos dispositivos.
