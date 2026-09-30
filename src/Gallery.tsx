@@ -17,7 +17,6 @@ import {
   MapPin,
   MapPinned,
   Rows3,
-  Search,
   Star,
   Bookmark,
   Save,
@@ -32,6 +31,7 @@ import { api } from "./api";
 import { captureDate, formatBytes, formatCaptureDate } from "./format";
 import { BoundedLru } from "./lru";
 import MediaViewer from "./MediaViewer";
+import GallerySearch from "./GallerySearch";
 import type { Album, AssetDetails, GalleryFilters, GalleryResult, GallerySort, MediaAsset, SavedView, TagInfo } from "./types";
 const thumbs = new BoundedLru<string, string | null>(512),
   empty: GalleryFilters = { query: "" };
@@ -111,10 +111,14 @@ export default function Gallery() {
     [refresh, setRefresh] = useState(0);
   const seq = useRef(0),
     searchInput = useRef<HTMLInputElement>(null),
+    canvas = useRef<HTMLElement>(null),
+    currentSignature = useRef(""),
+    loadedSignature = useRef(""),
     lastSelected = useRef<string>(),
     width = { compact: 145, normal: 190, large: 260 }[zoom],
     [columns, setColumns] = useState(4),
     signature = JSON.stringify(filters) + sort + refresh;
+  currentSignature.current = signature;
   const saveMode = (x: Mode) => {
       localStorage.setItem("lumina-view", x);
       setMode0(x);
@@ -142,29 +146,33 @@ export default function Gallery() {
       setError("");
       try {
         const page = await api.gallery(filters, cursor, 100, sort);
-        if (id !== seq.current) return;
+        if (id !== seq.current || signature !== currentSignature.current) return;
+        loadedSignature.current = signature;
         setResult((previous) =>
           cursor && previous
-            ? { ...page, summary: previous.summary, options: previous.options }
+            ? { ...page, matched: previous.matched, summary: previous.summary, options: previous.options }
             : page,
         );
         setAssets((old) => (cursor ? [...old, ...page.assets] : page.assets));
       } catch (e) {
-        if (id === seq.current) setError(String(e));
+        if (id === seq.current && signature === currentSignature.current) setError(String(e));
       } finally {
-        if (id === seq.current) setLoading(false);
+        if (id === seq.current && signature === currentSignature.current) setLoading(false);
       }
     },
     [signature],
   );
   useEffect(() => {
-    api.savedViews().then(setSavedViews);
+    api.savedViews().then(setSavedViews).catch(cause=>setNotice(String(cause)));
   }, []);
   useEffect(()=>{session.selected=[];session.compare=false},[]);
   useEffect(() => {
-    const t = setTimeout(() => load(), 200);
-    return () => clearTimeout(t);
+    loadedSignature.current = "";
+    setLoading(true);
+    const t = setTimeout(() => load(), 0);
+    return () => { clearTimeout(t); ++seq.current; };
   }, [load]);
+  useEffect(()=>setQueryDraft(filters.query),[filters.query]);
   useEffect(() => {
     session.filters = filters;
     session.result = result;
@@ -178,10 +186,12 @@ export default function Gallery() {
   }, []);
   useEffect(() => {
     const resize = () =>
-      setColumns(Math.max(1, Math.floor((innerWidth - 330) / width)));
+      setColumns(Math.max(1, Math.floor(((canvas.current?.clientWidth || innerWidth - 330) + 12) / (width + 12))));
     resize();
+    const observer = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(resize);
+    if(canvas.current)observer?.observe(canvas.current);
     addEventListener("resize", resize);
-    return () => removeEventListener("resize", resize);
+    return () => { observer?.disconnect(); removeEventListener("resize", resize); };
   }, [width]);
   const groups = useMemo(() => {
     const m = new Map<string, { label: string; items: MediaAsset[] }>();
@@ -247,7 +257,7 @@ export default function Gallery() {
     visible = virtual.getVirtualItems();
   useEffect(() => {
     const last = visible.at(-1);
-    if (last && last.index >= rows.length - 3 && result?.nextCursor && !loading)
+    if (loadedSignature.current === signature && last && last.index >= rows.length - 3 && result?.nextCursor && !loading)
       load(result.nextCursor);
   }, [
     visible.map((v) => v.index).join(),
@@ -286,6 +296,7 @@ export default function Gallery() {
   const submitSearch = (event?: React.FormEvent) => {
     event?.preventDefault();
     setFilters(value => ({ ...value, query: queryDraft.trim() }));
+    if(queryDraft.trim()===filters.query)setRefresh(value=>value+1);
   };
   const applyUserState=useCallback(async(patch:{favorite?:boolean;rating?:number;reviewLater?:boolean},label:string)=>{
     const ids=[...selection];
@@ -318,7 +329,7 @@ export default function Gallery() {
   },[selection,applyUserState]);
   return (
     <div className={`gallery-workspace ${preview ? "inspector-open" : ""}`} style={{"--inspector-width":`${inspectorWidth}px`} as React.CSSProperties}>
-      <section className="gallery-canvas" aria-label="Acervo de mídias">
+      <section ref={canvas} className="gallery-canvas" aria-label="Acervo de mídias">
       <div className="gallery-command-center">
       <div className="gallery-aggregate-bar" aria-label="Resumo e filtros rápidos">
         <div className="aggregate-total"><strong>{(s?.total || 0).toLocaleString("pt-BR")} mídias</strong><span>{formatBytes(s?.bytes || 0)} no resultado atual</span></div>
@@ -356,19 +367,7 @@ export default function Gallery() {
         <ActiveFilters filters={filters} options={result?.options} matched={result?.matched || 0} remove={key=>{const next={...filters,[key]:key==="query"?"":undefined};setFilters(next);setDraft(next);if(key==="query")setQueryDraft("")}} clear={clear}/>
       )}
       <div className="toolbar gallery-toolbar">
-        <form className={`search gallery-search ${loading ? "loading" : ""}`} role="search" onSubmit={submitSearch}>
-          <Search />
-          <input
-            ref={searchInput}
-            aria-label="Buscar na galeria"
-            placeholder="Nome, equipamento, tag, álbum ou lugar"
-            value={queryDraft}
-            onChange={(e) => setQueryDraft(e.target.value)}
-            onKeyDown={event=>{if(event.key==="Escape"&&(queryDraft||filters.query)){event.preventDefault();setQueryDraft("");setFilters(value=>({...value,query:""}))}}}
-          />
-          {(queryDraft||filters.query)&&<button type="button" className="search-clear" aria-label="Limpar busca" onClick={()=>{setQueryDraft("");setFilters(value=>({...value,query:""}));searchInput.current?.focus()}}><X/></button>}
-          <button className="primary search-submit" type="submit" disabled={loading||queryDraft.trim()===filters.query.trim()}>{loading?<LoaderCircle className="spin"/>:<Search/>}<span>{loading?"Buscando…":"Buscar"}</span></button>
-        </form>
+        <GallerySearch inputRef={searchInput} value={queryDraft} hasQuery={!!filters.query} busy={loading} change={setQueryDraft} submit={submitSearch} clear={()=>{setQueryDraft("");setFilters(value=>({...value,query:""}));searchInput.current?.focus()}}/>
         <ChoiceMenu icon={<Rows3/>} label="Ordenar" value={sort} options={[{value:"captured_desc",label:"Mais recentes"},{value:"captured_asc",label:"Mais antigas"},{value:"name_asc",label:"Nome A–Z"},{value:"name_desc",label:"Nome Z–A"},{value:"size_desc",label:"Maiores arquivos"},{value:"size_asc",label:"Menores arquivos"}]} onChange={v=>saveSort(v as GallerySort)}/>
         <div className="view-switch">
           <button
@@ -407,6 +406,7 @@ export default function Gallery() {
           </div>
         </details>
       </div>
+      <div className="gallery-query-status" aria-live="polite">{loading ? <><LoaderCircle className="spin"/> Buscando…</> : error ? "Não foi possível atualizar os resultados." : `${(result?.matched || 0).toLocaleString("pt-BR")} resultado${result?.matched===1?"":"s"}`}</div>
       </div>
       {filterOpen && (
         <Filters
@@ -579,11 +579,11 @@ function ActiveFilters({filters,options,matched,remove,clear}:{filters:GalleryFi
   if(filters.sourceId)chips.push({key:"sourceId",label:`Fonte: ${option("sources",filters.sourceId)}`});
   if(filters.originalFolder)chips.push({key:"originalFolder",label:`Pasta: ${filters.originalFolder}`});
   if(filters.extension)chips.push({key:"extension",label:option("extensions",filters.extension)});
-  if(filters.hasLocation)chips.push({key:"hasLocation",label:"Com localização"});
+  if(filters.hasLocation!==undefined)chips.push({key:"hasLocation",label:filters.hasLocation?"Com localização":"Sem localização"});
   if(filters.placeKey)chips.push({key:"placeKey",label:"Lugar selecionado"});
   if(filters.tagId)chips.push({key:"tagId",label:`Tag: ${option("tags",filters.tagId)}`});
   if(filters.albumId)chips.push({key:"albumId",label:`Álbum: ${option("albums",filters.albumId)}`});
-  if(filters.protectionState)chips.push({key:"protectionState",label:filters.protectionState==="source_only"?"Sem proteção":"Protegidas"});
+  if(filters.protectionState)chips.push({key:"protectionState",label:({source_only:"Sem proteção",consolidated:"No acervo mestre",replica_verified:"Protegidas",stale:"Proteção desatualizada",error:"Falha de proteção"} as Record<string,string>)[filters.protectionState]||filters.protectionState});
   if(filters.dateSuspicious)chips.push({key:"dateSuspicious",label:"Data para revisar"});
   if(filters.favorite)chips.push({key:"favorite",label:"Favoritas"});
   if(filters.minimumRating)chips.push({key:"minimumRating",label:`${filters.minimumRating}+ estrelas`});

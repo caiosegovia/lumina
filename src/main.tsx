@@ -6,6 +6,7 @@ import { api } from "./api";
 import "./styles.css";
 import "./design-system.css";
 import "./viewer.css";
+import "./frontend-review.css";
 
 const savedTheme = localStorage.getItem("lumina-theme");
 const initialTheme = savedTheme === "light" || savedTheme === "dark"

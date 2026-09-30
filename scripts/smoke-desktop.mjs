@@ -1,6 +1,6 @@
 // Real packaged application smoke. Supply extracted MSI executable as argv[2].
 // Everything is generated under artifacts; no existing catalog is opened.
-import { chromium } from "@playwright/test";
+import { chromium, expect } from "@playwright/test";
 import { spawn, execFileSync } from "node:child_process";
 import { createServer } from "node:net";
 import {
@@ -29,7 +29,7 @@ const debugPort = await new Promise((resolvePort, reject) => {
     );
   });
 });
-const root = resolve(`artifacts/0.29/desktop-${Date.now()}`),
+const root = resolve(`artifacts/0.29.1/desktop-${Date.now()}`),
   source = join(root, "source"),
   master = join(root, "master"),
   backup = join(root, "replica"),
@@ -128,7 +128,7 @@ try {
   assert.equal(config.masterPath.replace(/^\\\\\?\\/, ""), master);
   const jobId = await invoke("start_analysis", {
     sourcePath: source,
-    sourceName: "Synthetic smoke 0.29",
+    sourceName: "Synthetic smoke 0.29.1",
   });
   const until = async (check, label, timeout = 180000) => {
     const end = Date.now() + timeout;
@@ -204,6 +204,23 @@ try {
   assert.equal(failures.total, 0);
   const photo = assets.find((a) => a.mediaType === "photo");
   await page.getByRole("button", { name: "Biblioteca", exact: true }).click();
+  const input=page.getByLabel('Buscar na galeria');
+  await expect(page.locator('.gallery-query-status')).toContainText('4 resultados');
+  for(let index=0;index<50;index++){
+    const query=index%2===0?'red.jpg':'video.mp4';
+    await input.fill(query);
+    if(index%2===0)await input.press('Enter');else await page.getByRole('button',{name:'Buscar',exact:true}).click();
+    await expect(page.locator('.gallery-query-status')).toHaveText('1 resultado');
+    await expect(page.getByRole('button',{name:`Abrir detalhes de ${query}`,exact:true})).toBeVisible();
+    const height=await page.locator('.gallery-search').evaluate(element=>element.getBoundingClientRect().height);
+    assert(height<=50,`Search grew to ${height}px`);
+  }
+  await input.fill('no-result');await input.press('Enter');
+  await expect(page.getByRole('heading',{name:'Nenhum resultado encontrado'})).toBeVisible();
+  await page.getByRole('button',{name:'Limpar busca e filtros'}).click();
+  await expect(page.locator('.gallery-query-status')).toContainText('4 resultados');
+  await page.screenshot({path:join(root,'packaged-search.png')});
+  console.log('PASS 50 real catalog searches, button/Enter, empty state and stable search geometry');
   await page
     .getByRole("button", {
       name: `Abrir detalhes de ${photo.filename}`,
@@ -256,7 +273,7 @@ try {
     join(root, "result.json"),
     JSON.stringify(
       {
-        version: "0.28.0-beta.1",
+        version: "0.29.1-beta.1",
         executable: exe,
         isolatedProfile: true,
         sourceFiles: 5,

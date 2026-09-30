@@ -87,6 +87,7 @@ export default function App() {
     [toast, setToast] = useState(""),
     previous = useRef(new Map<string, string>()),
     pollingFast = useRef(false);
+  const jobsLoader=useRef<()=>Promise<void>>(async()=>{});
   const [theme, setTheme] = useState<"system" | "light" | "dark">(() => {
     const saved = localStorage.getItem("lumina-theme");
     return saved === "light" || saved === "dark" ? saved : "system";
@@ -124,10 +125,14 @@ export default function App() {
   }, []);
   useEffect(() => {
     if (!library) return;
-    const load = () =>
-      api
+    let live = true;
+    let request = 0;
+    const load = () => {
+      const id = ++request;
+      return api
         .jobs()
         .then((next) => {
+          if(!live || id !== request)return;
           next.forEach((j) => {
             const old = previous.current.get(j.jobId);
             if (
@@ -147,12 +152,14 @@ export default function App() {
           pollingFast.current=isJobPollingFast(next);
           setJobs(next);
         })
-        .catch(() => {});
-    load();
+        .catch((error) => { if(id===request&&live)throw error; });
+    };
+    jobsLoader.current=load;
+    void load().catch(()=>{});
     let timer:ReturnType<typeof setTimeout>;
-    const schedule=()=>{timer=setTimeout(async()=>{await load();schedule()},pollingFast.current?1000:5000)};
+    const schedule=()=>{if(live)timer=setTimeout(async()=>{await load().catch(()=>{});schedule()},pollingFast.current?1000:5000)};
     schedule();
-    return () => clearTimeout(timer);
+    return () => {live=false;clearTimeout(timer)};
   }, [library]);
   if (library === undefined || startup === undefined)
     return (
@@ -234,6 +241,7 @@ export default function App() {
             }}
             jobs={jobs}
             openJob={openJob}
+            refreshJobs={()=>jobsLoader.current()}
           />
         </section>
       </main>
@@ -415,12 +423,14 @@ function Content({
   onImport,
   jobs,
   openJob,
+  refreshJobs,
 }: {
   view: View;
   navigate: (view: View) => void;
   onImport: () => void;
   jobs: JobOverview[];
   openJob: (x: string) => void;
+  refreshJobs:()=>Promise<void>;
 }) {
   if (view === "library") return <Gallery />;
   if (view === "discover") return <Discovery navigate={navigate} />;
@@ -429,7 +439,7 @@ function Content({
   if (view === "duplicates") return <Duplicates />;
   if (view === "albums") return <Albums navigate={navigate} />;
   if (view === "activity")
-    return <ActivityCenter jobs={jobs} openJob={openJob} />;
+    return <ActivityCenter jobs={jobs} openJob={openJob} refreshJobs={refreshJobs} />;
   if (view === "protection") return <Protection />;
   return <Dashboard onImport={onImport} navigate={navigate} />;
 }

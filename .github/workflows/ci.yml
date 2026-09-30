@@ -30,6 +30,17 @@ jobs:
         run: npm test
       - name: Build frontend
         run: npm run build
+      - name: Install browser for frontend regression checks
+        run: npx playwright install chromium
+      - name: Check frontend interactions and responsive geometry
+        run: npm run test:frontend -- --serve
+      - name: Upload frontend evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-review
+          path: artifacts/0.29.1/frontend
+          if-no-files-found: ignore
       - name: Audit frontend dependencies
         run: npm audit --audit-level=moderate
       - name: Check Rust formatting

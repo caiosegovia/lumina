@@ -203,6 +203,17 @@ Feedback de 29/09/2026: a busca não funciona no dispositivo de homologação e 
 
 Escopo: [RELEASE-0.29-BETA.md](RELEASE-0.29-BETA.md). Arquitetura: [ARCHITECTURE-0.29.md](ARCHITECTURE-0.29.md). Homologação: [VALIDATION-0.29-BETA.md](VALIDATION-0.29-BETA.md).
 
+## Candidata — 0.29.1-beta.1: busca estável e revisão do frontend
+
+- Corrigir colisão de CSS do carregamento, respostas fora de ordem, cursores e contagem da paginação.
+- Validar botão/Enter, filtros, visões salvas, estado vazio, grade/lista e inspetor sem quebrar a tela.
+- Revisar as nove seções nos dois temas e larguras úteis de 667 a 1400 px.
+- Separar fila de execução em Atividades, atualizar manualmente e evitar alegações de travamento baseadas só no horário.
+- Manter fontes, importação, proteção e catálogo sem alteração de contrato ou migração.
+- Publicar instaladores com evidências de testes; manter a main na baseline até homologação.
+
+Escopo: [release](RELEASE-0.29.1-BETA.md). Achados: [review](FRONTEND-REVIEW-0.29.1.md). Aceite: [roteiro](VALIDATION-0.29.1-BETA.md).
+
 ## Depois — 1.0: prontidão de produção
 
 - Telemetria local longitudinal de SLOs, migração e recuperação validadas em múltiplos dispositivos.

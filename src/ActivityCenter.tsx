@@ -33,7 +33,9 @@ function eta(seconds?: number) {
   return minutes < 60 ? `cerca de ${minutes} min restantes` : `cerca de ${Math.floor(minutes / 60)}h ${minutes % 60}min restantes`;
 }
 
-export default function ActivityCenter({ jobs, openJob }: { jobs: JobOverview[]; openJob: (id: string) => void }) {
+export default function ActivityCenter({ jobs, openJob, refreshJobs }: { jobs: JobOverview[]; openJob: (id: string) => void; refreshJobs?:()=>Promise<void> }) {
+  const [refreshing,setRefreshing]=useState(false);
+  const [refreshedAt,setRefreshedAt]=useState<string>();
   const [events, setEvents] = useState<ImportEvent[]>([]);
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState("");
@@ -41,12 +43,13 @@ export default function ActivityCenter({ jobs, openJob }: { jobs: JobOverview[];
   const [storageWarning, setStorageWarning] = useState("");
   const [background, setBackground] = useState<BackgroundWorkStatus[]>([]);
   const [clock, setClock] = useState(()=>Date.now());
-  const [view, setView] = useState<"all" | "active" | "attention" | "history">("all");
+  const [view, setView] = useState<"all" | "active" | "waiting" | "attention" | "history">("all");
   const jobRevision=jobs.map(job=>`${job.jobId}:${job.state}:${job.updatedAt}`).join("|");
-  useEffect(() => { api.events().then(setEvents); }, [jobRevision]);
+  useEffect(() => { let live=true; api.events().then(value=>{if(live)setEvents(value)}).catch(()=>{}); return()=>{live=false}; }, [jobRevision]);
   useEffect(() => {
     let live = true;
-    const load = () => api.backgroundWork().then(value => live && setBackground(value)).catch(() => live && setBackground([]));
+    let pending=false;
+    const load = async () => {if(pending)return;pending=true;try{const value=await api.backgroundWork();if(live)setBackground(value)}catch{if(live)setNotice("Não foi possível atualizar o processamento em segundo plano; exibindo a última consulta.")}finally{pending=false}};
     void load();
     const timer = setInterval(load, 5000);
     return () => { live = false; clearInterval(timer); };
@@ -74,10 +77,11 @@ export default function ActivityCenter({ jobs, openJob }: { jobs: JobOverview[];
       setBusy("");
     }
   };
-  const active = jobs.filter(j => jobBucket(j.state)==="active");
+  const active = jobs.filter(j => jobBucket(j.state)==="active" && j.state!=="queued");
+  const waiting = jobs.filter(j=>j.state==="queued");
   const attention = jobs.filter(j => jobBucket(j.state)==="attention");
   const history = jobs.filter(j => jobBucket(j.state)==="history");
-  const visibleBackground=background.filter(work=>work.state!=="idle"||work.pending>0||work.failed>0);
+  const visibleBackground=background.filter(work=>work.processing>0||work.pending>0||work.failed>0);
   const latestJob = jobs[0]?.jobId || events[0]?.jobId || "";
 
   const card = (job: JobOverview, compact = false) => {
@@ -110,15 +114,19 @@ export default function ActivityCenter({ jobs, openJob }: { jobs: JobOverview[];
     <div className="activity-hero"><div><p className="eyebrow">TRABALHOS E IMPORTAÇÕES</p><h2>Atividade da biblioteca</h2><p>Acompanhe o que está acontecendo e o que precisa da sua atenção.</p></div><div className="activity-summary"><span><strong>{active.length}</strong> em andamento</span><span><strong>{attention.length}</strong> aguardando você</span></div></div>
     {storageWarning&&<div className="storage-warning"><AlertTriangle/><div><strong>Desempenho e proteção reduzidos</strong><p>{storageWarning}</p></div></div>}
     {notice && <button className="activity-notice" role="status" onClick={() => setNotice("")}>{notice}<XCircle/></button>}
+    <div className="activity-refresh"><button disabled={refreshing} onClick={async()=>{setRefreshing(true);try{await refreshJobs?.();const [work,items]=await Promise.all([api.backgroundWork(),api.events()]);setBackground(work);setEvents(items);setRefreshedAt(new Date().toLocaleTimeString("pt-BR"));}catch(error){setNotice(`Falha ao atualizar: ${String(error)}`)}finally{setRefreshing(false)}}}><RotateCcw/>{refreshing?"Atualizando…":"Atualizar atividades"}</button><small>{refreshedAt?`Consultado às ${refreshedAt}`:"Atualização automática enquanto o aplicativo estiver aberto"}</small></div>
     <nav className="activity-view-tabs" aria-label="Filtrar atividades">
       <button className={view==="all"?"active":""} aria-pressed={view==="all"} onClick={()=>setView("all")}>Visão geral <b>{jobs.length}</b></button>
       <button className={view==="active"?"active":""} aria-pressed={view==="active"} onClick={()=>setView("active")}>Em execução <b>{active.length}</b></button>
+      <button className={view==="waiting"?"active":""} aria-pressed={view==="waiting"} onClick={()=>setView("waiting")}>Aguardando <b>{waiting.length}</b></button>
       <button className={view==="attention"?"active":""} aria-pressed={view==="attention"} onClick={()=>setView("attention")}>Atenção <b>{attention.length}</b></button>
       <button className={view==="history"?"active":""} aria-pressed={view==="history"} onClick={()=>setView("history")}>Histórico <b>{history.length}</b></button>
     </nav>
     {(view==="all"||view==="active")&&active.length > 0 && <section className="work-section"><h3>Em andamento <b>{active.length}</b></h3><div className="work-cards">{active.map(j => card(j))}</div></section>}
+    {(view==="all"||view==="waiting")&&waiting.length>0&&<section className="work-section"><h3>Aguardando execução</h3><p>Trabalhos na fila aguardam a liberação dos recursos necessários.</p><div className="work-cards">{waiting.map(j=>card(j))}</div></section>}
+    {view==="waiting"&&!waiting.length&&<p className="activity-empty">Nenhum trabalho na fila.</p>}
     {(view==="all"||view==="attention")&&attention.length > 0 && <section className="work-section"><h3>Precisa da sua atenção <b>{attention.length}</b></h3><div className="work-cards">{attention.map(j => card(j))}</div></section>}
-    {view==="all"&&active.length === 0 && attention.length === 0 && <div className="activity-empty"><CheckCircle2/><div><strong>Tudo em ordem</strong><p>Nenhum trabalho precisa da sua atenção.</p></div></div>}
+    {view==="all"&&active.length === 0 && waiting.length===0 && attention.length === 0 && <div className="activity-empty"><CheckCircle2/><div><strong>Tudo em ordem</strong><p>Nenhum trabalho precisa da sua atenção.</p></div></div>}
     {view==="active"&&active.length===0&&<div className="activity-empty"><CheckCircle2/><div><strong>Nenhum trabalho em execução</strong><p>O Lumina está livre para uma nova tarefa.</p></div></div>}
     {view==="attention"&&attention.length===0&&<div className="activity-empty"><CheckCircle2/><div><strong>Nenhuma pendência</strong><p>Não há trabalhos aguardando uma decisão.</p></div></div>}
     {(view==="all"||view==="active")&&visibleBackground.length > 0 && <section className="background-work" aria-label="Processamento em segundo plano"><div className="background-work-heading"><Sparkles/><div><strong>Organização em segundo plano</strong><p>O Lumina prepara a biblioteca sem interromper seu uso; tarefas concluídas desaparecem daqui.</p></div></div><div className="background-work-items">{visibleBackground.map(work => <div className={`background-work-item ${work.state}`} key={work.stage}><span>{work.stage === "thumbnail" ? "Previews" : "Metadados"}</span><b>{work.state === "processing" ? "Processando" : work.state === "pending" ? "Na fila" : work.state === "attention" ? "Requer revisão" : "Limitações conhecidas"}</b><small>{work.failed > 0 ? `${work.failed.toLocaleString("pt-BR")} arquivos sem resultado compatível` : work.pending > 0 ? `${work.pending.toLocaleString("pt-BR")} restantes` : `${work.completed.toLocaleString("pt-BR")} concluídos`}</small>{(work.state === "processing" || work.state === "pending") && <div className="background-progress"><i style={{width:`${work.progressPercent}%`}}/></div>}</div>)}</div></section>}
