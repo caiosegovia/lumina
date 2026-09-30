@@ -1,8 +1,6 @@
 # Lumina
 
-Versão atual: **0.24.2-beta.1**. Consulte [RELEASE-0.24.2-BETA.md](RELEASE-0.24.2-BETA.md) e [VALIDATION-0.24.2-BETA.md](VALIDATION-0.24.2-BETA.md).
-
-Versão candidata atual: **0.23.0-beta.2**. Ela preserva a baseline resiliente homologada na 0.22.2 e consolida produtividade, tipografia embarcada, atividade, duplicatas e insights para nova homologação.
+Versão candidata: **0.29.1-beta.1**. Consulte [entregas](RELEASE-0.29.1-BETA.md), [roteiro de testes](VALIDATION-0.29.1-BETA.md) e [revisão do frontend](FRONTEND-REVIEW-0.29.1.md). A [arquitetura da busca](ARCHITECTURE-0.29.md) permanece vigente. A [reprovação da 0.29.0](VALIDATION-0.29-BETA.md) e a [baseline 0.28](RELEASE-0.28-BETA.md) estão preservadas; esta candidata ainda depende de homologação no dispositivo do usuário.
 
 Fontes vigentes: [escopo preservado](SCOPE-0.22.2.md), [contrato não funcional](NFR-0.22.2-RESILIENCE.md), [arquitetura-alvo](ARCHITECTURE-0.22.2.md), [auditoria arquitetural](ARCHITECTURE-AUDIT-0.22.2.md), [plano de remediação](REMEDIATION-0.22.2.md) e [matriz de rastreabilidade](TRACEABILITY-0.22.2.md).
 
@@ -27,6 +25,7 @@ Lumina é um aplicativo desktop local para inventariar, consolidar, deduplicar e
 - Inventário amplo de fotos, vídeos e RAW com ExifTool em lotes, FFmpeg e FFprobe empacotados.
 - Importação retomável, controles de trabalhos e relatórios técnicos.
 - Galeria em grade ou lista, paginação por cursor, filtros rápidos, pills, preview HD progressivo e metadados EXIF sob demanda.
+- Seleção contextual, comparação de até quatro mídias, tags pesquisáveis/criáveis, undo transacional, revisão direta e álbuns inteligentes.
 - Dashboard progressivo com capacidade dos discos, composição, crescimento, saúde técnica, proteção e insights acionáveis.
 - Catálogo SQLite com snapshots, agregados e índices testados com 100 mil e 500 mil mídias.
 
@@ -59,6 +58,9 @@ npm.cmd run dev
 npm.cmd test
 npm.cmd run build
 cargo test --manifest-path src-tauri/Cargo.toml
+npm.cmd run test:browser # com o servidor Vite ativo
+npm.cmd run test:frontend # revisão responsiva e busca, Vite ativo
+node scripts/smoke-desktop.mjs "C:\caminho\extraido\lumina.exe" # catálogo isolado
 ```
 
 Os testes existentes são úteis, mas não cobrem ainda todos os gates de memória, endurance e árvore de processos exigidos para a 0.22.2. Consulte [TESTING.md](TESTING.md) e não interprete uma compilação verde como aceite de produção.

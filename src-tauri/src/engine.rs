@@ -532,6 +532,7 @@ pub fn queue_analysis(
     source_path: &str,
     source_name: &str,
 ) -> Result<String, String> {
+    crate::library::ensure_ready(cfg)?;
     let root = Path::new(source_path);
     if !root.is_dir() {
         return Err(format!("A fonte não está acessível: {source_path}"));
@@ -591,6 +592,7 @@ pub fn analyze_with_job_cancel(
     requested_job: Option<&str>,
     cancel: &crate::process::CancellationToken,
 ) -> Result<ImportSummary, String> {
+    crate::library::ensure_ready(cfg)?;
     let analysis_started = Instant::now();
     let root = Path::new(source_path);
     if !root.is_dir() {
@@ -2194,6 +2196,24 @@ mod tests {
         };
         catalog::open(&master.join(".lumina/catalog.sqlite")).unwrap();
         (root, cfg)
+    }
+
+    #[test]
+    fn invalid_library_is_rejected_before_an_import_job_is_created() {
+        let root = std::env::temp_dir().join(format!("lumina-preflight-{}", Uuid::new_v4()));
+        let source = root.join("source");
+        fs::create_dir_all(&source).unwrap();
+        let cfg = LibraryConfig {
+            id: "invalid".into(),
+            name: "Teste".into(),
+            master_path: root.join("missing-master").to_string_lossy().into(),
+            backup_path: root.join("missing-backup").to_string_lossy().into(),
+            created_at: Utc::now().to_rfc3339(),
+        };
+        let error = queue_analysis(&cfg, source.to_str().unwrap(), "Fonte").unwrap_err();
+        assert!(error.contains("acervo mestre"));
+        assert!(!root.join("missing-master/.lumina/catalog.sqlite").exists());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

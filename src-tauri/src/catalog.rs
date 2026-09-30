@@ -117,6 +117,11 @@ pub fn open(path: &Path) -> Result<Connection> {
         [],
         |row| row.get::<_, bool>(0),
     )?;
+    let needs_v21 = db.query_row(
+        "SELECT NOT EXISTS(SELECT 1 FROM schema_migrations WHERE version=21)",
+        [],
+        |row| row.get::<_, bool>(0),
+    )?;
     db.execute_batch("BEGIN IMMEDIATE;
       CREATE TABLE IF NOT EXISTS job_items(
         id INTEGER PRIMARY KEY AUTOINCREMENT,job_id TEXT NOT NULL REFERENCES jobs(id),source_path TEXT NOT NULL,filename TEXT NOT NULL,extension TEXT NOT NULL,media_type TEXT NOT NULL,
@@ -492,6 +497,55 @@ pub fn open(path: &Path) -> Result<Connection> {
              COMMIT;",
         )?;
     }
+    if needs_v21 {
+        db.execute_batch(
+            "BEGIN IMMEDIATE;
+             CREATE TABLE curation_sessions(
+               id TEXT PRIMARY KEY,name TEXT NOT NULL,filters_json TEXT NOT NULL,sort TEXT NOT NULL,
+               state TEXT NOT NULL CHECK(state IN('active','completed')) DEFAULT 'active',
+               total_items INTEGER NOT NULL DEFAULT 0,reviewed_items INTEGER NOT NULL DEFAULT 0,
+               skipped_items INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+             CREATE TABLE curation_session_items(
+               session_id TEXT NOT NULL REFERENCES curation_sessions(id) ON DELETE CASCADE,
+               asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,position INTEGER NOT NULL,
+               state TEXT NOT NULL CHECK(state IN('pending','reviewed','skipped')) DEFAULT 'pending',decided_at TEXT,
+               PRIMARY KEY(session_id,asset_id),UNIQUE(session_id,position));
+             CREATE INDEX idx_curation_session_next ON curation_session_items(session_id,state,position);
+             CREATE TABLE discovery_group_exclusions(
+               group_id TEXT NOT NULL,asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+               created_at TEXT NOT NULL,PRIMARY KEY(group_id,asset_id));
+             CREATE TABLE asset_location_overrides(
+               asset_id TEXT PRIMARY KEY REFERENCES assets(id) ON DELETE CASCADE,
+               display_name TEXT NOT NULL,updated_at TEXT NOT NULL);
+             CREATE TABLE discovery_snapshots(
+               id INTEGER PRIMARY KEY CHECK(id=1),algorithm_version INTEGER NOT NULL,
+               payload TEXT NOT NULL,generated_at TEXT NOT NULL);
+             CREATE TRIGGER discovery_asset_insert AFTER INSERT ON assets BEGIN DELETE FROM discovery_snapshots; END;
+             CREATE TRIGGER discovery_asset_update AFTER UPDATE OF captured_at,camera,latitude,longitude ON assets BEGIN DELETE FROM discovery_snapshots; END;
+             CREATE TRIGGER discovery_asset_delete AFTER DELETE ON assets BEGIN DELETE FROM discovery_snapshots; END;
+             CREATE TRIGGER discovery_fingerprint_insert AFTER INSERT ON asset_visual_fingerprints BEGIN DELETE FROM discovery_snapshots; END;
+             CREATE TRIGGER discovery_fingerprint_update AFTER UPDATE ON asset_visual_fingerprints BEGIN DELETE FROM discovery_snapshots; END;
+             CREATE TRIGGER discovery_fingerprint_delete AFTER DELETE ON asset_visual_fingerprints BEGIN DELETE FROM discovery_snapshots; END;
+             CREATE TRIGGER discovery_traits_insert AFTER INSERT ON asset_visual_traits BEGIN DELETE FROM discovery_snapshots; END;
+             CREATE TRIGGER discovery_traits_update AFTER UPDATE ON asset_visual_traits BEGIN DELETE FROM discovery_snapshots; END;
+             CREATE TRIGGER discovery_traits_delete AFTER DELETE ON asset_visual_traits BEGIN DELETE FROM discovery_snapshots; END;
+             CREATE TRIGGER discovery_asset_location_insert AFTER INSERT ON asset_locations BEGIN DELETE FROM discovery_snapshots; END;
+             CREATE TRIGGER discovery_asset_location_update AFTER UPDATE ON asset_locations BEGIN DELETE FROM discovery_snapshots; END;
+             CREATE TRIGGER discovery_asset_location_delete AFTER DELETE ON asset_locations BEGIN DELETE FROM discovery_snapshots; END;
+             CREATE TRIGGER discovery_location_cell_update AFTER UPDATE ON location_cells BEGIN DELETE FROM discovery_snapshots; END;
+             CREATE TRIGGER discovery_location_override_insert AFTER INSERT ON location_overrides BEGIN DELETE FROM discovery_snapshots; END;
+             CREATE TRIGGER discovery_location_override_update AFTER UPDATE ON location_overrides BEGIN DELETE FROM discovery_snapshots; END;
+             CREATE TRIGGER discovery_location_override_delete AFTER DELETE ON location_overrides BEGIN DELETE FROM discovery_snapshots; END;
+             CREATE TRIGGER discovery_asset_override_insert AFTER INSERT ON asset_location_overrides BEGIN DELETE FROM discovery_snapshots; END;
+             CREATE TRIGGER discovery_asset_override_update AFTER UPDATE ON asset_location_overrides BEGIN DELETE FROM discovery_snapshots; END;
+             CREATE TRIGGER discovery_asset_override_delete AFTER DELETE ON asset_location_overrides BEGIN DELETE FROM discovery_snapshots; END;
+             CREATE TRIGGER discovery_exclusion_insert AFTER INSERT ON discovery_group_exclusions BEGIN DELETE FROM discovery_snapshots; END;
+             CREATE TRIGGER discovery_exclusion_delete AFTER DELETE ON discovery_group_exclusions BEGIN DELETE FROM discovery_snapshots; END;
+             CREATE INDEX idx_catalog_actions_state ON catalog_actions(state,created_at DESC);
+             INSERT INTO schema_migrations(version,applied_at)VALUES(21,datetime('now'));
+             COMMIT;",
+        )?;
+    }
     let work_queue_has_priority = db
         .prepare("PRAGMA table_info(work_queue)")?
         .query_map([], |row| row.get::<_, String>(1))?
@@ -540,7 +594,7 @@ pub fn open(path: &Path) -> Result<Connection> {
         }
     }
     db.execute("UPDATE job_items SET captured_at=substr(captured_at,1,19),date_source=CASE WHEN date_source='exif_original' THEN 'exif_original_local' ELSE date_source END WHERE date_source IN('exif_original','media_created') AND captured_at IS NOT NULL AND length(captured_at)>=20 AND (substr(captured_at,20,1)='Z' OR substr(captured_at,20,1) IN('+','-'))",[])?;
-    db.pragma_update(None, "user_version", 20)?;
+    db.pragma_update(None, "user_version", 21)?;
     db.execute_batch("PRAGMA optimize;")?;
     db.execute(
         "UPDATE jobs SET state='waiting_space',stage='space_check',finished_at=NULL WHERE state='failed' AND processed_items=0 AND interruption_reason LIKE 'Espaço insuficiente:%'",
@@ -558,21 +612,21 @@ fn compact_telemetry(db: &Connection) -> Result<usize> {
     )
 }
 
-pub fn snapshot(source_path: &Path, destination: &Path) -> Result<()> {
+pub fn snapshot(source_path: &Path, destination: &Path) -> std::result::Result<(), String> {
     use rusqlite::backup::Backup;
     use std::time::Duration;
     if let Some(parent) = destination.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|_| rusqlite::Error::InvalidPath(parent.to_path_buf()))?;
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
     let temporary = destination.with_extension("sqlite.lumina-replacement");
-    let source = open(source_path)?;
-    let mut target = Connection::open(&temporary)?;
-    Backup::new(&source, &mut target)?.run_to_completion(128, Duration::from_millis(5), None)?;
+    let source = open(source_path).map_err(|error| error.to_string())?;
+    let mut target = Connection::open(&temporary).map_err(|error| error.to_string())?;
+    Backup::new(&source, &mut target)
+        .and_then(|backup| backup.run_to_completion(128, Duration::from_millis(5), None))
+        .map_err(|error| error.to_string())?;
     drop(target);
     drop(source);
     crate::storage::replace_file(&temporary, destination)
-        .map_err(|_| rusqlite::Error::InvalidPath(destination.to_path_buf()))
 }
 
 #[cfg(test)]
@@ -810,13 +864,13 @@ mod tests {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            20
+            21
         );
         assert_eq!(
             db.query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row
                 .get::<_, i64>(0))
                 .unwrap(),
-            20
+            21
         );
         let technical_columns = db
             .prepare("PRAGMA table_info(asset_technical_metadata)")
@@ -982,7 +1036,7 @@ mod tests {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            20
+            21
         );
         drop(db);
         fs::remove_dir_all(root).unwrap();
@@ -1035,7 +1089,7 @@ mod tests {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            20
+            21
         );
         drop(db);
         fs::remove_dir_all(root).unwrap();
@@ -1050,7 +1104,7 @@ mod tests {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            20
+            21
         );
         drop(db);
         fs::remove_dir_all(root).unwrap();
@@ -1079,7 +1133,7 @@ mod tests {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            20
+            21
         );
         drop(db);
         fs::remove_dir_all(root).unwrap();
@@ -1115,6 +1169,31 @@ mod tests {
                 |r| r.get::<_, bool>(0)
             )
             .unwrap());
+        drop(db);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn v21_adds_resumable_curation_and_scoped_catalog_overrides() {
+        let root = std::env::temp_dir().join(Uuid::new_v4().to_string());
+        fs::create_dir_all(&root).unwrap();
+        let db = open(&root.join("curation.sqlite")).unwrap();
+        let tables:i64=db.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN('curation_sessions','curation_session_items','discovery_group_exclusions','asset_location_overrides','discovery_snapshots')",[],|row|row.get(0)).unwrap();
+        assert_eq!(tables, 5);
+        let indexes:i64=db.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name IN('idx_curation_session_next','idx_catalog_actions_state')",[],|row|row.get(0)).unwrap();
+        assert_eq!(indexes, 2);
+        db.execute("INSERT INTO discovery_snapshots(id,algorithm_version,payload,generated_at)VALUES(1,2,'{}','2026-01-01')",[]).unwrap();
+        db.execute("INSERT INTO assets(id,hash,filename,media_type,extension,captured_at,date_source,bytes,master_path,created_at)VALUES('invalidate',?1,'x.jpg','photo','jpg','2026-01-01','exif',1,'x','2026-01-01')",["f".repeat(64)]).unwrap();
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM discovery_snapshots", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            21
+        );
         drop(db);
         fs::remove_dir_all(root).unwrap();
     }

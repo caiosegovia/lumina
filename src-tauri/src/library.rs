@@ -10,6 +10,50 @@ use uuid::Uuid;
 pub struct LibraryLock {
     file: File,
 }
+
+pub fn configuration_issues(cfg: &crate::models::LibraryConfig) -> Vec<String> {
+    let mut issues = Vec::new();
+    let master = Path::new(&cfg.master_path);
+    let backup = Path::new(&cfg.backup_path);
+    if !master.is_dir() {
+        issues.push(
+            "O acervo mestre não está acessível. Reconecte a unidade ou escolha outra pasta."
+                .into(),
+        );
+    } else {
+        let catalog = master.join(".lumina/catalog.sqlite");
+        if !catalog.is_file() {
+            issues.push("O catálogo do acervo mestre não foi encontrado nessa pasta.".into());
+        } else if crate::catalog::open(&catalog).is_err() {
+            issues.push("O catálogo do acervo mestre não pôde ser aberto.".into());
+        }
+    }
+    if !backup.is_dir() {
+        issues.push(
+            "A pasta de réplica não está acessível. Reconecte a unidade ou escolha outra pasta."
+                .into(),
+        );
+    }
+    if master.is_dir() && backup.is_dir() {
+        if let (Ok(master), Ok(backup)) = (fs::canonicalize(master), fs::canonicalize(backup)) {
+            if master == backup || master.starts_with(&backup) || backup.starts_with(&master) {
+                issues.push(
+                    "O acervo mestre e a réplica precisam ficar em pastas independentes.".into(),
+                );
+            }
+        }
+    }
+    issues
+}
+
+pub fn ensure_ready(cfg: &crate::models::LibraryConfig) -> Result<(), String> {
+    let issues = configuration_issues(cfg);
+    if issues.is_empty() {
+        Ok(())
+    } else {
+        Err(issues.join(" "))
+    }
+}
 impl LibraryLock {
     pub fn acquire(master: &Path, instance: &str) -> Result<Self, String> {
         let dir = master.join(".lumina");
@@ -188,6 +232,21 @@ mod tests {
         drop(first);
         assert!(LibraryLock::acquire(&root, "three").is_ok());
         fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn reports_missing_library_paths_before_work_is_queued() {
+        let root = std::env::temp_dir().join(Uuid::new_v4().to_string());
+        let cfg = crate::models::LibraryConfig {
+            id: "l".into(),
+            name: "test".into(),
+            master_path: root.join("missing-master").to_string_lossy().into(),
+            backup_path: root.join("missing-backup").to_string_lossy().into(),
+            created_at: Utc::now().to_rfc3339(),
+        };
+        let issues = configuration_issues(&cfg);
+        assert_eq!(issues.len(), 2);
+        assert!(issues[0].contains("acervo mestre"));
+        assert!(issues[1].contains("réplica"));
     }
     #[test]
     fn migration_copies_and_verifies_before_switching_catalog_paths() {

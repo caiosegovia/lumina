@@ -100,6 +100,120 @@ Escopo, ordem e gates estão em `NFR-0.22.2-RESILIENCE.md`, `ARCHITECTURE-AUDIT-
 - Políticas de bateria e agendamento por janela de uso.
 - Mapa privado opcional e pacotes geográficos regionais atualizáveis.
 
+## Em homologação — 0.25: experiência da galeria
+
+- Visualizador refeito sobre transformação geométrica testada, responsivo ao painel, tela cheia e DPI.
+- Inspetor integrado redimensionável e preferência persistente.
+- Filtros rápidos de localização e revisão e remoção da jornada de pessoas do produto.
+- Manutenção concluída deixa de ocupar Atividades; limitações permanecem explicáveis.
+- Preserva lista operacional, duplicatas progressivas, insights amostrais/sob demanda, lugares e bursts da baseline homologada.
+
+## Correção prioritária — visualizador reprovado em homologação (26/09/2026)
+
+Feedback do usuário durante os testes da entrega 0.25.1-beta.1: zoom continua ruim e não funciona em fotos e vídeos; a interface responde mal ao abrir fotos na galeria; barras desaparecem. O gate do visualizador da 0.25 permanece reprovado. Causa ainda não diagnosticada; barras específicas, resolução e escala do Windows ainda não identificadas.
+
+- Rever o layout e a resposta da interface ao abrir e trocar mídias, redimensionar o painel e entrar/sair da tela cheia.
+- Manter barras e controles visíveis e acessíveis durante essas transições.
+- Corrigir e validar zoom e arraste em fotos e vídeos, preservando os controles de reprodução de vídeo.
+- Homologar o executável no dispositivo de teste, em diferentes tamanhos de janela e escalas do Windows; aprovação de testes unitários não encerra este defeito.
+- Aceite: abertura e navegação responsivas, controles sem desaparecimento, zoom previsível e enquadramento recuperável, tanto em fotos quanto em vídeos.
+
+Registro de demanda para o próximo pacote corretivo; nenhuma implementação efetuada por este registro. Demais jornadas mantêm seus resultados de homologação independentes.
+
+## Melhoria solicitada — detalhes das falhas técnicas na Revisão (26/09/2026)
+
+- Ao clicar em “Falhas técnicas” na seção Revisão, abrir uma lista dos arquivos afetados vinculada ao contador exibido.
+- Permitir expandir cada item para consultar nome/caminho, etapa afetada (por exemplo, preview ou metadados), motivo da falha e última tentativa, quando essas informações estiverem disponíveis.
+- Apresentar explicação compreensível e orientação de próxima ação; distinguir falhas recuperáveis de limitações de formato e informar quando não houver detalhe registrado.
+- Aceite: o clique permite identificar quais arquivos falharam e por quê; a lista explica sua relação com o contador e oferece estado vazio quando não há falhas.
+
+Demanda registrada para implementação futura; comportamento ainda não implementado por este registro.
+
+## Candidata à homologação — 0.26: galeria, revisão e descoberta
+
+- Corrige o visualizador reprovado na 0.25, com testes reais de layout/transformação em foto e vídeo. A aprovação no dispositivo do usuário permanece pendente.
+- Implementa detalhamento paginado das falhas técnicas e preserva o histórico dos erros anteriores.
+- Descobrir com carregamento progressivo, cache curto por biblioteca, índice visual de prévias limitadas, transações curtas, progresso e cancelamento.
+- Nomes de lugares com proveniência e aproximação explícitas; preservação de nomes manuais e critérios geográficos de viagens.
+- Simulação de limpeza respeita decisões humanas e proteção verificada, sem exclusão automática.
+- Mantém setup, importação, proteção, datas, Explorer, temas e tipografia fora de alterações funcionais.
+
+Escopo fechado: [RELEASE-0.26-BETA.md](RELEASE-0.26-BETA.md). Arquitetura: [ARCHITECTURE-0.26.md](ARCHITECTURE-0.26.md). Homologação e evidências: [VALIDATION-0.26-BETA.md](VALIDATION-0.26-BETA.md).
+
+## Candidata à homologação — 0.27: produtividade e curadoria
+
+- Seleção por intervalo, atalhos e ações em lote com undo transacional.
+- Visões dinâmicas e sessões de curadoria persistentes/retomáveis.
+- Comparação de duas a quatro mídias com zoom sincronizado ou independente, diferenças destacadas e decisão reversível.
+- Bursts ajustáveis apenas no catálogo e abertura por conjunto exato.
+- Descobrir com cobertura, navegação mensal e snapshot persistente invalidado pelo catálogo.
+- Correção de lugar no escopo das selecionadas e falhas técnicas filtráveis com retry apenas quando aplicável.
+- Preserva os gates de importação, proteção, estabilidade, Explorer, data de captura e visualizador da 0.26.
+
+Escopo: [RELEASE-0.27-BETA.md](RELEASE-0.27-BETA.md). Arquitetura: [ARCHITECTURE-0.27.md](ARCHITECTURE-0.27.md). Homologação: [VALIDATION-0.27-BETA.md](VALIDATION-0.27-BETA.md).
+
+## Feedback de homologação — revisão visual da 0.27.0-beta.2 (28/09/2026)
+
+Status: a estabilidade observada continua válida, mas a experiência visual abaixo está reprovada e bloqueia a aprovação definitiva da 0.27.
+
+### Problemas confirmados
+
+- **Contraste dos botões:** há texto claro sobre superfícies claras, tornando ações difíceis de ler. O problema deve ser corrigido em todos os estados (normal, hover, foco, pressionado e desabilitado), nos temas claro e escuro.
+- **Criação e aplicação de tags:** a jornada não deixa claro quando o usuário está escolhendo uma tag existente, criando uma nova ou aplicando-a aos arquivos selecionados.
+- **Sessões de curadoria:** o conceito e a apresentação atuais não comunicam valor. A solução atual foi rejeitada; não basta trocar o nome.
+- **Descobrir:** a seção está densa, amontoada e sem hierarquia clara, dificultando entender o que pode ser explorado e qual ação tomar.
+- **Itens sem valor percebido:** “Viagens” e “Visualmente parecidas” deixam de fazer parte da experiência principal e devem ser removidos da interface e do escopo ativo.
+
+### Direção obrigatória para a correção
+
+- Consolidar tokens semânticos de cor e contraste para botões, pills, links e estados de interação, com validação WCAG AA e smoke visual nos temas claro/escuro.
+- Transformar tags em um fluxo explícito: seleção dos arquivos, escolha de tags existentes, ação inequívoca “Criar nova tag”, confirmação da aplicação e possibilidade de desfazer.
+- Retirar “sessão de curadoria” da navegação principal. A revisão deve acontecer diretamente na galeria, com fila/progresso apenas se isso for necessário e compreensível, sem exigir que o usuário aprenda uma entidade nova.
+- Redesenhar Descobrir com resumo primeiro e detalhes sob demanda, priorizando apenas linhas do tempo, lugares e bursts que tenham cobertura útil.
+- Remover cartões, navegação e chamadas de “Viagens” e “Visualmente parecidas”; dados legados podem ser preservados para compatibilidade, mas não devem aparecer nem gerar trabalho automático na jornada principal.
+
+### Critérios de aceite visual
+
+- Todo texto de ação é legível nos dois temas e em todos os estados, sem combinação claro sobre claro.
+- Um usuário consegue criar e aplicar uma tag sem conhecimento prévio e recebe confirmação clara do resultado.
+- A galeria não expõe “sessões de curadoria” como conceito obrigatório.
+- Descobrir apresenta uma hierarquia curta, responsiva e sem “Viagens” ou “Visualmente parecidas”.
+- A revisão é validada em 1000×700, 1100×700 e 1400×900, incluindo DPR 1,25/1,5 e navegação por teclado.
+
+## Entregue para homologação — 0.28: revisão integral de UX
+
+- Fundação visual unificada em Inter Variable, cores semânticas e foreground específico por tema.
+- Contraste corrigido para ações primárias no tema escuro e foco visível consistente.
+- Barra da galeria simplificada, ações secundárias em overflow e seleção contextual responsiva.
+- Tag picker com busca, seleção de existentes, criação explícita, confirmação e undo pelo histórico de catálogo.
+- “Sessões de curadoria” removidas da experiência; revisão acontece diretamente na galeria.
+- Descobrir reduzido a Memórias, Lugares e Bursts; “Viagens” e “Visualmente parecidas” removidas da interface principal.
+- Controles técnicos e cobertura de Descobrir movidos para uma área de manutenção sob demanda.
+
+Escopo: [RELEASE-0.28-BETA.md](RELEASE-0.28-BETA.md). Arquitetura: [ARCHITECTURE-0.28.md](ARCHITECTURE-0.28.md). Homologação: [VALIDATION-0.28-BETA.md](VALIDATION-0.28-BETA.md).
+
+## Reprovada em homologação — 0.29.0-beta.1: busca e produtividade
+
+Feedback de 29/09/2026: a busca não funciona no dispositivo de homologação e a interface da galeria fica quebrada durante a jornada. A versão está bloqueada e não deve ser integrada à `main`. A correção exige reprodução real, diagnóstico funcional e responsivo, testes de regressão e uma nova tag; a 0.28 permanece como baseline.
+
+- Busca explícita por botão ou `Enter`, com `Ctrl+F`, limpeza, progresso e estado vazio contextual.
+- Pills removíveis para todos os filtros ativos e limpeza integral inequívoca.
+- Pesquisa catalogada por arquivo, equipamento, tag, álbum e lugar, preservando paginação e limites.
+- Layout responsivo nos temas claro/escuro sem alterar importação, proteção, jobs ou arquivos físicos.
+
+Escopo: [RELEASE-0.29-BETA.md](RELEASE-0.29-BETA.md). Arquitetura: [ARCHITECTURE-0.29.md](ARCHITECTURE-0.29.md). Homologação: [VALIDATION-0.29-BETA.md](VALIDATION-0.29-BETA.md).
+
+## Candidata — 0.29.1-beta.1: busca estável e revisão do frontend
+
+- Corrigir colisão de CSS do carregamento, respostas fora de ordem, cursores e contagem da paginação.
+- Validar botão/Enter, filtros, visões salvas, estado vazio, grade/lista e inspetor sem quebrar a tela.
+- Revisar as nove seções nos dois temas e larguras úteis de 667 a 1400 px.
+- Separar fila de execução em Atividades, atualizar manualmente e evitar alegações de travamento baseadas só no horário.
+- Manter fontes, importação, proteção e catálogo sem alteração de contrato ou migração.
+- Publicar instaladores com evidências de testes; manter a main na baseline até homologação.
+
+Escopo: [release](RELEASE-0.29.1-BETA.md). Achados: [review](FRONTEND-REVIEW-0.29.1.md). Aceite: [roteiro](VALIDATION-0.29.1-BETA.md).
+
 ## Depois — 1.0: prontidão de produção
 
 - Telemetria local longitudinal de SLOs, migração e recuperação validadas em múltiplos dispositivos.

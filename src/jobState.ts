@@ -54,5 +54,5 @@ export function jobHeartbeat(job:JobOverview,now=Date.now()):JobHeartbeat {
 export function heartbeatLabel(job:JobOverview,now=Date.now()):string {
   const seconds=Math.floor(Math.max(0,now-new Date(job.updatedAt).getTime())/1000);
   const duration=seconds<60?`${seconds}s`:`${Math.floor(seconds/60)} min`;
-  return jobHeartbeat(job,now)==="waiting"?`Na fila há ${duration}`:`Fila sem worker ativo há ${duration}`;
+  return jobHeartbeat(job,now)==="waiting"?`Na fila há ${duration}`:`Sem atualização de progresso há ${duration}; isso não confirma um travamento`;
 }

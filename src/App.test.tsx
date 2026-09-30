@@ -8,6 +8,23 @@ const emptyDashboard=():DashboardStats=>({totalAssets:0,photos:0,videos:0,bytes:
 
 describe("fluxo principal do aplicativo", () => {
   afterEach(() => { cleanup(); vi.restoreAllMocks(); localStorage.clear(); });
+  it("interrompe a inicialização e permite reparar caminhos persistidos inválidos", async () => {
+    const user = userEvent.setup();
+    const configured={id:"lib",name:"Acervo",masterPath:"Z:\\Acervo",backupPath:"Y:\\Replica",createdAt:new Date().toISOString()};
+    vi.spyOn(api,"getLibrary").mockResolvedValue(configured);
+    vi.spyOn(api,"libraryStartupStatus").mockResolvedValue({state:"needs_repair",issues:["O acervo mestre não está acessível.","A pasta de réplica não está acessível."]});
+    const repair=vi.spyOn(api,"createLibrary").mockResolvedValue({...configured,masterPath:"D:\\Acervo",backupPath:"E:\\Replica"});
+    vi.spyOn(api,"chooseFolder").mockResolvedValueOnce("D:\\Acervo").mockResolvedValueOnce("E:\\Replica");
+    render(<App/>);
+    expect(await screen.findByText("Reconecte sua biblioteca")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("acervo mestre");
+    expect(screen.queryByText(/memórias ·/)).not.toBeInTheDocument();
+    const selectors=screen.getAllByRole("button",{name:/Selecionar/});
+    await user.click(selectors[0]);
+    await user.click(selectors[1]);
+    await user.click(screen.getByRole("button",{name:/Validar e continuar/}));
+    await waitFor(()=>expect(repair).toHaveBeenCalledWith("Acervo","D:\\Acervo","E:\\Replica"));
+  });
   it("cria a biblioteca, abre o painel e conclui o assistente de importação", async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -50,13 +67,14 @@ describe("fluxo principal do aplicativo", () => {
     await user.click(mediaName);
     expect(await screen.findByText("SHA-256")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Fechar detalhes" }));
-    const search = screen.getByPlaceholderText("Buscar por nome, câmera ou tag…");
+    const search = screen.getByPlaceholderText("Nome, equipamento, tag, álbum ou lugar");
     await user.type(search, "DJI");
+    await user.keyboard("{Enter}");
     await waitFor(() => expect(screen.queryByText("IMG_2401.JPG")).not.toBeInTheDocument());
 
     await user.click(screen.getByRole("button", { name: "Descobrir" }));
-    expect(await screen.findByText("Redescubra sua biblioteca")).toBeInTheDocument();
-    expect(screen.getByText("Visualmente parecidas")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Descobrir" })).toBeInTheDocument();
+    expect(screen.queryByText("Visualmente parecidas")).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Fontes" }));
     expect(await screen.findByText("De onde vêm suas mídias")).toBeInTheDocument();
@@ -73,7 +91,7 @@ describe("fluxo principal do aplicativo", () => {
     expect(screen.getByLabelText(/Comparação de/)).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Álbuns" }));
-    expect(await screen.findByText("Viagens")).toBeInTheDocument();
+    expect(await screen.findByText("Portfólio")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Atividade" }));
     expect(await screen.findByText(/Análise concluída/)).toBeInTheDocument();
