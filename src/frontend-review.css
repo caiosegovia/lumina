@@ -44,6 +44,10 @@ body { min-width: 0; }
   .virtual-gallery.list .list-row .list-file, .virtual-gallery.list .list-row .list-origin,
   .virtual-gallery.list .list-row .list-protection, .virtual-gallery.list .list-row .list-markers { display: none; }
 }
+/* A tall sticky toolbar must not cover all usable height at enlarged scale. */
+@media (max-height: 700px), (max-width: 900px) {
+  .gallery-command-center { position: static !important; }
+}
 @media (max-width: 900px) {
   .protection-flow { flex-direction: column; align-items: stretch; }
   .protection-flow > svg { align-self: center; transform: rotate(90deg); }
