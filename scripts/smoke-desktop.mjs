@@ -207,7 +207,8 @@ try {
   const input=page.getByLabel('Buscar na galeria');
   await expect(page.locator('.gallery-query-status')).toContainText('4 resultados');
   for(let index=0;index<50;index++){
-    const query=index%2===0?'red.jpg':'video.mp4';
+    // Deduplication may retain either original occurrence as the canonical name.
+    const query=index%2===0?photos[0].filename:assets.find(asset=>asset.mediaType==='video').filename;
     await input.fill(query);
     if(index%2===0)await input.press('Enter');else await page.getByRole('button',{name:'Buscar',exact:true}).click();
     await expect(page.locator('.gallery-query-status')).toHaveText('1 resultado');

@@ -2,7 +2,7 @@
 
 ## Escopo e método
 
-Revisão das nove seções: Visão geral, Biblioteca, Descobrir, Revisão, Fontes, Duplicatas, Álbuns, Atividade e Proteção. Inspeção de código, interação automatizada em navegador e screenshots nos temas claro/escuro. A busca também deve passar pelo executável com catálogo sintético, sem mocks de IPC.
+Revisão das nove seções: Visão geral, Biblioteca, Descobrir, Revisão, Fontes, Duplicatas, Álbuns, Atividade e Proteção. Inspeção de código, interação automatizada em navegador e screenshots nos temas claro/escuro. A busca também passou por 50 consultas no executável extraído do MSI, com catálogo isolado de arquivos gerados, sem mocks de IPC.
 
 ## Achados e correções
 
@@ -21,6 +21,7 @@ Revisão das nove seções: Visão geral, Biblioteca, Descobrir, Revisão, Fonte
 | Botões de seleção escondidos por breakpoint | Barra contextual acomoda os comandos em linhas |
 | Fontes extrapolava a área útil de 800 px | Grid de fontes responsivo e conteúdo com largura limitada |
 | Proteção extrapolava a área útil de 667 px | Fluxo vertical em janelas menores e quebra segura de caminhos |
+| Barra fixa encobria a ação de limpar a busca em janelas baixas | Barra acompanha a rolagem em áreas menores; teste clica no botão sem forçar interação |
 | Filtro de cópia mestre aparecia como réplica protegida | Labels distinguem os cinco estados; ausência de GPS também tem pill |
 | Polling de jobs podia continuar após desmontagem | Encerramento explícito e descarte de respostas superadas |
 | Aviso dizia “sem worker ativo” inferindo isso de data antiga | Texto comunica ausência de atualização, sem concluir travamento |
